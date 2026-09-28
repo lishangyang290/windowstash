@@ -27,4 +27,8 @@ export const authService = {
     const { error } = await requireClient().auth.signOut();
     if (error) throw error;
   },
+  async updatePassword(currentPassword: string, password: string) {
+    const { error } = await requireClient().auth.updateUser({ current_password: currentPassword, password });
+    if (error) throw error;
+  },
 };
