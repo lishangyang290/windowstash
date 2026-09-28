@@ -1,0 +1,17 @@
+version = 1
+
+[[commands]]
+name = "Run WindowStash Companion"
+command = "cd companion && ./script/build_and_run.sh run"
+
+[[commands]]
+name = "Debug WindowStash Companion"
+command = "cd companion && ./script/build_and_run.sh debug"
+
+[[commands]]
+name = "WindowStash Companion Logs"
+command = "cd companion && ./script/build_and_run.sh logs"
+
+[[commands]]
+name = "Verify WindowStash Companion"
+command = "cd companion && ./script/build_and_run.sh verify"

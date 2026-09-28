@@ -5,6 +5,7 @@ import { tombstoneRepository } from '@/lib/storage/tombstoneRepository';
 import { workspaceRepository } from '@/lib/storage/workspaceRepository';
 import type { BackgroundMessage } from '@/types/messages';
 import type { StoredTab, WorkspaceContent, WorkspaceLocalRecord, WorkspaceStatus } from '@/types/workspace';
+import { syncEngine } from '@/lib/sync/syncEngine';
 import { matchWorkspace, type MatchableTab } from './workspaceMatcher';
 
 function requestSync(message: BackgroundMessage): void {
@@ -120,6 +121,34 @@ export async function restoreWorkspace(workspaceId: string): Promise<number> {
   });
   await recordLog(workspaceId, record.content.name, 'restore', 'success', 'Workspace restored');
   return createdWindow.id;
+}
+
+export async function openOrFocusWorkspace(workspaceId: string): Promise<number> {
+  let record = await workspaceRepository.get(workspaceId);
+  if (!record) {
+    await syncEngine.syncAll();
+    record = await workspaceRepository.get(workspaceId);
+  }
+  if (!record) throw new Error('工作区不存在或尚未同步');
+
+  const launcherUrl = browser.runtime.getURL('/launcher.html');
+  const windows = await browser.windows.getAll({ populate: true });
+  for (const window of windows) {
+    if (window.id != null && await bindingRepository.get(window.id) === workspaceId) {
+      await browser.windows.update(window.id, { focused: true });
+      return window.id;
+    }
+  }
+  for (const window of windows) {
+    if (window.id == null) continue;
+    const tabs = (window.tabs ?? []).filter((tab) => !tab.url?.startsWith(launcherUrl));
+    if (matchWorkspace(tabs, [record])) {
+      await bindingRepository.set(window.id, workspaceId);
+      await browser.windows.update(window.id, { focused: true });
+      return window.id;
+    }
+  }
+  return restoreWorkspace(workspaceId);
 }
 
 export async function openWorkspaceTab(url: string): Promise<void> {

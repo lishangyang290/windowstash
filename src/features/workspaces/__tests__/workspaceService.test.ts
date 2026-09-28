@@ -1,23 +1,26 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const browserMock = vi.hoisted(() => ({
-  windows: { get: vi.fn(), remove: vi.fn(), create: vi.fn(), update: vi.fn() },
+  windows: { get: vi.fn(), getAll: vi.fn(), remove: vi.fn(), create: vi.fn(), update: vi.fn() },
   tabs: { create: vi.fn(), remove: vi.fn(), update: vi.fn() },
-  runtime: { sendMessage: vi.fn().mockResolvedValue(undefined) },
+  runtime: { sendMessage: vi.fn().mockResolvedValue(undefined), getURL: vi.fn((path: string) => `chrome-extension://test${path}`) },
 }));
 const bindingMock = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), remove: vi.fn() }));
 const logMock = vi.hoisted(() => ({ add: vi.fn() }));
 const tombstoneMock = vi.hoisted(() => ({ add: vi.fn() }));
 const workspaceMock = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), saveContent: vi.fn(), put: vi.fn(), remove: vi.fn() }));
+const syncMock = vi.hoisted(() => ({ syncAll: vi.fn() }));
 
 vi.mock('wxt/browser', () => ({ browser: browserMock }));
 vi.mock('@/lib/storage/bindingRepository', () => ({ bindingRepository: bindingMock }));
 vi.mock('@/lib/storage/syncLogRepository', () => ({ syncLogRepository: logMock }));
 vi.mock('@/lib/storage/tombstoneRepository', () => ({ tombstoneRepository: tombstoneMock }));
 vi.mock('@/lib/storage/workspaceRepository', () => ({ workspaceRepository: workspaceMock }));
+vi.mock('@/lib/sync/syncEngine', () => ({ syncEngine: syncMock }));
 
 import {
   focusWindowTab,
+  openOrFocusWorkspace,
   openWorkspaceTab,
   reopenSavedTab,
   resolveWorkspaceForWindow,
@@ -50,6 +53,8 @@ describe('workspaceService', () => {
     workspaceMock.saveContent.mockImplementation(async (content) => ({ ...localRecord, content }));
     workspaceMock.put.mockResolvedValue(undefined);
     workspaceMock.list.mockResolvedValue([]);
+    browserMock.windows.getAll.mockResolvedValue([]);
+    syncMock.syncAll.mockResolvedValue(undefined);
   });
 
   it('captures only the explicitly requested window and closes it after local persistence', async () => {
@@ -157,6 +162,43 @@ describe('workspaceService', () => {
     expect(result).toBe(localRecord);
     expect(workspaceMock.list).not.toHaveBeenCalled();
     expect(bindingMock.set).not.toHaveBeenCalled();
+  });
+
+  it('focuses an already bound workspace instead of restoring a duplicate', async () => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+    browserMock.windows.getAll.mockResolvedValue([{ id: 22, tabs: [] }]);
+    bindingMock.get.mockResolvedValue('workspace-1');
+    browserMock.windows.update.mockResolvedValue({});
+
+    await expect(openOrFocusWorkspace('workspace-1')).resolves.toBe(22);
+
+    expect(browserMock.windows.update).toHaveBeenCalledWith(22, { focused: true });
+    expect(browserMock.windows.create).not.toHaveBeenCalled();
+  });
+
+  it('re-identifies and binds an existing workspace before restoring', async () => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+    browserMock.windows.getAll.mockResolvedValue([{ id: 33, tabs: [
+      { url: 'https://a.example', index: 0, pinned: true },
+      { url: 'https://b.example', index: 1, pinned: false },
+      { url: 'chrome-extension://test/launcher.html?workspaceId=workspace-1', index: 2 },
+    ] }]);
+    browserMock.windows.update.mockResolvedValue({});
+
+    await expect(openOrFocusWorkspace('workspace-1')).resolves.toBe(33);
+
+    expect(bindingMock.set).toHaveBeenCalledWith(33, 'workspace-1');
+    expect(browserMock.windows.create).not.toHaveBeenCalled();
+  });
+
+  it('restores only when no existing window matches', async () => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValueOnce({ id: 901 }).mockResolvedValueOnce({ id: 902 });
+
+    await expect(openOrFocusWorkspace('workspace-1')).resolves.toBe(99);
+
+    expect(browserMock.windows.create).toHaveBeenCalledOnce();
   });
 });
 
