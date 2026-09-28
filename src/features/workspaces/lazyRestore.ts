@@ -61,30 +61,42 @@ export function createLazyEntry(workspaceId: string, tab: StoredTab): LazyRestor
   };
 }
 
-export async function resolveLazyMatchableTab(tab: MatchableTab): Promise<MatchableTab> {
+export class LazyTabResolutionError extends Error {
+  constructor() {
+    super('部分标签页状态异常，请重新打开后再保存');
+  }
+}
+
+export async function resolveLogicalTab<T extends MatchableTab & { favIconUrl?: string }>(tab: T): Promise<T> {
   const id = lazyIdFromTab(tab);
   if (!id) return tab;
   const entry = await lazyRestoreRepository.get(id);
-  return entry ? { ...tab, title: entry.title, url: entry.originalUrl, pendingUrl: undefined } : tab;
+  if (!entry) throw new LazyTabResolutionError();
+  return {
+    ...tab,
+    title: entry.title,
+    url: entry.originalUrl,
+    pendingUrl: undefined,
+    favIconUrl: entry.favIconUrl,
+  };
+}
+
+export function resolveLogicalTabs<T extends MatchableTab & { favIconUrl?: string }>(tabs: T[]): Promise<T[]> {
+  return Promise.all(tabs.map(resolveLogicalTab));
 }
 
 export async function resolveLazyStoredTab(
   tab: MatchableTab & { favIconUrl?: string },
   position: number,
 ): Promise<StoredTab> {
-  const id = lazyIdFromTab(tab);
-  if (!id) {
-    return {
-      title: tab.title || '未命名标签页',
-      url: tab.url || tab.pendingUrl || 'about:blank',
-      favIconUrl: tab.favIconUrl,
-      position,
-      pinned: Boolean(tab.pinned),
-    };
-  }
-  const entry = await lazyRestoreRepository.get(id);
-  if (!entry) throw new Error('未加载标签页的恢复数据已丢失，请先打开该标签页后重试');
-  return { title: entry.title, url: entry.originalUrl, favIconUrl: entry.favIconUrl, position, pinned: Boolean(tab.pinned) };
+  const logical = await resolveLogicalTab(tab);
+  return {
+    title: logical.title || '未命名标签页',
+    url: logical.url || logical.pendingUrl || 'about:blank',
+    favIconUrl: logical.favIconUrl,
+    position,
+    pinned: Boolean(logical.pinned),
+  };
 }
 
 export function resolveLazyTab(tabId: number, lazyId?: string): Promise<void> {

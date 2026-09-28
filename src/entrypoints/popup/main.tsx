@@ -18,6 +18,7 @@ import {
   resolveWorkspaceForWindow,
   saveCurrentWindow,
 } from '@/features/workspaces/workspaceService';
+import { LazyTabResolutionError, resolveLogicalTabs } from '@/features/workspaces/lazyRestore';
 import type { WorkspaceLocalRecord, WorkspaceStatus } from '@/types/workspace';
 import '@/styles/base.css';
 import './style.css';
@@ -99,9 +100,10 @@ function UpdatedItem({ change, onOpen }: { change: UpdatedTabChange; onOpen: (ch
   );
 }
 
-function SaveButtons({ action, phase, onSave }: {
+function SaveButtons({ action, phase, blocked, onSave }: {
   action: SaveAction | null;
   phase: SavePhase;
+  blocked: boolean;
   onSave: (closeAfterSave: boolean) => void;
 }) {
   const label = (buttonAction: SaveAction, idleLabel: string) => {
@@ -113,8 +115,8 @@ function SaveButtons({ action, phase, onSave }: {
 
   return (
     <div className="popup-actions">
-      <button className="button button-primary" disabled={phase !== 'idle'} onClick={() => onSave(false)}>{label('save', '保存当前状态')}</button>
-      <button className="button" disabled={phase !== 'idle'} onClick={() => onSave(true)}>{label('close', '保存并关闭窗口')}</button>
+      <button className="button button-primary" disabled={blocked || phase !== 'idle'} onClick={() => onSave(false)}>{label('save', '保存当前状态')}</button>
+      <button className="button" disabled={blocked || phase !== 'idle'} onClick={() => onSave(true)}>{label('close', '保存并关闭窗口')}</button>
     </div>
   );
 }
@@ -131,6 +133,7 @@ function Popup() {
   const [saveAction, setSaveAction] = React.useState<SaveAction | null>(null);
   const [savePhase, setSavePhase] = React.useState<SavePhase>('idle');
   const [error, setError] = React.useState('');
+  const [logicalTabsReady, setLogicalTabsReady] = React.useState(false);
   const windowIdRef = React.useRef<number | null>(null);
   const resetTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -139,13 +142,15 @@ function Popup() {
       ? await getCurrentWindowSnapshot()
       : await browser.windows.get(knownWindowId, { populate: true }).then((window) => {
         if (window.id == null) throw new Error('Missing window');
-        return { windowId: window.id, tabs: window.tabs ?? [] };
+        return resolveLogicalTabs(window.tabs ?? []).then((tabs) => ({ windowId: window.id!, tabs }));
       });
     const nextTabs = [...(snapshot.tabs ?? [])].sort((a, b) => a.index - b.index);
     const nextRecord = await resolveWorkspaceForWindow(snapshot.windowId, nextTabs);
     windowIdRef.current = snapshot.windowId;
     setWindowId(snapshot.windowId);
     setTabs(nextTabs);
+    setLogicalTabsReady(true);
+    setError('');
     setRecord(nextRecord);
     if (nextRecord) {
       setName(nextRecord.content.name);
@@ -153,10 +158,15 @@ function Popup() {
     }
   }, []);
 
+  const handleRefreshError = React.useCallback((reason: unknown) => {
+    setLogicalTabsReady(false);
+    setError(reason instanceof LazyTabResolutionError ? reason.message : '暂时无法读取当前窗口');
+  }, []);
+
   React.useEffect(() => {
-    void refresh().catch(() => setError('暂时无法读取当前窗口'));
+    void refresh().catch(handleRefreshError);
     const refreshBoundWindow = (changedWindowId: number) => {
-      if (changedWindowId === windowIdRef.current) void refresh(changedWindowId).catch(() => setError('暂时无法更新窗口状态'));
+      if (changedWindowId === windowIdRef.current) void refresh(changedWindowId).catch(handleRefreshError);
     };
     const onCreated = (tab: { windowId: number }) => refreshBoundWindow(tab.windowId);
     const onRemoved = (_tabId: number, info: { windowId: number }) => refreshBoundWindow(info.windowId);
@@ -173,7 +183,7 @@ function Popup() {
       browser.tabs.onMoved.removeListener(onMoved);
       if (resetTimer.current) clearTimeout(resetTimer.current);
     };
-  }, [refresh]);
+  }, [handleRefreshError, refresh]);
 
   const diff = React.useMemo(() => calculateTabDiff(record?.content.tabs ?? [], tabs), [record?.content.tabs, tabs]);
   const counts = { added: diff.added.length, removed: diff.removed.length, updated: diff.updated.length };
@@ -233,7 +243,7 @@ function Popup() {
   }
 
   const isBound = record != null;
-  const buttons = <SaveButtons action={saveAction} phase={savePhase} onSave={(close) => void submit(close)} />;
+  const buttons = <SaveButtons action={saveAction} phase={savePhase} blocked={!logicalTabsReady} onSave={(close) => void submit(close)} />;
 
   if (page === 'details' && isBound) {
     const activeChanges = activeKind === 'added' ? diff.added : activeKind === 'removed' ? diff.removed : diff.updated;

@@ -11,7 +11,7 @@ import {
   canLazyRestore,
   createLazyEntry,
   lazyTabUrl,
-  resolveLazyMatchableTab,
+  resolveLogicalTabs,
   resolveLazyStoredTab,
 } from './lazyRestore';
 import { lazyRestoreRepository } from '@/lib/storage/lazyRestoreRepository';
@@ -33,7 +33,7 @@ async function recordLog(
 export async function getCurrentWindowSnapshot() {
   const current = await browser.windows.getCurrent({ populate: true });
   if (current.id == null) throw new Error('无法识别当前 Chrome 窗口');
-  const tabs = [...(current.tabs ?? [])].sort((a, b) => a.index - b.index);
+  const tabs = await resolveLogicalTabs([...(current.tabs ?? [])].sort((a, b) => a.index - b.index));
   return { windowId: current.id, tabs };
 }
 
@@ -45,7 +45,7 @@ export async function resolveWorkspaceForWindow(
   const bound = boundId ? await workspaceRepository.get(boundId) : null;
   if (bound) return bound;
 
-  const matched = matchWorkspace(await Promise.all(tabs.map(resolveLazyMatchableTab)), await workspaceRepository.list());
+  const matched = matchWorkspace(await resolveLogicalTabs(tabs), await workspaceRepository.list());
   if (matched) await bindingRepository.set(windowId, matched.content.id);
   return matched;
 }
@@ -190,7 +190,7 @@ async function runOpenOrFocusWorkspace(workspaceId: string): Promise<number> {
   }
   for (const window of windows) {
     if (window.id == null) continue;
-    const resolvedTabs = await Promise.all((window.tabs ?? []).map(resolveLazyMatchableTab));
+    const resolvedTabs = await resolveLogicalTabs(window.tabs ?? []);
     const tabs = resolvedTabs.filter((tab) => !isInternalTab(tab));
     const match = scoreWorkspaceMatch(tabs, record);
     candidates.push({ windowId: window.id, beforeTabs: window.tabs?.length ?? 0, afterTabs: tabs.length, bindingMatched: false, score: match.score, eligible: match.eligible });
