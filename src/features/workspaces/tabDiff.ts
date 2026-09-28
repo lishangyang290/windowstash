@@ -43,7 +43,7 @@ function currentToStored(tab: CurrentTabSnapshot): StoredTab {
   };
 }
 
-function normalizeUrl(url: string): string {
+export function normalizeUrl(url: string): string {
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return url.replace(/#.*$/, '');
@@ -87,7 +87,7 @@ function siteParts(url: string) {
   }
 }
 
-function isHighConfidenceRedirect(saved: StoredTab, current: CurrentTabSnapshot): boolean {
+export function isHighConfidenceRedirect(saved: StoredTab, current: CurrentTabSnapshot): boolean {
   const before = siteParts(saved.url);
   const after = siteParts(current.url || 'about:blank');
   if (!before || !after || before.site !== after.site || before.host === after.host || before.path !== after.path) return false;

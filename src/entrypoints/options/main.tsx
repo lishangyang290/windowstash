@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import type { Session } from '@supabase/supabase-js';
 import { browser } from 'wxt/browser';
 import { Logo } from '@/components/Logo';
-import { deleteWorkspace, openWorkspaceTab, restoreWorkspace, updateWorkspace } from '@/features/workspaces/workspaceService';
+import { deleteWorkspace, openWorkspaceTab, updateWorkspace } from '@/features/workspaces/workspaceService';
 import { syncEngine } from '@/lib/sync/syncEngine';
 import { syncLogRepository } from '@/lib/storage/syncLogRepository';
 import { workspaceRepository } from '@/lib/storage/workspaceRepository';
@@ -295,7 +295,7 @@ function WorkspaceRow({ record, onRefresh }: { record: WorkspaceLocalRecord; onR
         </div>
         <div className="workspace-actions">
           <button className="overview-button" onClick={() => setOverviewOpen(true)}>查看标签页</button>
-          <button className="open-button" disabled={Boolean(busy)} onClick={() => void run(() => restoreWorkspace(content.id).then(() => undefined), 'open')}>{busy === 'open' ? '正在打开…' : '打开'}</button>
+          <button className="open-button" disabled={Boolean(busy)} onClick={() => void run(() => browser.runtime.sendMessage({ type: 'OPEN_OR_FOCUS_WORKSPACE', workspaceId: content.id }).then(() => undefined), 'open')}>{busy === 'open' ? '正在打开…' : '打开'}</button>
           <div className="more-wrap">
             <button className="more-button" aria-label={`更多操作：${content.name}`} aria-expanded={menuOpen} onClick={() => setMenuOpen((value) => !value)}>•••</button>
             {menuOpen && <div className="more-menu">

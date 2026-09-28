@@ -3,6 +3,7 @@ import { CLEANUP_ALARM, SYNC_ALARM } from '@/lib/constants';
 import { syncEngine } from '@/lib/sync/syncEngine';
 import { bindingRepository } from '@/lib/storage/bindingRepository';
 import type { BackgroundMessage } from '@/types/messages';
+import { openOrFocusWorkspace } from '@/features/workspaces/workspaceService';
 
 export default defineBackground(() => {
   const ensureAlarms = async () => {
@@ -25,6 +26,7 @@ export default defineBackground(() => {
   browser.windows.onRemoved.addListener((windowId) => void bindingRepository.remove(windowId));
   browser.runtime.onMessage.addListener((rawMessage) => {
     const message = rawMessage as BackgroundMessage;
+    if (message.type === 'OPEN_OR_FOCUS_WORKSPACE') return openOrFocusWorkspace(message.workspaceId);
     if (message.type === 'SYNC_ALL') void syncEngine.syncAll();
     if (message.type === 'SYNC_WORKSPACE') void syncEngine.syncWorkspace(message.workspaceId);
     if (message.type === 'CLEANUP_LOCAL') void syncEngine.cleanupExpiredLocalCopies();

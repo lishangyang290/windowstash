@@ -1,5 +1,4 @@
 import { browser } from 'wxt/browser';
-import { openOrFocusWorkspace } from '@/features/workspaces/workspaceService';
 
 const status = document.getElementById('status');
 const workspaceId = new URLSearchParams(location.search).get('workspaceId');
@@ -8,7 +7,7 @@ document.body.style.cssText = 'margin:0;display:grid;min-height:100vh;place-item
 
 async function launch() {
   if (!workspaceId) throw new Error('Missing workspace');
-  await openOrFocusWorkspace(workspaceId);
+  await browser.runtime.sendMessage({ type: 'OPEN_OR_FOCUS_WORKSPACE', workspaceId });
   const current = await browser.tabs.getCurrent();
   if (current?.id != null) await browser.tabs.remove(current.id);
 }

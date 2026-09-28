@@ -191,6 +191,80 @@ describe('workspaceService', () => {
     expect(browserMock.windows.create).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { field: 'url', value: 'chrome-extension://test/launcher.html?workspaceId=workspace-1' },
+    { field: 'pendingUrl', value: 'chrome-extension://test/launcher.html?workspaceId=workspace-1' },
+  ])('filters a launcher tab from $field before matching', async ({ field, value }) => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+    browserMock.windows.getAll.mockResolvedValue([{ id: 34, tabs: [
+      { url: 'https://a.example', index: 0, pinned: true },
+      { url: 'https://b.example', index: 1, pinned: false },
+      { [field]: value, index: 2 },
+    ] }]);
+    browserMock.windows.update.mockResolvedValue({});
+
+    await expect(openOrFocusWorkspace('workspace-1')).resolves.toBe(34);
+
+    expect(bindingMock.set).toHaveBeenCalledWith(34, 'workspace-1');
+    expect(browserMock.windows.create).not.toHaveBeenCalled();
+  });
+
+  it('rebinds the unique four-of-five window and does not restore', async () => {
+    const record = fiveTabRecord();
+    workspaceMock.get.mockResolvedValue(record);
+    browserMock.windows.getAll.mockResolvedValue([
+      { id: 40, tabs: currentTabs(['A', 'B', 'C', 'D', 'changed']) },
+      { id: 41, tabs: currentTabs(['A', 'B', 'other-1', 'other-2', 'other-3']) },
+    ]);
+    browserMock.windows.update.mockResolvedValue({});
+
+    await expect(openOrFocusWorkspace(record.content.id)).resolves.toBe(40);
+
+    expect(bindingMock.set).toHaveBeenCalledWith(40, record.content.id);
+    expect(browserMock.windows.create).not.toHaveBeenCalled();
+  });
+
+  it('does not bind a five-tab window with only three matches', async () => {
+    const record = fiveTabRecord();
+    workspaceMock.get.mockResolvedValue(record);
+    browserMock.windows.getAll.mockResolvedValue([{ id: 40, tabs: currentTabs(['A', 'B', 'C', 'X', 'Y']) }]);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+
+    await expect(openOrFocusWorkspace(record.content.id)).resolves.toBe(99);
+
+    expect(bindingMock.set).not.toHaveBeenCalledWith(40, record.content.id);
+  });
+
+  it('stops when two existing windows are similarly strong candidates', async () => {
+    const record = fiveTabRecord();
+    workspaceMock.get.mockResolvedValue(record);
+    browserMock.windows.getAll.mockResolvedValue([
+      { id: 40, tabs: currentTabs(['A', 'B', 'C', 'D', 'changed-1']) },
+      { id: 41, tabs: currentTabs(['A', 'B', 'C', 'D', 'changed-2']) },
+    ]);
+
+    await expect(openOrFocusWorkspace(record.content.id)).rejects.toThrow('多个相似');
+
+    expect(bindingMock.set).not.toHaveBeenCalled();
+    expect(browserMock.windows.create).not.toHaveBeenCalled();
+  });
+
+  it('shares one restore for concurrent launches of the same workspace', async () => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+    browserMock.windows.getAll.mockResolvedValue([]);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+
+    const results = await Promise.all([
+      openOrFocusWorkspace('workspace-1'),
+      openOrFocusWorkspace('workspace-1'),
+    ]);
+
+    expect(results).toEqual([99, 99]);
+    expect(browserMock.windows.create).toHaveBeenCalledOnce();
+  });
+
   it('restores only when no existing window matches', async () => {
     workspaceMock.get.mockResolvedValue(localRecord);
     browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
@@ -204,4 +278,19 @@ describe('workspaceService', () => {
 
 function savedTab(title: string, url: string, position: number, pinned: boolean) {
   return { title, url, position, pinned };
+}
+
+function fiveTabRecord(): WorkspaceLocalRecord {
+  return {
+    ...localRecord,
+    content: {
+      ...localRecord.content,
+      id: 'workspace-five',
+      tabs: ['A', 'B', 'C', 'D', 'E'].map((url, position) => savedTab(url, url, position, position === 0)),
+    },
+  };
+}
+
+function currentTabs(urls: string[]) {
+  return urls.map((url, index) => ({ title: url, url, index, pinned: index === 0 }));
 }

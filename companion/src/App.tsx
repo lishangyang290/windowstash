@@ -128,6 +128,7 @@ function Launcher({ session, onSignOut }: { session: Session; onSignOut: () => v
     const unlisten = listen('popover-opened', () => {
       setQuery('');
       setSelected(0);
+      setOpening('');
       searchRef.current?.focus();
       void refresh();
     });
@@ -152,6 +153,7 @@ function Launcher({ session, onSignOut }: { session: Session; onSignOut: () => v
       await chromeBridge.openWorkspace(item.id);
       cache.markOpened(item.id);
       setItems((current) => sortByRecent(current));
+      setOpening('');
       await invoke('hide_popover');
     } catch {
       setError('无法打开工作区');

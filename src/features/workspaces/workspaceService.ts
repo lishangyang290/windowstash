@@ -6,7 +6,7 @@ import { workspaceRepository } from '@/lib/storage/workspaceRepository';
 import type { BackgroundMessage } from '@/types/messages';
 import type { StoredTab, WorkspaceContent, WorkspaceLocalRecord, WorkspaceStatus } from '@/types/workspace';
 import { syncEngine } from '@/lib/sync/syncEngine';
-import { matchWorkspace, type MatchableTab } from './workspaceMatcher';
+import { matchWorkspace, MIN_CANDIDATE_GAP, scoreWorkspaceMatch, type MatchableTab } from './workspaceMatcher';
 
 function requestSync(message: BackgroundMessage): void {
   void browser.runtime.sendMessage(message).catch(() => undefined);
@@ -123,7 +123,44 @@ export async function restoreWorkspace(workspaceId: string): Promise<number> {
   return createdWindow.id;
 }
 
-export async function openOrFocusWorkspace(workspaceId: string): Promise<number> {
+interface WindowCandidate {
+  windowId: number;
+  beforeTabs: number;
+  afterTabs: number;
+  bindingMatched: boolean;
+  score: number | null;
+  eligible: boolean;
+}
+
+const openWorkspaceTasks = new Map<string, Promise<number>>();
+
+function isInternalTab(tab: MatchableTab): boolean {
+  const extensionRoot = browser.runtime.getURL('/');
+  return [tab.url, tab.pendingUrl].some((url) => url?.startsWith(extensionRoot));
+}
+
+async function logLaunch(
+  record: WorkspaceLocalRecord,
+  result: 'focus-existing' | 'rebind-and-focus' | 'restore-new' | 'ambiguous',
+  candidates: WindowCandidate[],
+): Promise<void> {
+  const ranked = candidates.filter((candidate) => candidate.score != null).sort((a, b) => b.score! - a.score!);
+  await syncLogRepository.add({
+    workspaceId: record.content.id,
+    workspaceName: record.content.name,
+    action: 'workspace-launch',
+    result: 'info',
+    message: JSON.stringify({
+      workspaceId: record.content.id,
+      candidates,
+      bestCandidate: ranked[0]?.windowId ?? null,
+      secondBestCandidate: ranked[1]?.windowId ?? null,
+      result,
+    }),
+  });
+}
+
+async function runOpenOrFocusWorkspace(workspaceId: string): Promise<number> {
   let record = await workspaceRepository.get(workspaceId);
   if (!record) {
     await syncEngine.syncAll();
@@ -131,24 +168,47 @@ export async function openOrFocusWorkspace(workspaceId: string): Promise<number>
   }
   if (!record) throw new Error('工作区不存在或尚未同步');
 
-  const launcherUrl = browser.runtime.getURL('/launcher.html');
   const windows = await browser.windows.getAll({ populate: true });
+  const candidates: WindowCandidate[] = [];
   for (const window of windows) {
     if (window.id != null && await bindingRepository.get(window.id) === workspaceId) {
+      candidates.push({ windowId: window.id, beforeTabs: window.tabs?.length ?? 0, afterTabs: window.tabs?.length ?? 0, bindingMatched: true, score: null, eligible: true });
+      await logLaunch(record, 'focus-existing', candidates).catch(() => undefined);
       await browser.windows.update(window.id, { focused: true });
       return window.id;
     }
   }
   for (const window of windows) {
     if (window.id == null) continue;
-    const tabs = (window.tabs ?? []).filter((tab) => !tab.url?.startsWith(launcherUrl));
-    if (matchWorkspace(tabs, [record])) {
-      await bindingRepository.set(window.id, workspaceId);
-      await browser.windows.update(window.id, { focused: true });
-      return window.id;
-    }
+    const tabs = (window.tabs ?? []).filter((tab) => !isInternalTab(tab));
+    const match = scoreWorkspaceMatch(tabs, record);
+    candidates.push({ windowId: window.id, beforeTabs: window.tabs?.length ?? 0, afterTabs: tabs.length, bindingMatched: false, score: match.score, eligible: match.eligible });
   }
+  const ranked = [...candidates].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+  const best = ranked[0];
+  const second = ranked[1];
+  if (best?.eligible && second && (best.score ?? 0) - (second.score ?? 0) < MIN_CANDIDATE_GAP) {
+    await logLaunch(record, 'ambiguous', candidates).catch(() => undefined);
+    throw new Error('找到多个相似的 Workspace 窗口，已取消自动恢复');
+  }
+  if (best?.eligible) {
+    await bindingRepository.set(best.windowId, workspaceId);
+    await logLaunch(record, 'rebind-and-focus', candidates).catch(() => undefined);
+    await browser.windows.update(best.windowId, { focused: true });
+    return best.windowId;
+  }
+  await logLaunch(record, 'restore-new', candidates).catch(() => undefined);
   return restoreWorkspace(workspaceId);
+}
+
+export function openOrFocusWorkspace(workspaceId: string): Promise<number> {
+  const existing = openWorkspaceTasks.get(workspaceId);
+  if (existing) return existing;
+  const task = runOpenOrFocusWorkspace(workspaceId).finally(() => {
+    if (openWorkspaceTasks.get(workspaceId) === task) openWorkspaceTasks.delete(workspaceId);
+  });
+  openWorkspaceTasks.set(workspaceId, task);
+  return task;
 }
 
 export async function openWorkspaceTab(url: string): Promise<void> {

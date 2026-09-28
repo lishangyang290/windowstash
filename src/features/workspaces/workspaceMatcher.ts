@@ -1,40 +1,41 @@
 import type { WorkspaceLocalRecord } from '@/types/workspace';
+import { isHighConfidenceRedirect, normalizeUrl } from './tabDiff';
 
 export interface MatchableTab {
+  title?: string;
   url?: string;
+  pendingUrl?: string;
   pinned?: boolean;
   index: number;
 }
 
 interface TabIdentity {
+  title: string;
   url: string;
   pinned: boolean;
+  index: number;
 }
+
+export interface WorkspaceMatchScore {
+  record: WorkspaceLocalRecord;
+  score: number;
+  matchedCount: number;
+  eligible: boolean;
+}
+
+const HIGH_CONFIDENCE_SCORE = 0.88;
+export const MIN_CANDIDATE_GAP = 0.12;
 
 function currentTabs(tabs: MatchableTab[]): TabIdentity[] {
   return [...tabs]
     .sort((a, b) => a.index - b.index)
-    .map((tab) => ({ url: tab.url || 'about:blank', pinned: Boolean(tab.pinned) }));
+    .map((tab, index) => ({ title: tab.title || '', url: tab.url || tab.pendingUrl || 'about:blank', pinned: Boolean(tab.pinned), index }));
 }
 
 function savedTabs(record: WorkspaceLocalRecord): TabIdentity[] {
   return [...record.content.tabs]
     .sort((a, b) => a.position - b.position)
-    .map(({ url, pinned }) => ({ url, pinned }));
-}
-
-function multisetOverlap(left: string[], right: string[]): number {
-  const counts = new Map<string, number>();
-  for (const value of left) counts.set(value, (counts.get(value) ?? 0) + 1);
-  let overlap = 0;
-  for (const value of right) {
-    const count = counts.get(value) ?? 0;
-    if (count > 0) {
-      overlap += 1;
-      counts.set(value, count - 1);
-    }
-  }
-  return overlap;
+    .map(({ title, url, pinned }, index) => ({ title, url, pinned, index }));
 }
 
 function orderedOverlap(left: string[], right: string[]): number {
@@ -53,22 +54,60 @@ function orderedOverlap(left: string[], right: string[]): number {
 
 function isExact(left: TabIdentity[], right: TabIdentity[]): boolean {
   return left.length === right.length
-    && left.every((tab, index) => tab.url === right[index]!.url && tab.pinned === right[index]!.pinned);
+    && left.every((tab, index) => normalizeUrl(tab.url) === normalizeUrl(right[index]!.url) && tab.pinned === right[index]!.pinned);
 }
 
-function similarity(left: TabIdentity[], right: TabIdentity[]): number {
-  const largestSize = Math.max(left.length, right.length);
-  if (!largestSize) return 0;
-  const leftUrls = left.map((tab) => tab.url);
-  const rightUrls = right.map((tab) => tab.url);
-  const urlCoverage = multisetOverlap(leftUrls, rightUrls) / largestSize;
-  const orderScore = orderedOverlap(leftUrls, rightUrls) / largestSize;
-  const pinnedScore = multisetOverlap(
-    left.map((tab) => `${tab.url}\u0000${tab.pinned}`),
-    right.map((tab) => `${tab.url}\u0000${tab.pinned}`),
-  ) / largestSize;
-  const countScore = Math.min(left.length, right.length) / largestSize;
-  return urlCoverage * 0.55 + orderScore * 0.2 + pinnedScore * 0.15 + countScore * 0.1;
+function matchedPairs(current: TabIdentity[], saved: TabIdentity[]) {
+  const usedCurrent = new Set<number>();
+  const usedSaved = new Set<number>();
+  const pairs: Array<{ current: TabIdentity; saved: TabIdentity }> = [];
+  const match = (canMatch: (currentTab: TabIdentity, savedTab: TabIdentity) => boolean) => {
+    for (const savedTab of saved) {
+      if (usedSaved.has(savedTab.index)) continue;
+      const currentTab = current
+        .filter((tab) => !usedCurrent.has(tab.index) && canMatch(tab, savedTab))
+        .sort((a, b) => Math.abs(a.index - savedTab.index) - Math.abs(b.index - savedTab.index))[0];
+      if (!currentTab) continue;
+      usedCurrent.add(currentTab.index);
+      usedSaved.add(savedTab.index);
+      pairs.push({ current: currentTab, saved: savedTab });
+    }
+  };
+  match((currentTab, savedTab) => normalizeUrl(currentTab.url) === normalizeUrl(savedTab.url));
+  match((currentTab, savedTab) => isHighConfidenceRedirect(
+    { title: savedTab.title, url: savedTab.url, position: savedTab.index, pinned: savedTab.pinned },
+    { title: currentTab.title, url: currentTab.url, index: currentTab.index, pinned: currentTab.pinned },
+  ));
+  return pairs;
+}
+
+function similarity(current: TabIdentity[], saved: TabIdentity[]) {
+  const largestSize = Math.max(current.length, saved.length);
+  if (!largestSize) return { score: 0, matchedCount: 0, eligible: false };
+  const pairs = matchedPairs(current, saved);
+  const currentOrder = pairs.sort((a, b) => a.current.index - b.current.index).map(({ saved: tab }) => String(tab.index));
+  const savedOrder = saved.map((tab) => String(tab.index));
+  const urlCoverage = pairs.length / largestSize;
+  const orderScore = orderedOverlap(currentOrder, savedOrder) / largestSize;
+  const pinnedScore = pairs.filter(({ current: left, saved: right }) => left.pinned === right.pinned).length / largestSize;
+  const countScore = Math.min(current.length, saved.length) / largestSize;
+  const score = urlCoverage * 0.55 + orderScore * 0.2 + pinnedScore * 0.15 + countScore * 0.1;
+  const smallWorkspaceMatch = largestSize <= 8
+    && pairs.length >= 4
+    && pairs.length >= current.length - 1
+    && pairs.length >= saved.length - 1
+    && Math.abs(current.length - saved.length) <= 1
+    && orderScore >= 0.75
+    && pinnedScore >= 0.75;
+  return { score, matchedCount: pairs.length, eligible: score >= HIGH_CONFIDENCE_SCORE || smallWorkspaceMatch };
+}
+
+export function scoreWorkspaceMatch(tabs: MatchableTab[], record: WorkspaceLocalRecord): WorkspaceMatchScore {
+  const current = currentTabs(tabs);
+  const saved = savedTabs(record);
+  if (!current.length) return { record, score: 0, matchedCount: 0, eligible: false };
+  if (isExact(current, saved)) return { record, score: 1, matchedCount: saved.length, eligible: true };
+  return { record, ...similarity(current, saved) };
 }
 
 export function matchWorkspace(
@@ -78,17 +117,12 @@ export function matchWorkspace(
   const current = currentTabs(tabs);
   if (!current.length) return null;
 
-  const candidates = records.map((record) => ({ record, tabs: savedTabs(record) }));
-  const exact = candidates.filter((candidate) => isExact(current, candidate.tabs));
-  if (exact.length === 1) return exact[0]!.record;
-  if (exact.length > 1) return null;
-
-  const ranked = candidates
-    .map(({ record, tabs: candidateTabs }) => ({ record, score: similarity(current, candidateTabs) }))
+  const ranked = records
+    .map((record) => scoreWorkspaceMatch(tabs, record))
     .sort((a, b) => b.score - a.score);
   const best = ranked[0];
   const runnerUp = ranked[1];
-  if (!best || best.score < 0.88) return null;
-  if (runnerUp && best.score - runnerUp.score < 0.12) return null;
+  if (!best?.eligible) return null;
+  if (runnerUp && best.score - runnerUp.score < MIN_CANDIDATE_GAP) return null;
   return best.record;
 }

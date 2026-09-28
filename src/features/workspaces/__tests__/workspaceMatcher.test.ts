@@ -56,6 +56,28 @@ describe('matchWorkspace', () => {
     expect(matchWorkspace(current(['A', 'X', 'Y', 'Z']), [record])).toBeNull();
   });
 
+  it('accepts four clear matches in a unique five-tab workspace', () => {
+    const record = workspace('one', [
+      'https://a.example/1', 'https://b.example/2', 'https://c.example/3',
+      'https://d.example/4', 'https://e.example/original',
+    ]);
+    expect(matchWorkspace(current([
+      'https://a.example/1', 'https://b.example/2', 'https://c.example/3',
+      'https://d.example/4', 'https://e.example/redirected',
+    ]), [record])).toBe(record);
+  });
+
+  it('rejects only three matches in a five-tab workspace', () => {
+    const record = workspace('one', ['A', 'B', 'C', 'D', 'E']);
+    expect(matchWorkspace(current(['A', 'B', 'C', 'X', 'Y']), [record])).toBeNull();
+  });
+
+  it('normalizes safe URL drift without dropping meaningful query parameters', () => {
+    const record = workspace('one', ['http://www.example.com/search/?q=window&utm_source=mail#top']);
+    expect(matchWorkspace(current(['https://example.com/search?q=window']), [record])).toBe(record);
+    expect(matchWorkspace(current(['https://example.com/search?q=other']), [record])).toBeNull();
+  });
+
   it('accepts a unique high-confidence match with one restored tab missing', () => {
     const urls = Array.from({ length: 20 }, (_, index) => `https://example.com/${index}`);
     const record = workspace('one', urls, [0, 4]);
