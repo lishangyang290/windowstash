@@ -2,7 +2,15 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { browser } from 'wxt/browser';
 import { Logo } from '@/components/Logo';
-import { calculateTabDiff, getTabDomain, type CurrentTabSnapshot, type TabChange } from '@/features/workspaces/tabDiff';
+import {
+  calculateTabDiff,
+  getTabDomain,
+  getTabLocation,
+  type CurrentTabSnapshot,
+  type TabChange,
+  type TabChangeKind,
+  type UpdatedTabChange,
+} from '@/features/workspaces/tabDiff';
 import {
   focusWindowTab,
   getCurrentWindowSnapshot,
@@ -16,6 +24,18 @@ import './style.css';
 
 type SaveAction = 'save' | 'close';
 type SavePhase = 'idle' | 'saving' | 'saved';
+
+const CHANGE_LABELS: Record<TabChangeKind, string> = {
+  added: '会加入',
+  removed: '会移除',
+  updated: '会更新',
+};
+
+const CHANGE_DESCRIPTIONS: Record<TabChangeKind, string> = {
+  added: '这些标签页现在在当前窗口中，但上次没有保存。',
+  removed: '这些标签页存在于上次保存中，但当前窗口里已经没有了。',
+  updated: '这些标签页仍然存在，但保存内容发生了变化。',
+};
 
 function GlobeIcon() {
   return (
@@ -37,15 +57,45 @@ function Favicon({ src }: { src?: string }) {
   );
 }
 
-function ChangeItem({ change, onOpen }: { change: TabChange; onOpen: (change: TabChange) => void }) {
+function ChangeItem({ change, busy, onOpen }: {
+  change: Exclude<TabChange, UpdatedTabChange>;
+  busy?: boolean;
+  onOpen: (change: TabChange) => void;
+}) {
   return (
-    <button className="change-item" onClick={() => onOpen(change)} title={change.title}>
+    <article className="change-item" title={change.title}>
       <Favicon src={change.favIconUrl} />
       <span className="change-copy">
         <strong>{change.title}</strong>
         <span>{getTabDomain(change.url)}</span>
       </span>
-    </button>
+      <button className="item-action" disabled={busy} onClick={() => onOpen(change)}>
+        {busy ? '正在打开…' : change.kind === 'removed' ? '重新打开' : '查看'}
+      </button>
+    </article>
+  );
+}
+
+function UpdatedItem({ change, onOpen }: { change: UpdatedTabChange; onOpen: (change: TabChange) => void }) {
+  const urlChanged = change.previous.url !== change.url;
+  const titleChanged = change.previous.title !== change.title;
+  const pinnedChanged = change.previous.pinned !== change.pinned;
+
+  return (
+    <article className="change-item updated-item" title={change.title}>
+      <Favicon src={change.favIconUrl} />
+      <span className="change-copy update-copy">
+        <strong>{change.title}</strong>
+        {urlChanged ? (
+          <span className="update-detail"><i>上次</i><b>{getTabLocation(change.previous.url)}</b><i>现在</i><b>{getTabLocation(change.url)}</b></span>
+        ) : null}
+        {!urlChanged && titleChanged ? (
+          <span className="update-detail"><i>上次</i><b>{change.previous.title}</b><i>现在</i><b>{change.title}</b></span>
+        ) : null}
+        {pinnedChanged ? <span className="pin-change">固定状态：{change.previous.pinned ? '已固定' : '未固定'} → {change.pinned ? '已固定' : '未固定'}</span> : null}
+      </span>
+      <button className="item-action" onClick={() => onOpen(change)}>查看</button>
+    </article>
   );
 }
 
@@ -63,12 +113,8 @@ function SaveButtons({ action, phase, onSave }: {
 
   return (
     <div className="popup-actions">
-      <button className="button button-primary" disabled={phase !== 'idle'} onClick={() => onSave(false)}>
-        {label('save', '保存当前状态')}
-      </button>
-      <button className="button" disabled={phase !== 'idle'} onClick={() => onSave(true)}>
-        {label('close', '保存并关闭窗口')}
-      </button>
+      <button className="button button-primary" disabled={phase !== 'idle'} onClick={() => onSave(false)}>{label('save', '保存当前状态')}</button>
+      <button className="button" disabled={phase !== 'idle'} onClick={() => onSave(true)}>{label('close', '保存并关闭窗口')}</button>
     </div>
   );
 }
@@ -80,6 +126,8 @@ function Popup() {
   const [name, setName] = React.useState('');
   const [status, setStatus] = React.useState<WorkspaceStatus>('active');
   const [page, setPage] = React.useState<'main' | 'details'>('main');
+  const [activeKind, setActiveKind] = React.useState<TabChangeKind>('added');
+  const [reopening, setReopening] = React.useState('');
   const [saveAction, setSaveAction] = React.useState<SaveAction | null>(null);
   const [savePhase, setSavePhase] = React.useState<SavePhase>('idle');
   const [error, setError] = React.useState('');
@@ -93,10 +141,8 @@ function Popup() {
         if (window.id == null) throw new Error('Missing window');
         return { windowId: window.id, tabs: window.tabs ?? [] };
       });
-
     const nextTabs = [...(snapshot.tabs ?? [])].sort((a, b) => a.index - b.index);
     const nextRecord = await resolveWorkspaceForWindow(snapshot.windowId, nextTabs);
-
     windowIdRef.current = snapshot.windowId;
     setWindowId(snapshot.windowId);
     setTabs(nextTabs);
@@ -109,17 +155,13 @@ function Popup() {
 
   React.useEffect(() => {
     void refresh().catch(() => setError('暂时无法读取当前窗口'));
-
     const refreshBoundWindow = (changedWindowId: number) => {
-      if (changedWindowId === windowIdRef.current) {
-        void refresh(changedWindowId).catch(() => setError('暂时无法更新窗口状态'));
-      }
+      if (changedWindowId === windowIdRef.current) void refresh(changedWindowId).catch(() => setError('暂时无法更新窗口状态'));
     };
     const onCreated = (tab: { windowId: number }) => refreshBoundWindow(tab.windowId);
     const onRemoved = (_tabId: number, info: { windowId: number }) => refreshBoundWindow(info.windowId);
     const onUpdated = (_tabId: number, _changeInfo: unknown, tab: { windowId: number }) => refreshBoundWindow(tab.windowId);
     const onMoved = (_tabId: number, info: { windowId: number }) => refreshBoundWindow(info.windowId);
-
     browser.tabs.onCreated.addListener(onCreated);
     browser.tabs.onRemoved.addListener(onRemoved);
     browser.tabs.onUpdated.addListener(onUpdated);
@@ -133,24 +175,32 @@ function Popup() {
     };
   }, [refresh]);
 
-  const diff = React.useMemo(
-    () => calculateTabDiff(record?.content.tabs ?? [], tabs),
-    [record?.content.tabs, tabs],
-  );
-  const changes: TabChange[] = React.useMemo(() => [...diff.added, ...diff.closed], [diff]);
+  const diff = React.useMemo(() => calculateTabDiff(record?.content.tabs ?? [], tabs), [record?.content.tabs, tabs]);
+  const counts = { added: diff.added.length, removed: diff.removed.length, updated: diff.updated.length };
+  const totalChanges = counts.added + counts.removed + counts.updated;
+  const availableKinds = (Object.keys(CHANGE_LABELS) as TabChangeKind[]).filter((kind) => counts[kind] > 0);
+
+  React.useEffect(() => {
+    if (page !== 'details') return;
+    if (totalChanges === 0) setPage('main');
+    else if (!availableKinds.includes(activeKind) && availableKinds[0]) setActiveKind(availableKinds[0]);
+  }, [activeKind, availableKinds, page, totalChanges]);
 
   async function openChange(change: TabChange) {
     if (windowId == null) return;
     setError('');
     try {
-      if (change.kind === 'added') {
-        if (change.tabId != null) await focusWindowTab(windowId, change.tabId);
-      } else {
+      if (change.kind === 'removed') {
+        setReopening(`${change.url}-${change.position}`);
         await reopenSavedTab(windowId, change);
         await refresh(windowId);
+      } else if (change.tabId != null) {
+        await focusWindowTab(windowId, change.tabId);
       }
     } catch {
-      setError(change.kind === 'added' ? '无法切换到该标签页' : '无法恢复该标签页，请重试');
+      setError(change.kind === 'removed' ? '无法重新打开该标签页，请重试' : '无法切换到该标签页');
+    } finally {
+      setReopening('');
     }
   }
 
@@ -160,7 +210,6 @@ function Popup() {
       setError('请输入工作区名称');
       return;
     }
-
     const action = closeAfterSave ? 'close' : 'save';
     setSaveAction(action);
     setSavePhase('saving');
@@ -184,36 +233,32 @@ function Popup() {
   }
 
   const isBound = record != null;
-  const totalChanges = changes.length;
   const buttons = <SaveButtons action={saveAction} phase={savePhase} onSave={(close) => void submit(close)} />;
 
   if (page === 'details' && isBound) {
+    const activeChanges = activeKind === 'added' ? diff.added : activeKind === 'removed' ? diff.removed : diff.updated;
     return (
       <main className="popup-shell detail-shell">
         <header className="detail-header">
           <button className="back-button" onClick={() => setPage('main')} aria-label="返回">← <span>返回</span></button>
-          <h1>变更详情</h1>
+          <h1>本次保存的变更</h1>
           <span className="header-spacer" />
         </header>
-        <div className="detail-counts" aria-label={`新增 ${diff.added.length}，关闭 ${diff.closed.length}`}>
-          <span><b>新增</b> {diff.added.length}</span>
-          <span><b>关闭</b> {diff.closed.length}</span>
-        </div>
-        <div className="detail-list">
-          {diff.added.length > 0 ? (
-            <section className="change-group">
-              <h2>新增</h2>
-              {diff.added.map((change) => <ChangeItem key={`added-${change.tabId}-${change.position}`} change={change} onOpen={(item) => void openChange(item)} />)}
-            </section>
-          ) : null}
-          {diff.closed.length > 0 ? (
-            <section className="change-group">
-              <h2>关闭</h2>
-              {diff.closed.map((change, index) => <ChangeItem key={`closed-${change.url}-${change.position}-${index}`} change={change} onOpen={(item) => void openChange(item)} />)}
-            </section>
-          ) : null}
-          {totalChanges === 0 ? <p className="empty-detail">✓ 与上次保存一致</p> : null}
-        </div>
+        <nav className="change-tabs" aria-label="变更分类">
+          {availableKinds.map((kind) => (
+            <button key={kind} className={activeKind === kind ? 'active' : ''} onClick={() => setActiveKind(kind)}>
+              {CHANGE_LABELS[kind]} <span>{counts[kind]}</span>
+            </button>
+          ))}
+        </nav>
+        <section className="detail-list">
+          <p className="change-description">{CHANGE_DESCRIPTIONS[activeKind]}</p>
+          <div className="change-list">
+            {activeChanges.map((change, index) => change.kind === 'updated'
+              ? <UpdatedItem key={`updated-${change.tabId}-${change.position}`} change={change} onOpen={(item) => void openChange(item)} />
+              : <ChangeItem key={`${change.kind}-${change.url}-${change.position}-${index}`} change={change} busy={reopening === `${change.url}-${change.position}`} onOpen={(item) => void openChange(item)} />)}
+          </div>
+        </section>
         <footer className="detail-footer">
           {error ? <div className="inline-error" role="alert">{error}</div> : null}
           {buttons}
@@ -238,24 +283,22 @@ function Popup() {
           </>
         )}
 
-        {isBound ? (
-          totalChanges === 0 ? (
-            <div className="unchanged-state"><span>✓</span> 与上次保存一致</div>
-          ) : (
-            <section className="diff-summary">
-              <h2>与上次保存相比</h2>
-              <div className="diff-counts">
-                <span className="added-count">+{diff.added.length} 新增</span>
-                <span className="closed-count">-{diff.closed.length} 关闭</span>
-              </div>
-              <div className="preview-list">
-                {changes.slice(0, 2).map((change, index) => (
-                  <ChangeItem key={`${change.kind}-${change.url}-${change.position}-${index}`} change={change} onOpen={(item) => void openChange(item)} />
-                ))}
-              </div>
-              <button className="view-all" onClick={() => setPage('details')}>查看全部 {totalChanges} 项变更 <span>›</span></button>
-            </section>
-          )
+        {isBound ? totalChanges === 0 ? (
+          <div className="unchanged-state"><span>✓</span> 当前窗口与上次保存一致</div>
+        ) : (
+          <section className="save-preview">
+            <h2>本次保存会更新工作区</h2>
+            <dl className="snapshot-counts">
+              <div><dt>上次保存</dt><dd>{record.content.tabs.length} 个标签页</dd></div>
+              <div><dt>当前窗口</dt><dd>{tabs.length} 个标签页</dd></div>
+            </dl>
+            <ul className="change-summary">
+              {availableKinds.map((kind) => <li key={kind} className={`change-${kind}`}><span aria-hidden="true" />{CHANGE_LABELS[kind]} <b>{counts[kind]}</b> 个</li>)}
+            </ul>
+            <button className="view-changes" onClick={() => { setActiveKind(availableKinds[0] ?? 'added'); setPage('details'); }}>
+              查看本次变更 <span>›</span>
+            </button>
+          </section>
         ) : null}
 
         {error ? <div className="inline-error" role="alert">{error}</div> : null}
