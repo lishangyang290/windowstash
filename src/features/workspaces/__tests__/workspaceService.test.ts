@@ -30,6 +30,7 @@ import {
   resolveWorkspaceForWindow,
   restoreWorkspace,
   saveCurrentWindow,
+  updateWorkspace,
 } from '@/features/workspaces/workspaceService';
 import type { WorkspaceLocalRecord } from '@/types/workspace';
 
@@ -57,6 +58,7 @@ describe('workspaceService', () => {
     workspaceMock.saveContent.mockImplementation(async (content) => ({ ...localRecord, content }));
     workspaceMock.put.mockResolvedValue(undefined);
     workspaceMock.list.mockResolvedValue([]);
+    browserMock.runtime.sendMessage.mockResolvedValue(undefined);
     browserMock.windows.getAll.mockResolvedValue([]);
     syncMock.syncAll.mockResolvedValue(undefined);
     lazyMock.get.mockResolvedValue(null);
@@ -92,6 +94,27 @@ describe('workspaceService', () => {
 
     await expect(saveCurrentWindow({ windowId: 22, name: '窗口 B', status: 'active', closeAfterSave: true })).rejects.toThrow('Quota exceeded');
     expect(browserMock.windows.remove).not.toHaveBeenCalled();
+  });
+
+  it('renames locally and requests the existing workspace sync without changing its id', async () => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+
+    await updateWorkspace('workspace-1', { name: '新的工作区名称' });
+
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'workspace-1',
+      name: '新的工作区名称',
+    }));
+    expect(browserMock.runtime.sendMessage).toHaveBeenCalledWith({ type: 'SYNC_WORKSPACE', workspaceId: 'workspace-1' });
+  });
+
+  it('keeps an offline rename successful after local persistence', async () => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+    browserMock.runtime.sendMessage.mockRejectedValueOnce(new Error('offline'));
+
+    await expect(updateWorkspace('workspace-1', { name: '离线新名称' })).resolves.toBeUndefined();
+
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ name: '离线新名称' }));
   });
 
   it('restores ordered tabs, pinned state and active tab into a new window', async () => {
