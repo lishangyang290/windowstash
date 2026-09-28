@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const browserMock = vi.hoisted(() => ({
   windows: { get: vi.fn(), getAll: vi.fn(), remove: vi.fn(), create: vi.fn(), update: vi.fn() },
-  tabs: { create: vi.fn(), remove: vi.fn(), update: vi.fn() },
+  tabs: { create: vi.fn(), get: vi.fn(), remove: vi.fn(), update: vi.fn() },
   runtime: { sendMessage: vi.fn().mockResolvedValue(undefined), getURL: vi.fn((path: string) => `chrome-extension://test${path}`) },
 }));
 const bindingMock = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), remove: vi.fn() }));
@@ -10,6 +10,9 @@ const logMock = vi.hoisted(() => ({ add: vi.fn() }));
 const tombstoneMock = vi.hoisted(() => ({ add: vi.fn() }));
 const workspaceMock = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), saveContent: vi.fn(), put: vi.fn(), remove: vi.fn() }));
 const syncMock = vi.hoisted(() => ({ syncAll: vi.fn() }));
+const lazyMock = vi.hoisted(() => ({
+  list: vi.fn(), get: vi.fn(), put: vi.fn(), remove: vi.fn(), removeByTabId: vi.fn(), removeByWindowId: vi.fn(), removeMany: vi.fn(),
+}));
 
 vi.mock('wxt/browser', () => ({ browser: browserMock }));
 vi.mock('@/lib/storage/bindingRepository', () => ({ bindingRepository: bindingMock }));
@@ -17,6 +20,7 @@ vi.mock('@/lib/storage/syncLogRepository', () => ({ syncLogRepository: logMock }
 vi.mock('@/lib/storage/tombstoneRepository', () => ({ tombstoneRepository: tombstoneMock }));
 vi.mock('@/lib/storage/workspaceRepository', () => ({ workspaceRepository: workspaceMock }));
 vi.mock('@/lib/sync/syncEngine', () => ({ syncEngine: syncMock }));
+vi.mock('@/lib/storage/lazyRestoreRepository', () => ({ lazyRestoreRepository: lazyMock }));
 
 import {
   focusWindowTab,
@@ -55,6 +59,9 @@ describe('workspaceService', () => {
     workspaceMock.list.mockResolvedValue([]);
     browserMock.windows.getAll.mockResolvedValue([]);
     syncMock.syncAll.mockResolvedValue(undefined);
+    lazyMock.get.mockResolvedValue(null);
+    lazyMock.put.mockResolvedValue(undefined);
+    lazyMock.remove.mockResolvedValue(undefined);
   });
 
   it('captures only the explicitly requested window and closes it after local persistence', async () => {
@@ -105,6 +112,99 @@ describe('workspaceService', () => {
     expect(browserMock.tabs.remove).toHaveBeenCalledWith(900);
     expect(browserMock.tabs.update).toHaveBeenCalledWith(902, { active: true });
     expect(bindingMock.set).toHaveBeenCalledWith(99, 'workspace-1');
+  });
+
+  it('restores only active position 4 directly and lazily restores the other eligible tabs', async () => {
+    const record = recordWithTabs(10, 4);
+    workspaceMock.get.mockResolvedValue(record);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockImplementation(async () => ({ id: 901 + browserMock.tabs.create.mock.calls.length }));
+    browserMock.tabs.remove.mockResolvedValue(undefined);
+    browserMock.tabs.update.mockResolvedValue(undefined);
+
+    await restoreWorkspace(record.content.id);
+
+    const urls = browserMock.tabs.create.mock.calls.map(([input]) => input.url as string);
+    expect(urls[4]).toBe('https://example.com/4');
+    expect(urls.filter((url) => url.startsWith('chrome-extension://test/lazy-tab.html?id='))).toHaveLength(9);
+    expect(lazyMock.put).toHaveBeenCalledTimes(18);
+    expect(browserMock.tabs.update).toHaveBeenCalledWith(expect.any(Number), { active: true });
+  });
+
+  it('keeps title, favicon, position and pinned state in each lazy registry entry', async () => {
+    const record = recordWithTabs(2, 1);
+    record.content.tabs[0]!.pinned = true;
+    workspaceMock.get.mockResolvedValue(record);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValueOnce({ id: 901 }).mockResolvedValueOnce({ id: 902 });
+
+    await restoreWorkspace(record.content.id);
+
+    expect(lazyMock.put).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      workspaceId: record.content.id,
+      originalUrl: 'https://example.com/0',
+      title: 'Tab 0',
+      favIconUrl: 'https://example.com/favicon-0.ico',
+      position: 0,
+      pinned: true,
+    }));
+    expect(browserMock.tabs.create).toHaveBeenNthCalledWith(1, expect.objectContaining({ pinned: true }));
+  });
+
+  it.each([
+    { title: '', favIconUrl: 'https://example.com/favicon.ico' },
+    { title: 'Readable', favIconUrl: undefined },
+    { title: 'Readable', favIconUrl: 'not-a-favicon' },
+  ])('loads the real URL when lazy metadata is unreliable', async ({ title, favIconUrl }) => {
+    const record = recordWithTabs(2, 1);
+    Object.assign(record.content.tabs[0]!, { title, favIconUrl });
+    workspaceMock.get.mockResolvedValue(record);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+
+    await restoreWorkspace(record.content.id);
+
+    expect(browserMock.tabs.create).toHaveBeenNthCalledWith(1, expect.objectContaining({ url: 'https://example.com/0' }));
+  });
+
+  it('falls back to the real URL when lazy placeholder initialization fails', async () => {
+    const record = recordWithTabs(2, 1);
+    workspaceMock.get.mockResolvedValue(record);
+    lazyMock.put.mockRejectedValueOnce(new Error('storage unavailable'));
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+
+    await restoreWorkspace(record.content.id);
+
+    expect(browserMock.tabs.create).toHaveBeenNthCalledWith(1, expect.objectContaining({ url: 'https://example.com/0' }));
+  });
+
+  it('restores fifty tabs while loading only active and fallback tabs directly', async () => {
+    const record = recordWithTabs(50, 17);
+    delete record.content.tabs[3]!.favIconUrl;
+    workspaceMock.get.mockResolvedValue(record);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+
+    await restoreWorkspace(record.content.id);
+
+    const urls = browserMock.tabs.create.mock.calls.map(([input]) => input.url as string);
+    expect(urls.filter((url) => url.startsWith('https://'))).toEqual(['https://example.com/3', 'https://example.com/17']);
+    expect(urls.filter((url) => url.includes('/lazy-tab.html?id='))).toHaveLength(48);
+  });
+
+  it('saves a lazy tab as its original page rather than the placeholder URL', async () => {
+    const lazyUrl = 'chrome-extension://test/lazy-tab.html?id=lazy-1';
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs: [{ id: 1, title: 'WindowStash', url: lazyUrl, index: 0, active: true, pinned: true }] });
+    lazyMock.get.mockResolvedValue({
+      id: 'lazy-1', workspaceId: 'workspace-1', originalUrl: 'https://real.example/doc', title: 'Real document',
+      favIconUrl: 'https://real.example/favicon.ico', position: 0, pinned: true, createdAt: new Date().toISOString(),
+    });
+
+    const result = await saveCurrentWindow({ windowId: 22, name: '窗口 B', status: 'active', closeAfterSave: false });
+
+    expect(result.tabs[0]).toEqual(expect.objectContaining({ url: 'https://real.example/doc', title: 'Real document', pinned: true }));
+    expect(result.tabs[0]!.url).not.toContain('lazy-tab.html');
   });
 
   it('opens one saved tab in the current browser window', async () => {
@@ -188,6 +288,24 @@ describe('workspaceService', () => {
     await expect(openOrFocusWorkspace('workspace-1')).resolves.toBe(33);
 
     expect(bindingMock.set).toHaveBeenCalledWith(33, 'workspace-1');
+    expect(browserMock.windows.create).not.toHaveBeenCalled();
+  });
+
+  it('matches a restored window through lazy tabs using their original URLs', async () => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+    lazyMock.get.mockImplementation(async (id) => id === 'lazy-a' ? {
+      id, workspaceId: 'workspace-1', originalUrl: 'https://a.example', title: '第一页',
+      favIconUrl: 'https://a.example/favicon.ico', position: 0, pinned: true, createdAt: new Date().toISOString(),
+    } : null);
+    browserMock.windows.getAll.mockResolvedValue([{ id: 35, tabs: [
+      { url: 'chrome-extension://test/lazy-tab.html?id=lazy-a', index: 0, pinned: true },
+      { url: 'https://b.example', index: 1, pinned: false },
+    ] }]);
+    browserMock.windows.update.mockResolvedValue({});
+
+    await expect(openOrFocusWorkspace('workspace-1')).resolves.toBe(35);
+
+    expect(bindingMock.set).toHaveBeenCalledWith(35, 'workspace-1');
     expect(browserMock.windows.create).not.toHaveBeenCalled();
   });
 
@@ -293,4 +411,22 @@ function fiveTabRecord(): WorkspaceLocalRecord {
 
 function currentTabs(urls: string[]) {
   return urls.map((url, index) => ({ title: url, url, index, pinned: index === 0 }));
+}
+
+function recordWithTabs(count: number, activeTabIndex: number): WorkspaceLocalRecord {
+  return {
+    ...localRecord,
+    content: {
+      ...localRecord.content,
+      id: `workspace-${count}`,
+      activeTabIndex,
+      tabs: Array.from({ length: count }, (_, position) => ({
+        title: `Tab ${position}`,
+        url: `https://example.com/${position}`,
+        favIconUrl: `https://example.com/favicon-${position}.ico`,
+        position,
+        pinned: position < 2,
+      })),
+    },
+  };
 }

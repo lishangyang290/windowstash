@@ -2,4 +2,5 @@ export type BackgroundMessage =
   | { type: 'SYNC_ALL' }
   | { type: 'SYNC_WORKSPACE'; workspaceId: string }
   | { type: 'CLEANUP_LOCAL' }
-  | { type: 'OPEN_OR_FOCUS_WORKSPACE'; workspaceId: string };
+  | { type: 'OPEN_OR_FOCUS_WORKSPACE'; workspaceId: string }
+  | { type: 'RESOLVE_LAZY_TAB'; lazyId: string };

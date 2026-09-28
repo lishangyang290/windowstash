@@ -7,6 +7,14 @@ import type { BackgroundMessage } from '@/types/messages';
 import type { StoredTab, WorkspaceContent, WorkspaceLocalRecord, WorkspaceStatus } from '@/types/workspace';
 import { syncEngine } from '@/lib/sync/syncEngine';
 import { matchWorkspace, MIN_CANDIDATE_GAP, scoreWorkspaceMatch, type MatchableTab } from './workspaceMatcher';
+import {
+  canLazyRestore,
+  createLazyEntry,
+  lazyTabUrl,
+  resolveLazyMatchableTab,
+  resolveLazyStoredTab,
+} from './lazyRestore';
+import { lazyRestoreRepository } from '@/lib/storage/lazyRestoreRepository';
 
 function requestSync(message: BackgroundMessage): void {
   void browser.runtime.sendMessage(message).catch(() => undefined);
@@ -37,7 +45,7 @@ export async function resolveWorkspaceForWindow(
   const bound = boundId ? await workspaceRepository.get(boundId) : null;
   if (bound) return bound;
 
-  const matched = matchWorkspace(tabs, await workspaceRepository.list());
+  const matched = matchWorkspace(await Promise.all(tabs.map(resolveLazyMatchableTab)), await workspaceRepository.list());
   if (matched) await bindingRepository.set(windowId, matched.content.id);
   return matched;
 }
@@ -56,13 +64,7 @@ export async function saveCurrentWindow(input: {
   const boundId = await bindingRepository.get(input.windowId);
   const previous = boundId ? await workspaceRepository.get(boundId) : null;
   const now = new Date().toISOString();
-  const storedTabs: StoredTab[] = tabs.map((tab, position) => ({
-    title: tab.title || '未命名标签页',
-    url: tab.url || 'about:blank',
-    favIconUrl: tab.favIconUrl,
-    position,
-    pinned: tab.pinned,
-  }));
+  const storedTabs: StoredTab[] = await Promise.all(tabs.map((tab, position) => resolveLazyStoredTab(tab, position)));
   const activeTabIndex = Math.max(0, tabs.findIndex((tab) => tab.active));
   const content: WorkspaceContent = {
     id: previous?.content.id ?? crypto.randomUUID(),
@@ -93,12 +95,20 @@ export async function restoreWorkspace(workspaceId: string): Promise<number> {
 
   for (const tab of [...record.content.tabs].sort((a, b) => a.position - b.position)) {
     try {
-      const created = await browser.tabs.create({
-        windowId: createdWindow.id,
-        url: tab.url,
-        active: false,
-        pinned: tab.pinned,
-      });
+      let created;
+      if (canLazyRestore(tab, record.content.activeTabIndex)) {
+        const entry = createLazyEntry(workspaceId, tab);
+        try {
+          await lazyRestoreRepository.put(entry);
+          created = await browser.tabs.create({ windowId: createdWindow.id, url: lazyTabUrl(entry.id), active: false, pinned: tab.pinned });
+          await lazyRestoreRepository.put({ ...entry, tabId: created.id, windowId: createdWindow.id });
+        } catch {
+          await lazyRestoreRepository.remove(entry.id).catch(() => undefined);
+          created = await browser.tabs.create({ windowId: createdWindow.id, url: tab.url, active: false, pinned: tab.pinned });
+        }
+      } else {
+        created = await browser.tabs.create({ windowId: createdWindow.id, url: tab.url, active: false, pinned: tab.pinned });
+      }
       if (created.id != null) createdByPosition.set(tab.position, created.id);
     } catch (error) {
       await recordLog(
@@ -106,7 +116,7 @@ export async function restoreWorkspace(workspaceId: string): Promise<number> {
         record.content.name,
         'restore-tab',
         'failed',
-        `${tab.url}: ${error instanceof Error ? error.message : '无法打开'}`,
+        `Tab ${tab.position}: ${error instanceof Error ? error.message : '无法打开'}`,
       );
     }
   }
@@ -180,7 +190,8 @@ async function runOpenOrFocusWorkspace(workspaceId: string): Promise<number> {
   }
   for (const window of windows) {
     if (window.id == null) continue;
-    const tabs = (window.tabs ?? []).filter((tab) => !isInternalTab(tab));
+    const resolvedTabs = await Promise.all((window.tabs ?? []).map(resolveLazyMatchableTab));
+    const tabs = resolvedTabs.filter((tab) => !isInternalTab(tab));
     const match = scoreWorkspaceMatch(tabs, record);
     candidates.push({ windowId: window.id, beforeTabs: window.tabs?.length ?? 0, afterTabs: tabs.length, bindingMatched: false, score: match.score, eligible: match.eligible });
   }
