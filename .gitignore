@@ -1,0 +1,8 @@
+node_modules
+.output
+.wxt
+.env
+.env.*
+!.env.example
+coverage
+.DS_Store
