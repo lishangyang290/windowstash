@@ -1,3 +1,4 @@
+import { browser } from 'wxt/browser';
 import { nextLocalExpiry } from '@/lib/constants';
 import { cloudRowToLocal } from '@/lib/converters';
 import { contentHash } from '@/lib/hash';
@@ -6,6 +7,7 @@ import { syncLogRepository } from '@/lib/storage/syncLogRepository';
 import { tombstoneRepository } from '@/lib/storage/tombstoneRepository';
 import { workspaceRepository } from '@/lib/storage/workspaceRepository';
 import { workspaceRemoteRepository } from '@/lib/supabase/workspaceRemoteRepository';
+import { bindingRepository } from '@/lib/storage/bindingRepository';
 
 async function log(
   workspaceId: string | null,
@@ -123,8 +125,12 @@ export const syncEngine = {
 
   async cleanupExpiredLocalCopies(now = new Date()): Promise<number> {
     let removed = 0;
+    const windows = await browser.windows.getAll();
+    const activeWorkspaceIds = new Set((await Promise.all(windows.flatMap((window) => window.id == null
+      ? []
+      : [bindingRepository.get(window.id)]))).filter((id): id is string => id != null));
     for (const record of await workspaceRepository.list()) {
-      if (canCleanLocalCopy(record.sync.syncStatus, record.sync.localExpiresAt, now)) {
+      if (!activeWorkspaceIds.has(record.content.id) && canCleanLocalCopy(record.sync.syncStatus, record.sync.localExpiresAt, now)) {
         await workspaceRepository.remove(record.content.id);
         removed += 1;
       }

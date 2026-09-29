@@ -1,25 +1,19 @@
 import { browser } from 'wxt/browser';
-import { STORAGE_KEYS } from '@/lib/constants';
 
-type Bindings = Record<string, string>;
-
-async function read(): Promise<Bindings> {
-  const result = await browser.storage.session.get(STORAGE_KEYS.windowBindings);
-  return (result[STORAGE_KEYS.windowBindings] as Bindings | undefined) ?? {};
+function key(windowId: number): string {
+  return `windowBinding:${windowId}`;
 }
 
 export const bindingRepository = {
   async get(windowId: number): Promise<string | null> {
-    return (await read())[String(windowId)] ?? null;
+    const storageKey = key(windowId);
+    const result = await browser.storage.session.get(storageKey);
+    return (result[storageKey] as string | undefined) ?? null;
   },
   async set(windowId: number, workspaceId: string): Promise<void> {
-    const bindings = await read();
-    bindings[String(windowId)] = workspaceId;
-    await browser.storage.session.set({ [STORAGE_KEYS.windowBindings]: bindings });
+    await browser.storage.session.set({ [key(windowId)]: workspaceId });
   },
   async remove(windowId: number): Promise<void> {
-    const bindings = await read();
-    delete bindings[String(windowId)];
-    await browser.storage.session.set({ [STORAGE_KEYS.windowBindings]: bindings });
+    await browser.storage.session.remove(key(windowId));
   },
 };

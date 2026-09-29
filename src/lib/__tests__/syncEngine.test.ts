@@ -5,15 +5,19 @@ const workspaceMock = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), put: vi.f
 const remoteMock = vi.hoisted(() => ({ isAuthenticated: vi.fn(), get: vi.fn(), upsert: vi.fn(), list: vi.fn(), remove: vi.fn() }));
 const tombstoneMock = vi.hoisted(() => ({ list: vi.fn(), remove: vi.fn(), has: vi.fn() }));
 const logMock = vi.hoisted(() => ({ add: vi.fn() }));
+const browserMock = vi.hoisted(() => ({ windows: { getAll: vi.fn() } }));
+const bindingMock = vi.hoisted(() => ({ get: vi.fn() }));
 
+vi.mock('wxt/browser', () => ({ browser: browserMock }));
 vi.mock('@/lib/storage/workspaceRepository', () => ({ workspaceRepository: workspaceMock }));
 vi.mock('@/lib/supabase/workspaceRemoteRepository', () => ({ workspaceRemoteRepository: remoteMock }));
 vi.mock('@/lib/storage/tombstoneRepository', () => ({ tombstoneRepository: tombstoneMock }));
 vi.mock('@/lib/storage/syncLogRepository', () => ({ syncLogRepository: logMock }));
+vi.mock('@/lib/storage/bindingRepository', () => ({ bindingRepository: bindingMock }));
 
 import { syncEngine } from '@/lib/sync/syncEngine';
 
-function record(id: string, syncStatus: 'pending' | 'failed'): WorkspaceLocalRecord {
+function record(id: string, syncStatus: 'pending' | 'failed' | 'synced'): WorkspaceLocalRecord {
   return {
     content: {
       id,
@@ -45,6 +49,8 @@ describe('syncEngine.syncAll', () => {
     remoteMock.get.mockResolvedValue(null);
     remoteMock.list.mockResolvedValue([]);
     tombstoneMock.list.mockResolvedValue([]);
+    browserMock.windows.getAll.mockResolvedValue([]);
+    bindingMock.get.mockResolvedValue(null);
     logMock.add.mockResolvedValue(undefined);
     workspaceMock.get.mockImplementation(async (id: string) => records.get(id) ?? null);
     workspaceMock.put.mockImplementation(async (next: WorkspaceLocalRecord) => { records.set(next.content.id, next); });
@@ -91,5 +97,28 @@ describe('syncEngine.syncAll', () => {
 
     expect(remoteMock.upsert).toHaveBeenCalledWith(expect.objectContaining({ name: '离线重命名' }), expect.any(String));
     expect(records.get('one')?.sync.syncStatus).toBe('synced');
+  });
+
+  it('keeps an expired local copy while an active window is bound to it', async () => {
+    const active = record('one', 'synced');
+    active.sync.localExpiresAt = '2026-01-01T00:00:00.000Z';
+    records.set('one', active);
+    browserMock.windows.getAll.mockResolvedValue([{ id: 22 }]);
+    bindingMock.get.mockResolvedValue('one');
+
+    await expect(syncEngine.cleanupExpiredLocalCopies(new Date('2026-09-29T00:00:00.000Z'))).resolves.toBe(0);
+
+    expect(workspaceMock.remove).not.toHaveBeenCalled();
+    expect(records.get('one')).toBe(active);
+  });
+
+  it('still removes an expired synced copy when no active window is bound', async () => {
+    const inactive = record('one', 'synced');
+    inactive.sync.localExpiresAt = '2026-01-01T00:00:00.000Z';
+    records.set('one', inactive);
+
+    await expect(syncEngine.cleanupExpiredLocalCopies(new Date('2026-09-29T00:00:00.000Z'))).resolves.toBe(1);
+
+    expect(workspaceMock.remove).toHaveBeenCalledWith('one');
   });
 });

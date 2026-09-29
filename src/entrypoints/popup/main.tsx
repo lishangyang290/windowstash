@@ -15,9 +15,10 @@ import {
   focusWindowTab,
   getCurrentWindowSnapshot,
   reopenSavedTab,
-  resolveWorkspaceForWindow,
+  resolveWorkspaceStateForWindow,
   saveCurrentWindow,
   updateWorkspace,
+  type WorkspaceWindowResolution,
 } from '@/features/workspaces/workspaceService';
 import { LazyTabResolutionError, resolveLogicalTabs } from '@/features/workspaces/lazyRestore';
 import { validateWorkspaceName } from '@/features/workspaces/workspaceName';
@@ -136,6 +137,7 @@ function Popup() {
   const [windowId, setWindowId] = React.useState<number | null>(null);
   const [tabs, setTabs] = React.useState<CurrentTabSnapshot[]>([]);
   const [record, setRecord] = React.useState<WorkspaceLocalRecord | null>(null);
+  const [resolution, setResolution] = React.useState<WorkspaceWindowResolution | null>(null);
   const [name, setName] = React.useState('');
   const [status, setStatus] = React.useState<WorkspaceStatus>('active');
   const [page, setPage] = React.useState<'main' | 'details'>('main');
@@ -164,12 +166,14 @@ function Popup() {
         return resolveLogicalTabs(window.tabs ?? []).then((tabs) => ({ windowId: window.id!, tabs }));
       });
     const nextTabs = [...(snapshot.tabs ?? [])].sort((a, b) => a.index - b.index);
-    const nextRecord = await resolveWorkspaceForWindow(snapshot.windowId, nextTabs);
+    const nextResolution = await resolveWorkspaceStateForWindow(snapshot.windowId, nextTabs);
+    const nextRecord = nextResolution.record;
     windowIdRef.current = snapshot.windowId;
     setWindowId(snapshot.windowId);
     setTabs(nextTabs);
     setLogicalTabsReady(true);
     setError('');
+    setResolution(nextResolution);
     setRecord(nextRecord);
     if (nextRecord) {
       setName(nextRecord.content.name);
@@ -309,8 +313,9 @@ function Popup() {
     }
   }
 
-  const isBound = record != null;
-  const buttons = <SaveButtons action={saveAction} phase={savePhase} blocked={!logicalTabsReady} onSave={(close) => void submit(close)} />;
+  const isBound = resolution?.status === 'resolved' && record != null;
+  const isUnavailable = resolution?.status === 'unavailable';
+  const buttons = <SaveButtons action={saveAction} phase={savePhase} blocked={!logicalTabsReady || isUnavailable} onSave={(close) => void submit(close)} />;
 
   if (page === 'details' && isBound) {
     const activeChanges = activeKind === 'added' ? diff.added : activeKind === 'removed' ? diff.removed : diff.updated;
@@ -348,7 +353,11 @@ function Popup() {
     <main className="popup-shell">
       <header className="popup-header"><Logo /></header>
       <section className="popup-content">
-        {isBound ? (
+        {resolution == null ? (
+          <div className="unchanged-state">正在识别当前工作区…</div>
+        ) : isUnavailable ? (
+          <div className="unchanged-state">暂时无法读取此工作区，请稍后重试</div>
+        ) : isBound ? (
           <div className="bound-summary">
             {editingName ? (
               <input

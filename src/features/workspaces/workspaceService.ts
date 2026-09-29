@@ -37,17 +37,39 @@ export async function getCurrentWindowSnapshot() {
   return { windowId: current.id, tabs };
 }
 
+export type WorkspaceWindowResolution =
+  | { status: 'resolved'; workspaceId: string; record: WorkspaceLocalRecord; source: 'binding' | 'matcher' }
+  | { status: 'unavailable'; workspaceId: string; record: null; source: 'binding' }
+  | { status: 'unbound'; workspaceId: null; record: null; source: null };
+
+export async function resolveWorkspaceStateForWindow(
+  windowId: number,
+  tabs: MatchableTab[],
+): Promise<WorkspaceWindowResolution> {
+  const boundId = await bindingRepository.get(windowId);
+  if (boundId) {
+    let bound = await workspaceRepository.get(boundId);
+    if (!bound) {
+      await syncEngine.syncAll().catch(() => undefined);
+      bound = await workspaceRepository.get(boundId);
+    }
+    return bound
+      ? { status: 'resolved', workspaceId: boundId, record: bound, source: 'binding' }
+      : { status: 'unavailable', workspaceId: boundId, record: null, source: 'binding' };
+  }
+
+  const matched = matchWorkspace(await resolveLogicalTabs(tabs), await workspaceRepository.list());
+  if (matched) await bindingRepository.set(windowId, matched.content.id);
+  return matched
+    ? { status: 'resolved', workspaceId: matched.content.id, record: matched, source: 'matcher' }
+    : { status: 'unbound', workspaceId: null, record: null, source: null };
+}
+
 export async function resolveWorkspaceForWindow(
   windowId: number,
   tabs: MatchableTab[],
 ): Promise<WorkspaceLocalRecord | null> {
-  const boundId = await bindingRepository.get(windowId);
-  const bound = boundId ? await workspaceRepository.get(boundId) : null;
-  if (bound) return bound;
-
-  const matched = matchWorkspace(await resolveLogicalTabs(tabs), await workspaceRepository.list());
-  if (matched) await bindingRepository.set(windowId, matched.content.id);
-  return matched;
+  return (await resolveWorkspaceStateForWindow(windowId, tabs)).record;
 }
 
 export async function saveCurrentWindow(input: {
@@ -62,7 +84,12 @@ export async function saveCurrentWindow(input: {
   if (!tabs.length) throw new Error('当前窗口没有可保存的标签页');
 
   const boundId = await bindingRepository.get(input.windowId);
-  const previous = boundId ? await workspaceRepository.get(boundId) : null;
+  let previous = boundId ? await workspaceRepository.get(boundId) : null;
+  if (boundId && !previous) {
+    await syncEngine.syncAll().catch(() => undefined);
+    previous = await workspaceRepository.get(boundId);
+    if (!previous) throw new Error('暂时无法读取此工作区，请稍后重试');
+  }
   const now = new Date().toISOString();
   const storedTabs: StoredTab[] = await Promise.all(tabs.map((tab, position) => resolveLazyStoredTab(tab, position)));
   const activeTabIndex = Math.max(0, tabs.findIndex((tab) => tab.active));
@@ -90,47 +117,53 @@ export async function restoreWorkspace(workspaceId: string): Promise<number> {
   if (!record) throw new Error('本地工作区不存在，请先完成云端同步');
   const createdWindow = await browser.windows.create({ url: 'about:blank', focused: true });
   if (!createdWindow || createdWindow.id == null) throw new Error('无法创建新的 Chrome 窗口');
+  await bindingRepository.set(createdWindow.id, workspaceId);
   const initialTabId = createdWindow.tabs?.[0]?.id;
   const createdByPosition = new Map<number, number>();
 
-  for (const tab of [...record.content.tabs].sort((a, b) => a.position - b.position)) {
-    try {
-      let created;
-      if (canLazyRestore(tab, record.content.activeTabIndex)) {
-        const entry = createLazyEntry(workspaceId, tab);
-        try {
-          await lazyRestoreRepository.put(entry);
-          created = await browser.tabs.create({ windowId: createdWindow.id, url: lazyTabUrl(entry.id), active: false, pinned: tab.pinned });
-          await lazyRestoreRepository.put({ ...entry, tabId: created.id, windowId: createdWindow.id });
-        } catch {
-          await lazyRestoreRepository.remove(entry.id).catch(() => undefined);
+  try {
+    for (const tab of [...record.content.tabs].sort((a, b) => a.position - b.position)) {
+      try {
+        let created;
+        if (canLazyRestore(tab, record.content.activeTabIndex)) {
+          const entry = createLazyEntry(workspaceId, tab);
+          try {
+            await lazyRestoreRepository.put(entry);
+            created = await browser.tabs.create({ windowId: createdWindow.id, url: lazyTabUrl(entry.id), active: false, pinned: tab.pinned });
+            await lazyRestoreRepository.put({ ...entry, tabId: created.id, windowId: createdWindow.id });
+          } catch {
+            await lazyRestoreRepository.remove(entry.id).catch(() => undefined);
+            created = await browser.tabs.create({ windowId: createdWindow.id, url: tab.url, active: false, pinned: tab.pinned });
+          }
+        } else {
           created = await browser.tabs.create({ windowId: createdWindow.id, url: tab.url, active: false, pinned: tab.pinned });
         }
-      } else {
-        created = await browser.tabs.create({ windowId: createdWindow.id, url: tab.url, active: false, pinned: tab.pinned });
+        if (created.id != null) createdByPosition.set(tab.position, created.id);
+      } catch (error) {
+        await recordLog(
+          workspaceId,
+          record.content.name,
+          'restore-tab',
+          'failed',
+          `Tab ${tab.position}: ${error instanceof Error ? error.message : '无法打开'}`,
+        );
       }
-      if (created.id != null) createdByPosition.set(tab.position, created.id);
-    } catch (error) {
-      await recordLog(
-        workspaceId,
-        record.content.name,
-        'restore-tab',
-        'failed',
-        `Tab ${tab.position}: ${error instanceof Error ? error.message : '无法打开'}`,
-      );
     }
-  }
 
-  if (initialTabId != null && createdByPosition.size > 0) await browser.tabs.remove(initialTabId).catch(() => undefined);
-  const activeTabId = createdByPosition.get(record.content.activeTabIndex) ?? [...createdByPosition.values()][0];
-  if (activeTabId != null) await browser.tabs.update(activeTabId, { active: true });
-  await bindingRepository.set(createdWindow.id, workspaceId);
-  await workspaceRepository.put({
-    ...record,
-    sync: { ...record.sync, localExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() },
-  });
-  await recordLog(workspaceId, record.content.name, 'restore', 'success', 'Workspace restored');
-  return createdWindow.id;
+    if (record.content.tabs.length > 0 && createdByPosition.size === 0) throw new Error('Workspace 标签页恢复失败');
+    if (initialTabId != null && createdByPosition.size > 0) await browser.tabs.remove(initialTabId).catch(() => undefined);
+    const activeTabId = createdByPosition.get(record.content.activeTabIndex) ?? [...createdByPosition.values()][0];
+    if (activeTabId != null) await browser.tabs.update(activeTabId, { active: true });
+    await workspaceRepository.put({
+      ...record,
+      sync: { ...record.sync, localExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() },
+    });
+    await recordLog(workspaceId, record.content.name, 'restore', 'success', 'Workspace restored');
+    return createdWindow.id;
+  } catch (error) {
+    await bindingRepository.remove(createdWindow.id).catch(() => undefined);
+    throw error;
+  }
 }
 
 interface WindowCandidate {

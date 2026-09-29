@@ -28,6 +28,7 @@ import {
   openWorkspaceTab,
   reopenSavedTab,
   resolveWorkspaceForWindow,
+  resolveWorkspaceStateForWindow,
   restoreWorkspace,
   saveCurrentWindow,
   updateWorkspace,
@@ -54,6 +55,7 @@ describe('workspaceService', () => {
     vi.clearAllMocks();
     bindingMock.get.mockResolvedValue(null);
     bindingMock.set.mockResolvedValue(undefined);
+    bindingMock.remove.mockResolvedValue(undefined);
     logMock.add.mockResolvedValue(undefined);
     workspaceMock.saveContent.mockImplementation(async (content) => ({ ...localRecord, content }));
     workspaceMock.put.mockResolvedValue(undefined);
@@ -285,6 +287,103 @@ describe('workspaceService', () => {
     expect(result).toBe(localRecord);
     expect(workspaceMock.list).not.toHaveBeenCalled();
     expect(bindingMock.set).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['twenty added tabs', Array.from({ length: 22 }, (_, index) => ({ url: `https://current.example/${index}`, index }))],
+    ['most tabs removed', [{ url: 'https://a.example', index: 0 }]],
+    ['every URL changed', [
+      { url: 'https://changed.example/one', index: 0 },
+      { url: 'https://changed.example/two', index: 1 },
+    ]],
+  ])('keeps a valid binding without running the matcher when %s', async (_case, tabs) => {
+    bindingMock.get.mockResolvedValue('workspace-1');
+    workspaceMock.get.mockResolvedValue(localRecord);
+
+    const result = await resolveWorkspaceStateForWindow(22, tabs);
+
+    expect(result).toEqual({ status: 'resolved', workspaceId: 'workspace-1', record: localRecord, source: 'binding' });
+    expect(workspaceMock.list).not.toHaveBeenCalled();
+    expect(bindingMock.set).not.toHaveBeenCalled();
+  });
+
+  it('keeps bound identity when local workspace data cannot be restored', async () => {
+    bindingMock.get.mockResolvedValue('workspace-1');
+    workspaceMock.get.mockResolvedValue(null);
+
+    const result = await resolveWorkspaceStateForWindow(22, []);
+
+    expect(result).toEqual({ status: 'unavailable', workspaceId: 'workspace-1', record: null, source: 'binding' });
+    expect(syncMock.syncAll).toHaveBeenCalledOnce();
+    expect(workspaceMock.list).not.toHaveBeenCalled();
+  });
+
+  it('does not create a new workspace when bound local data is temporarily unavailable', async () => {
+    bindingMock.get.mockResolvedValue('workspace-1');
+    workspaceMock.get.mockResolvedValue(null);
+    browserMock.windows.get.mockResolvedValue({
+      id: 22,
+      tabs: [{ id: 1, title: 'Current', url: 'https://current.example', index: 0, active: true, pinned: false }],
+    });
+
+    await expect(saveCurrentWindow({ windowId: 22, name: 'Workspace', status: 'active', closeAfterSave: false }))
+      .rejects.toThrow('暂时无法读取此工作区');
+
+    expect(syncMock.syncAll).toHaveBeenCalledOnce();
+    expect(workspaceMock.saveContent).not.toHaveBeenCalled();
+    expect(bindingMock.set).not.toHaveBeenCalled();
+  });
+
+  it('keeps the bound workspace id after recovering its missing local record', async () => {
+    bindingMock.get.mockResolvedValue('workspace-1');
+    workspaceMock.get.mockResolvedValueOnce(null).mockResolvedValue(localRecord);
+    browserMock.windows.get.mockResolvedValue({
+      id: 22,
+      tabs: [{ id: 1, title: 'Current', url: 'https://current.example', index: 0, active: true, pinned: false }],
+    });
+
+    const result = await saveCurrentWindow({ windowId: 22, name: 'Workspace', status: 'active', closeAfterSave: false });
+
+    expect(result.id).toBe('workspace-1');
+    expect(syncMock.syncAll).toHaveBeenCalledOnce();
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: 'workspace-1' }));
+  });
+
+  it('exposes the binding while a large lazy restore is still in progress', async () => {
+    const record = recordWithTabs(20, 19);
+    let boundId: string | null = null;
+    let releaseFirstTab!: (value: { id: number }) => void;
+    const firstTab = new Promise<{ id: number }>((resolve) => { releaseFirstTab = resolve; });
+    workspaceMock.get.mockResolvedValue(record);
+    bindingMock.set.mockImplementation(async (_windowId, workspaceId) => { boundId = workspaceId; });
+    bindingMock.get.mockImplementation(async () => boundId);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 902 }).mockImplementationOnce(() => firstTab);
+    browserMock.tabs.remove.mockResolvedValue(undefined);
+    browserMock.tabs.update.mockResolvedValue(undefined);
+
+    const restoring = restoreWorkspace(record.content.id);
+    await vi.waitFor(() => expect(browserMock.tabs.create).toHaveBeenCalledOnce());
+
+    await expect(resolveWorkspaceStateForWindow(99, [])).resolves.toEqual({
+      status: 'resolved', workspaceId: record.content.id, record, source: 'binding',
+    });
+    expect(workspaceMock.list).not.toHaveBeenCalled();
+
+    releaseFirstTab({ id: 901 });
+    await restoring;
+  });
+
+  it('removes the early binding when the whole restore fails', async () => {
+    const record = recordWithTabs(1, 0);
+    workspaceMock.get.mockResolvedValue(record);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockRejectedValue(new Error('cannot create tab'));
+
+    await expect(restoreWorkspace(record.content.id)).rejects.toThrow('Workspace 标签页恢复失败');
+
+    expect(bindingMock.set).toHaveBeenCalledWith(99, record.content.id);
+    expect(bindingMock.remove).toHaveBeenCalledWith(99);
   });
 
   it('focuses an already bound workspace instead of restoring a duplicate', async () => {
