@@ -3,7 +3,7 @@ import { lazyRestoreRepository, type LazyRestoreEntry } from '@/lib/storage/lazy
 import type { StoredTab } from '@/types/workspace';
 import type { MatchableTab } from './workspaceMatcher';
 
-const resolvingTabs = new Map<number, Promise<void>>();
+const resolvingTabs = new Map<number, Promise<boolean>>();
 const ORPHAN_GRACE_MS = 5 * 60 * 1000;
 
 export function lazyTabUrl(id: string): string {
@@ -99,22 +99,37 @@ export async function resolveLazyStoredTab(
   };
 }
 
-export function resolveLazyTab(tabId: number, lazyId?: string): Promise<void> {
+export function resolveLazyTab(tabId: number, lazyId?: string): Promise<boolean> {
   const existing = resolvingTabs.get(tabId);
   if (existing) return existing;
   const task = (async () => {
-    const tab = await browser.tabs.get(tabId);
-    const id = lazyId ?? lazyIdFromTab(tab);
-    if (!id) return;
+    const id = lazyId ?? lazyIdFromTab(await browser.tabs.get(tabId));
+    if (!id) return false;
     const entry = await lazyRestoreRepository.get(id);
-    if (!entry) return;
+    if (!entry) return false;
+    if (entry.tabId !== tabId) await lazyRestoreRepository.put({ ...entry, tabId });
     await browser.tabs.update(tabId, { url: entry.originalUrl });
-    await lazyRestoreRepository.remove(id);
+    return true;
   })().finally(() => {
     if (resolvingTabs.get(tabId) === task) resolvingTabs.delete(tabId);
   });
   resolvingTabs.set(tabId, task);
   return task;
+}
+
+export async function confirmLazyNavigation(tabId: number, url?: string): Promise<boolean> {
+  if (!url || lazyIdFromUrl(url)) return false;
+  await lazyRestoreRepository.removeByTabId(tabId);
+  return true;
+}
+
+export async function handleLazyTabReady(tabId: number, active: boolean, lazyId: string) {
+  if (!active) return 'waiting' as const;
+  try {
+    return await resolveLazyTab(tabId, lazyId) ? 'resolved' as const : 'missing' as const;
+  } catch {
+    return 'failed' as const;
+  }
 }
 
 export function removeLazyTab(tabId: number): Promise<void> {
