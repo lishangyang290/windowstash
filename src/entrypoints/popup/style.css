@@ -1,4 +1,7 @@
 body { width: 360px; max-height: 560px; overflow: hidden; background: #fff; }
+.popup-loading { display: grid; width: 360px; height: 500px; place-items: center; background: #fff; font-weight: 700; }
+.popup-config-page { width: 360px; min-height: 500px; padding: 18px; background: #fff; }
+.popup-config-page .supabase-config { padding: 20px; }
 .popup-shell { width: 360px; max-height: 560px; background: #fff; color: var(--text); }
 .popup-header { height: 60px; display: flex; align-items: center; padding: 0 18px; border-bottom: 1px solid var(--line); }
 .popup-content { display: grid; gap: 18px; padding: 20px 18px; }

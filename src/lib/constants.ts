@@ -3,6 +3,7 @@ export const SYNC_ALARM = 'windowstash-sync';
 export const CLEANUP_ALARM = 'windowstash-cleanup';
 
 export const STORAGE_KEYS = {
+  supabaseConfig: 'supabaseConfig',
   workspaces: 'workspaces',
   syncLogs: 'syncLogs',
   tombstones: 'deleteTombstones',

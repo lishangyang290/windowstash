@@ -4,7 +4,7 @@ const authMock = vi.hoisted(() => ({
   updateUser: vi.fn(),
 }));
 
-vi.mock('@/lib/supabase/client', () => ({ getSupabaseClient: () => ({ auth: authMock }) }));
+vi.mock('@/lib/supabase/client', () => ({ getSupabaseClient: async () => ({ auth: authMock }) }));
 
 import { authService } from '@/lib/supabase/authService';
 

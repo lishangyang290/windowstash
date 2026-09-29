@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "wxt",
-    "build": "wxt build",
+    "build": "wxt build && node scripts/validate-release-build.mjs .output/chrome-mv3",
     "zip": "wxt zip",
     "prepare": "wxt prepare",
     "typecheck": "tsc --noEmit",

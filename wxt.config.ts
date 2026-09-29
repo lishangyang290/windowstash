@@ -15,10 +15,11 @@ export default defineConfig({
   srcDir: 'src',
   modules: ['@wxt-dev/module-react'],
   manifestVersion: 3,
-  manifest: () => ({
+  manifest: ({ mode }) => ({
     name: 'WindowStash',
     description: '以工作任务为单位保存、关闭并恢复 Chrome 窗口。',
     permissions: ['tabs', 'storage', 'alarms', 'favicon'],
-    host_permissions: supabaseHostPermissions(),
+    host_permissions: mode === 'development' ? supabaseHostPermissions() : [],
+    optional_host_permissions: ['http://*/*', 'https://*/*'],
   }),
 });

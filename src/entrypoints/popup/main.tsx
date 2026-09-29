@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { browser } from 'wxt/browser';
 import { Logo } from '@/components/Logo';
+import { SupabaseConfigForm } from '@/components/SupabaseConfigForm';
 import {
   calculateTabDiff,
   getTabDomain,
@@ -23,6 +24,7 @@ import {
 import { LazyTabResolutionError, resolveLogicalTabs } from '@/features/workspaces/lazyRestore';
 import { validateWorkspaceName } from '@/features/workspaces/workspaceName';
 import type { WorkspaceLocalRecord, WorkspaceStatus } from '@/types/workspace';
+import { getSupabaseConfig, type SupabaseConfig } from '@/lib/supabase/client';
 import '@/styles/base.css';
 import './style.css';
 
@@ -427,4 +429,15 @@ function Popup() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><Popup /></React.StrictMode>);
+function PopupRoot() {
+  const [config, setConfig] = React.useState<SupabaseConfig | null | undefined>(undefined);
+  React.useEffect(() => { void getSupabaseConfig().then(setConfig); }, []);
+  if (config === undefined) return <main className="popup-loading">WindowStash</main>;
+  if (!config) return <main className="config-page popup-config-page"><SupabaseConfigForm setup onSaved={(next) => {
+    setConfig(next);
+    void browser.tabs.create({ url: browser.runtime.getURL('/options.html?login=1') }).then(() => window.close());
+  }} /></main>;
+  return <Popup />;
+}
+
+ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><PopupRoot /></React.StrictMode>);

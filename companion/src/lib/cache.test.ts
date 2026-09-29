@@ -6,7 +6,9 @@ Object.defineProperty(globalThis, 'localStorage', { value: {
   getItem: (key: string) => storage.get(key) ?? null,
   setItem: (key: string, value: string) => storage.set(key, value),
   removeItem: (key: string) => storage.delete(key),
-} });
+  key: (index: number) => [...storage.keys()][index] ?? null,
+  get length() { return storage.size; },
+}, configurable: true });
 
 import { cache, sortByRecent } from './cache';
 
@@ -37,5 +39,10 @@ describe('companion cache', () => {
     expect(cache.extensionId()).toBe('abcdefghijklmnopabcdefghijklmnop');
     cache.clearExtensionId();
     expect(cache.extensionId()).toBeNull();
+  });
+
+  it('persists Supabase config locally across reloads', () => {
+    cache.saveSupabaseConfig({ url: 'https://project.supabase.co', publishableKey: 'publishable-key' });
+    expect(cache.supabaseConfig()).toEqual({ url: 'https://project.supabase.co', publishableKey: 'publishable-key' });
   });
 });

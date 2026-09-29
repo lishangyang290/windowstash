@@ -1,8 +1,8 @@
-import { getSupabaseClient } from '@/lib/supabase/client';
+import { friendlySupabaseError, getSupabaseClient } from '@/lib/supabase/client';
 import type { CloudWorkspaceRow, WorkspaceContent } from '@/types/workspace';
 
 async function authenticatedClient() {
-  const client = getSupabaseClient();
+  const client = await getSupabaseClient();
   if (!client) return null;
   const { data, error } = await client.auth.getSession();
   if (error) throw error;
@@ -18,7 +18,7 @@ export const workspaceRemoteRepository = {
     const auth = await authenticatedClient();
     if (!auth) return [];
     const { data, error } = await auth.client.from('workspaces').select('*').order('updated_at', { ascending: false });
-    if (error) throw error;
+    if (error) throw friendlySupabaseError(error);
     return (data ?? []) as CloudWorkspaceRow[];
   },
 
@@ -26,7 +26,7 @@ export const workspaceRemoteRepository = {
     const auth = await authenticatedClient();
     if (!auth) return null;
     const { data, error } = await auth.client.from('workspaces').select('*').eq('id', id).maybeSingle();
-    if (error) throw error;
+    if (error) throw friendlySupabaseError(error);
     return data as CloudWorkspaceRow | null;
   },
 
@@ -47,7 +47,7 @@ export const workspaceRemoteRepository = {
       })
       .select('*')
       .single();
-    if (error) throw error;
+    if (error) throw friendlySupabaseError(error);
     return data as CloudWorkspaceRow;
   },
 
@@ -55,6 +55,6 @@ export const workspaceRemoteRepository = {
     const auth = await authenticatedClient();
     if (!auth) throw new Error('未登录');
     const { error } = await auth.client.from('workspaces').delete().eq('id', id);
-    if (error) throw error;
+    if (error) throw friendlySupabaseError(error);
   },
 };

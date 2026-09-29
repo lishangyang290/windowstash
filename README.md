@@ -76,9 +76,11 @@ npm run build
 
 在 **Authentication → Providers → Email** 启用 Email provider。开发阶段如保留邮件确认，注册后需要先点击验证邮件；也可以仅在本地测试项目中关闭 Confirm email。
 
-### 3. 配置环境变量
+### 3. 连接 Supabase
 
-复制 `.env.example` 为 `.env`：
+正式版本首次打开时，在 WindowStash 的连接界面填写 Project URL 和 Publishable Key。配置仅保存在本机 `chrome.storage.local`，切换项目时会退出旧项目账号，不会删除本地 Workspace 副本。
+
+本地开发可以复制 `.env.example` 为 `.env`，用环境变量预填连接表单：
 
 ```bash
 cp .env.example .env
@@ -91,7 +93,7 @@ VITE_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 VITE_SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_OR_ANON_KEY
 ```
 
-重新执行 `npm run build`。扩展内打开 Workspace 管理器，点击右上角“登录以同步”，即可注册测试账号并登录。
+`.env` 只服务于开发模式，不会成为正式版本的运行时配置。唯一正式构建命令是 `npm run build`，构建完成后会自动扫描产物，防止 Supabase 配置泄漏。扩展内打开 Workspace 管理器，点击右上角“登录”，即可注册测试账号并登录。
 
 > 客户端只能使用 Supabase publishable key（或旧项目的 anon key）。绝对不要把 `service_role` key 写入 `.env`、源代码或扩展构建产物。
 
@@ -118,7 +120,7 @@ VITE_SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_OR_ANON_KEY
 
 ## 权限与安全
 
-扩展只申请 `tabs`、`storage`、`alarms`。Chrome 的 `windows` API 本身不要求声明同名权限，读取窗口内标签页标题与 URL 由 `tabs` 权限提供。项目没有 `<all_urls>`，也不会申请 history、bookmarks、cookies 或 webRequest。Supabase session 通过扩展专用的 `chrome.storage.local` adapter 持久化，Popup、Dashboard 和 background service worker 可共享登录状态。
+扩展只固定申请 `tabs`、`storage`、`alarms` 和 `favicon`。Chrome 的 `windows` API 本身不要求声明同名权限，读取窗口内标签页标题与 URL 由 `tabs` 权限提供。连接时只为用户填写的 Supabase 域名请求可选访问权限，不会申请 history、bookmarks、cookies 或 webRequest。Supabase 配置与 session 通过扩展专用的 `chrome.storage.local` adapter 持久化，Popup、Dashboard 和 background service worker 可共享登录状态。
 
 ## 项目结构
 

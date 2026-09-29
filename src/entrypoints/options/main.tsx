@@ -3,11 +3,13 @@ import ReactDOM from 'react-dom/client';
 import type { Session } from '@supabase/supabase-js';
 import { browser } from 'wxt/browser';
 import { Logo } from '@/components/Logo';
+import { SupabaseConfigForm } from '@/components/SupabaseConfigForm';
 import { deleteWorkspace, openWorkspaceTab, updateWorkspace } from '@/features/workspaces/workspaceService';
 import { syncEngine } from '@/lib/sync/syncEngine';
 import { syncLogRepository } from '@/lib/storage/syncLogRepository';
 import { workspaceRepository } from '@/lib/storage/workspaceRepository';
 import { authService } from '@/lib/supabase/authService';
+import { getSupabaseConfig, type SupabaseConfig } from '@/lib/supabase/client';
 import { PASSWORD_REQUIREMENTS, passwordChangeErrorMessage, validatePasswordChange } from '@/lib/supabase/passwordPolicy';
 import type { StoredTab, SyncLogEntry, WorkspaceLocalRecord } from '@/types/workspace';
 import '@/styles/base.css';
@@ -333,13 +335,14 @@ function SyncIssues({ records, onRefresh, onClose }: { records: WorkspaceLocalRe
   );
 }
 
-function Dashboard() {
+function Dashboard({ config, initialAccountOpen, onConfigChanged }: { config: SupabaseConfig; initialAccountOpen: boolean; onConfigChanged: (config: SupabaseConfig) => void }) {
   const [records, setRecords] = React.useState<WorkspaceLocalRecord[]>([]);
   const [logs, setLogs] = React.useState<SyncLogEntry[]>([]);
   const [session, setSession] = React.useState<Session | null>(null);
   const [filter, setFilter] = React.useState<Filter>('all');
   const [query, setQuery] = React.useState('');
-  const [accountOpen, setAccountOpen] = React.useState(false);
+  const [accountOpen, setAccountOpen] = React.useState(initialAccountOpen);
+  const [connectionOpen, setConnectionOpen] = React.useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = React.useState(false);
   const [issuesOpen, setIssuesOpen] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
@@ -425,6 +428,7 @@ function Dashboard() {
             <button className="header-sync-button" disabled={manualSyncState === 'syncing'} onClick={() => void syncNow()}>
               {manualSyncState === 'syncing' ? '正在同步…' : manualSyncState === 'failed' ? '重试同步' : '立即同步'}
             </button>
+            <button className="header-sync-button" onClick={() => setConnectionOpen(true)}>数据存储</button>
             <div className="account-wrap" onBlur={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setAccountMenuOpen(false); }}>
               <button className="account-button" aria-haspopup={session ? 'menu' : undefined} aria-expanded={session ? accountMenuOpen : undefined} onClick={() => session ? setAccountMenuOpen((open) => !open) : setAccountOpen(true)}><span className="avatar">{session?.user.email?.[0]?.toUpperCase() ?? '?'}</span><span>{session?.user.email ?? '登录'}</span></button>
               {session && accountMenuOpen && <div className="account-menu" role="menu">
@@ -457,8 +461,18 @@ function Dashboard() {
       </main>
       {manualSyncState === 'success' && <div className="sync-toast" role="status" aria-live="polite"><span aria-hidden="true">✓</span>已同步到云端</div>}
       {accountOpen && <AccountDialog session={session} logs={logs} onClose={() => setAccountOpen(false)} onChanged={authChanged} onClearLogs={async () => { await syncLogRepository.clear(); await refresh(); }} />}
+      {connectionOpen && <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setConnectionOpen(false)}><SupabaseConfigForm initialConfig={config} onCancel={() => setConnectionOpen(false)} onSaved={onConfigChanged} /></div>}
     </div>
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><Dashboard /></React.StrictMode>);
+function OptionsRoot() {
+  const [config, setConfig] = React.useState<SupabaseConfig | null | undefined>(undefined);
+  const [openLogin, setOpenLogin] = React.useState(() => new URLSearchParams(window.location.search).get('login') === '1');
+  React.useEffect(() => { void getSupabaseConfig().then(setConfig); }, []);
+  if (config === undefined) return <main className="config-page">WindowStash</main>;
+  if (!config) return <main className="config-page"><SupabaseConfigForm setup onSaved={(next) => { setOpenLogin(true); setConfig(next); }} /></main>;
+  return <Dashboard key={`${config.url}\n${config.publishableKey}`} config={config} initialAccountOpen={openLogin} onConfigChanged={(next) => { setOpenLogin(true); setConfig(next); }} />;
+}
+
+ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><OptionsRoot /></React.StrictMode>);

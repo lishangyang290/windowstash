@@ -6,11 +6,85 @@ import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
 import { cache, sortByRecent } from './lib/cache';
 import { chromeBridge } from './lib/chromeBridge';
 import { ChevronIcon, LogoMark, SearchIcon, WorkspaceIcon } from './lib/icons';
-import { supabase } from './lib/supabase';
+import {
+  CONNECTION_FAILED,
+  getDevelopmentSupabaseConfig,
+  getSupabaseClient,
+  getSupabaseConfig,
+  normalizeSupabaseConfig,
+  saveSupabaseConfig,
+  testSupabaseConnection,
+  verifyWorkspaceSchema,
+} from './lib/supabase';
 import { workspaceService } from './features/workspaces';
-import type { View, WorkspaceSummary } from './types';
+import type { SupabaseConfig, View, WorkspaceSummary } from './types';
 
 const REFRESH_INTERVAL = 7 * 60 * 1000;
+
+function SupabaseConfigPanel({ config, setup, onSaved, onCancel }: {
+  config?: SupabaseConfig | null;
+  setup?: boolean;
+  onSaved: (config: SupabaseConfig) => void;
+  onCancel?: () => void;
+}) {
+  const developmentDefault = getDevelopmentSupabaseConfig();
+  const [url, setUrl] = React.useState(config?.url ?? developmentDefault?.url ?? '');
+  const [publishableKey, setPublishableKey] = React.useState(config?.publishableKey ?? developmentDefault?.publishableKey ?? '');
+  const [message, setMessage] = React.useState('');
+  const [tested, setTested] = React.useState('');
+  const [busy, setBusy] = React.useState<'test' | 'save' | null>(null);
+  const signature = `${url.trim()}\n${publishableKey.trim()}`;
+
+  const update = (setter: (value: string) => void, value: string) => {
+    setter(value);
+    setMessage('');
+    setTested('');
+  };
+
+  async function test() {
+    try {
+      normalizeSupabaseConfig({ url, publishableKey });
+    } catch {
+      setMessage(CONNECTION_FAILED);
+      return;
+    }
+    setBusy('test');
+    setMessage('');
+    const connected = await testSupabaseConnection({ url, publishableKey });
+    setBusy(null);
+    setTested(connected ? signature : '');
+    setMessage(connected ? '✓ 连接成功' : CONNECTION_FAILED);
+  }
+
+  async function save() {
+    if (tested !== signature) return setMessage('请先测试连接');
+    setBusy('save');
+    try {
+      onSaved(await saveSupabaseConfig({ url, publishableKey }));
+    } catch {
+      setMessage(CONNECTION_FAILED);
+      setTested('');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <main className="config-shell">
+      <header className="page-header">{onCancel ? <button className="back-button" onClick={onCancel} aria-label="返回">‹</button> : <span />}<h1>{setup ? '连接 Supabase' : '连接设置'}</h1><span /></header>
+      <section className="supabase-form">
+        {setup ? <div className="config-brand"><LogoMark /><strong>WindowStash</strong></div> : null}
+        <p>WindowStash 使用你自己的 Supabase 项目保存 Workspace。</p>
+        {!setup ? <aside>更换 Supabase 项目后，将切换到另一套 Workspace 数据。旧项目里的数据不会被删除。</aside> : null}
+        <label><span>Project URL</span><input type="url" value={url} onChange={(event) => update(setUrl, event.target.value)} placeholder="https://your-project.supabase.co" autoFocus /></label>
+        <label><span>Publishable Key</span><input value={publishableKey} onChange={(event) => update(setPublishableKey, event.target.value)} autoComplete="off" spellCheck={false} /></label>
+        {message ? <small className={tested === signature ? 'success' : ''} role="status">{message}</small> : null}
+        <div className="config-buttons"><button disabled={busy !== null} onClick={() => void test()}>{busy === 'test' ? '正在测试…' : '测试连接'}</button><button className="primary-button" disabled={busy !== null || tested !== signature} onClick={() => void save()}>{busy === 'save' ? '正在保存…' : setup ? '保存并继续' : '保存'}</button></div>
+        {developmentDefault ? <button className="restore-button" onClick={() => { setUrl(developmentDefault.url); setPublishableKey(developmentDefault.publishableKey); setMessage(''); setTested(''); }}>恢复默认</button> : null}
+      </section>
+    </main>
+  );
+}
 
 function Login({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
   const [email, setEmail] = React.useState('');
@@ -20,12 +94,18 @@ function Login({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!supabase) return setError('请先配置 Companion 的 Supabase 环境变量');
+    const supabase = getSupabaseClient();
+    if (!supabase) return setError('请先连接 Supabase');
     setBusy(true);
     setError('');
     const { data, error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     setBusy(false);
     if (signInError || !data.session) return setError('邮箱或密码不正确');
+    try {
+      await verifyWorkspaceSchema(supabase);
+    } catch (caught) {
+      return setError(caught instanceof Error ? caught.message : '暂时无法读取 WindowStash 数据库');
+    }
     onSignedIn(data.session);
   }
 
@@ -67,14 +147,17 @@ function ExtensionConnect({ onConnected }: { onConnected: (id: string) => void }
   );
 }
 
-function Settings({ extensionId, onBack, onExtensionChange, onSignOut }: {
+function Settings({ config, extensionId, onBack, onConfigChange, onExtensionChange, onSignOut }: {
+  config: SupabaseConfig;
   extensionId: string | null;
   onBack: () => void;
+  onConfigChange: (config: SupabaseConfig) => void;
   onExtensionChange: (id: string | null) => void;
   onSignOut: () => void;
 }) {
   const [autostart, setAutostart] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  const [connectionOpen, setConnectionOpen] = React.useState(false);
 
   React.useEffect(() => { void isEnabled().then(setAutostart).catch(() => setAutostart(false)); }, []);
 
@@ -88,11 +171,14 @@ function Settings({ extensionId, onBack, onExtensionChange, onSignOut }: {
     }
   }
 
+  if (connectionOpen) return <SupabaseConfigPanel config={config} onCancel={() => setConnectionOpen(false)} onSaved={onConfigChange} />;
+
   return (
     <main className="popover-shell">
       <header className="page-header"><button className="back-button" onClick={onBack} aria-label="返回">‹</button><h1>设置</h1><span /></header>
       <section className="settings-list">
         <button className="setting-row" disabled={busy} onClick={() => void toggleAutostart()}><span><b>开机启动 WindowStash</b><small>登录电脑后自动显示菜单栏图标</small></span><i className={autostart ? 'switch on' : 'switch'} aria-hidden="true" /></button>
+        <button className="setting-row" onClick={() => setConnectionOpen(true)}><span><b>Supabase</b><small>连接设置</small></span><span className="row-chevron">›</span></button>
         <div className="setting-row static"><span><b>Chrome 扩展</b><small>{extensionId ? '已连接' : '未连接'}</small></span>{extensionId ? <button className="text-button" onClick={() => { chromeBridge.disconnect(); onExtensionChange(null); }}>重新连接</button> : null}</div>
         {!extensionId ? <ExtensionConnect onConnected={onExtensionChange} /> : null}
       </section>
@@ -101,7 +187,7 @@ function Settings({ extensionId, onBack, onExtensionChange, onSignOut }: {
   );
 }
 
-function Launcher({ session, onSignOut }: { session: Session; onSignOut: () => void }) {
+function Launcher({ config, session, onConfigChange, onSignOut }: { config: SupabaseConfig; session: Session; onConfigChange: (config: SupabaseConfig) => void; onSignOut: () => void }) {
   const [view, setView] = React.useState<View>('launcher');
   const [items, setItems] = React.useState<WorkspaceSummary[]>(() => workspaceService.cached());
   const [query, setQuery] = React.useState('');
@@ -116,8 +202,8 @@ function Launcher({ session, onSignOut }: { session: Session; onSignOut: () => v
     try {
       setItems(await workspaceService.refresh());
       setError('');
-    } catch {
-      if (!cache.workspaces().length) setError('暂时无法刷新工作区');
+    } catch (caught) {
+      if (!cache.workspaces().length) setError(caught instanceof Error ? caught.message : '暂时无法刷新工作区');
     }
   }, []);
 
@@ -169,7 +255,7 @@ function Launcher({ session, onSignOut }: { session: Session; onSignOut: () => v
     if (event.key === 'Escape') void invoke('hide_popover');
   }
 
-  if (view === 'settings') return <Settings extensionId={extensionId} onBack={() => setView('launcher')} onExtensionChange={setExtensionId} onSignOut={onSignOut} />;
+  if (view === 'settings') return <Settings config={config} extensionId={extensionId} onBack={() => setView('launcher')} onConfigChange={onConfigChange} onExtensionChange={setExtensionId} onSignOut={onSignOut} />;
 
   return (
     <main className="popover-shell" onKeyDown={handleKeys}>
@@ -202,28 +288,37 @@ function Launcher({ session, onSignOut }: { session: Session; onSignOut: () => v
 }
 
 export default function App() {
+  const [config, setConfig] = React.useState<SupabaseConfig | null | undefined>(undefined);
   const [session, setSession] = React.useState<Session | null | undefined>(undefined);
 
   React.useEffect(() => {
-    if (!supabase) {
-      setSession(null);
-      void invoke('show_popover');
-      return;
-    }
+    const next = getSupabaseConfig();
+    setConfig(next);
+    if (!next) void invoke('show_popover');
+  }, []);
+
+  React.useEffect(() => {
+    if (!config) return;
+    const supabase = getSupabaseClient();
+    if (!supabase) return;
+    setSession(undefined);
     void supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       if (!data.session) void invoke('show_popover');
     });
     const { data } = supabase.auth.onAuthStateChange((_event, next) => setSession(next));
     return () => data.subscription.unsubscribe();
-  }, []);
+  }, [config]);
 
   async function signOut() {
+    const supabase = getSupabaseClient();
     await supabase?.auth.signOut();
     setSession(null);
   }
 
+  if (config === null) return <SupabaseConfigPanel setup onSaved={setConfig} />;
+  if (config === undefined) return <main className="loading-shell"><LogoMark /><span>WindowStash</span></main>;
   if (session === undefined) return <main className="loading-shell"><LogoMark /><span>WindowStash</span></main>;
   if (!session) return <Login onSignedIn={setSession} />;
-  return <Launcher session={session} onSignOut={() => void signOut()} />;
+  return <Launcher config={config} session={session} onConfigChange={setConfig} onSignOut={() => void signOut()} />;
 }

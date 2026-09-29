@@ -29,7 +29,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.supabase.co wss://*.supabase.co"
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http: https: ws: wss:"
     }
   },
   "bundle": {

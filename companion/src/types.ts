@@ -5,4 +5,9 @@ export interface WorkspaceSummary {
   updatedAt: string;
 }
 
+export interface SupabaseConfig {
+  url: string;
+  publishableKey: string;
+}
+
 export type View = 'launcher' | 'settings';

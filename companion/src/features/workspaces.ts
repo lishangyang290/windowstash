@@ -1,6 +1,6 @@
 import type { WorkspaceSummary } from '../types';
 import { cache, sortByRecent } from '../lib/cache';
-import { supabase } from '../lib/supabase';
+import { friendlySupabaseError, getSupabaseClient } from '../lib/supabase';
 
 interface WorkspaceRow {
   id: string;
@@ -12,13 +12,14 @@ interface WorkspaceRow {
 export const workspaceService = {
   cached: () => sortByRecent(cache.workspaces()),
   async refresh(): Promise<WorkspaceSummary[]> {
-    if (!supabase) throw new Error('Companion 尚未配置 Supabase');
+    const supabase = getSupabaseClient();
+    if (!supabase) throw new Error('请先连接 Supabase');
     const { data, error } = await supabase
       .from('workspaces')
       .select('id,name,tabs,updated_at')
       .neq('status', 'archived')
       .order('updated_at', { ascending: false });
-    if (error) throw error;
+    if (error) throw friendlySupabaseError(error);
     const items = ((data ?? []) as WorkspaceRow[]).map((row) => ({
       id: row.id,
       name: row.name,

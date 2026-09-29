@@ -1,3 +1,7 @@
+-- WindowStash database initialization
+-- Supabase Dashboard → SQL Editor → New query → paste this file → Run
+-- Safe to run again: the table, indexes, trigger, grants, and policies are recreated idempotently.
+
 create extension if not exists pgcrypto;
 
 create table if not exists public.workspaces (

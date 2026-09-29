@@ -1,8 +1,9 @@
-import type { WorkspaceSummary } from '../types';
+import type { SupabaseConfig, WorkspaceSummary } from '../types';
 
 const WORKSPACE_CACHE = 'windowstash-companion:workspaces:v1';
 const RECENT_CACHE = 'windowstash-companion:recent:v1';
 const EXTENSION_ID = 'windowstash-companion:extension-id:v1';
+const SUPABASE_CONFIG = 'windowstash-companion:supabase-config:v1';
 
 function read<T>(key: string, fallback: T): T {
   try {
@@ -23,6 +24,8 @@ export const cache = {
   extensionId: () => localStorage.getItem(EXTENSION_ID),
   saveExtensionId: (id: string) => localStorage.setItem(EXTENSION_ID, id),
   clearExtensionId: () => localStorage.removeItem(EXTENSION_ID),
+  supabaseConfig: () => read<SupabaseConfig | null>(SUPABASE_CONFIG, null),
+  saveSupabaseConfig: (config: SupabaseConfig) => localStorage.setItem(SUPABASE_CONFIG, JSON.stringify(config)),
 };
 
 export function sortByRecent(items: WorkspaceSummary[]): WorkspaceSummary[] {
