@@ -3,17 +3,19 @@ import ReactDOM from 'react-dom/client';
 import type { Session } from '@supabase/supabase-js';
 import { browser } from 'wxt/browser';
 import { Logo } from '@/components/Logo';
-import { deleteWorkspace, openWorkspaceTab, restoreWorkspace, updateWorkspace } from '@/features/workspaces/workspaceService';
+import { deleteWorkspace, openWorkspaceTab, updateWorkspace } from '@/features/workspaces/workspaceService';
 import { syncEngine } from '@/lib/sync/syncEngine';
 import { syncLogRepository } from '@/lib/storage/syncLogRepository';
 import { workspaceRepository } from '@/lib/storage/workspaceRepository';
 import { authService } from '@/lib/supabase/authService';
+import { PASSWORD_REQUIREMENTS, passwordChangeErrorMessage, validatePasswordChange } from '@/lib/supabase/passwordPolicy';
 import type { StoredTab, SyncLogEntry, WorkspaceLocalRecord } from '@/types/workspace';
 import '@/styles/base.css';
 import './style.css';
 
 type Filter = 'all' | 'archived';
 type ManualSyncState = 'idle' | 'syncing' | 'success' | 'failed';
+type PasswordState = 'idle' | 'saving' | 'success';
 
 function formatSavedAt(value: string) {
   const date = new Date(value);
@@ -100,6 +102,34 @@ function TabOverview({ record, onClose }: { record: WorkspaceLocalRecord; onClos
   );
 }
 
+function PasswordField({ label, value, onChange, autoComplete, disabled }: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  autoComplete: string;
+  disabled: boolean;
+}) {
+  const id = React.useId();
+  const [visible, setVisible] = React.useState(false);
+  const actionLabel = visible ? '隐藏密码' : '显示密码';
+
+  return (
+    <div className="field">
+      <label htmlFor={id}>{label}</label>
+      <div className="password-input-wrap">
+        <input id={id} type={visible ? 'text' : 'password'} value={value} onChange={(event) => onChange(event.target.value)} autoComplete={autoComplete} disabled={disabled} />
+        <button className="password-visibility" type="button" onClick={() => setVisible((current) => !current)} aria-label={actionLabel} title={actionLabel} aria-pressed={visible} disabled={disabled}>
+          {visible ? (
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 3l18 18M10.6 10.7a2 2 0 0 0 2.7 2.7M9.9 4.2A10.8 10.8 0 0 1 12 4c5.5 0 9 8 9 8a17.8 17.8 0 0 1-2.1 3.2M6.6 6.6C4.2 8.2 3 12 3 12s3.5 8 9 8a9.8 9.8 0 0 0 4.1-.9" /></svg>
+          ) : (
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 12s3.5-8 9-8 9 8 9 8-3.5 8-9 8-9-8-9-8Z" /><circle cx="12" cy="12" r="3" /></svg>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AccountDialog({
   session,
   logs,
@@ -117,6 +147,11 @@ function AccountDialog({
   const [password, setPassword] = React.useState('');
   const [busy, setBusy] = React.useState(false);
   const [message, setMessage] = React.useState('');
+  const [currentPassword, setCurrentPassword] = React.useState('');
+  const [newPassword, setNewPassword] = React.useState('');
+  const [confirmPassword, setConfirmPassword] = React.useState('');
+  const [passwordState, setPasswordState] = React.useState<PasswordState>('idle');
+  const passwordRequirementsMet = PASSWORD_REQUIREMENTS.every(({ test }) => test(newPassword));
 
   async function auth(mode: 'login' | 'register') {
     setBusy(true);
@@ -132,16 +167,25 @@ function AccountDialog({
     }
   }
 
-  async function logout() {
-    setBusy(true);
+  function passwordUpdated() {
+    setCurrentPassword('');
+    setNewPassword('');
+    setConfirmPassword('');
+    setPasswordState('success');
+    setMessage('密码已修改，你现在可以使用新密码登录 WindowStash Companion。');
+  }
+
+  async function savePassword() {
+    const validationError = validatePasswordChange(currentPassword, newPassword, confirmPassword);
+    if (validationError) return setMessage(validationError);
+    setPasswordState('saving');
+    setMessage('');
     try {
-      await authService.signOut();
-      await onChanged();
-      onClose();
+      await authService.updatePassword(currentPassword, newPassword);
+      passwordUpdated();
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : '退出失败');
-    } finally {
-      setBusy(false);
+      setPasswordState('idle');
+      setMessage(passwordChangeErrorMessage(error));
     }
   }
 
@@ -149,14 +193,23 @@ function AccountDialog({
     <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="account-title">
         <div className="dialog-head">
-          <div><h2 id="account-title">账户</h2><p>登录后可在其他设备使用已保存的窗口。</p></div>
+          <div><h2 id="account-title">{session ? '账户设置' : '账户'}</h2><p>{session ? '管理你的 WindowStash 账户。' : '登录后可在其他设备使用已保存的窗口。'}</p></div>
           <button className="close-button" onClick={onClose} aria-label="关闭">×</button>
         </div>
         {session ? (
-          <div className="signed-in">
-            <span className="avatar large">{session.user.email?.[0]?.toUpperCase() ?? 'U'}</span>
-            <div><strong>{session.user.email}</strong><p>账户已连接</p></div>
-            <button className="button" disabled={busy} onClick={() => void logout()}>退出登录</button>
+          <div className="account-settings">
+            <div className="account-email"><span>邮箱</span><strong>{session.user.email}</strong></div>
+            <form className="password-form" onSubmit={(event) => { event.preventDefault(); void savePassword(); }}>
+              <h3>修改密码</h3>
+              <PasswordField label="当前密码" value={currentPassword} onChange={(value) => { setCurrentPassword(value); setPasswordState('idle'); setMessage(''); }} autoComplete="current-password" disabled={passwordState === 'saving'} />
+              <PasswordField label="新密码" value={newPassword} onChange={(value) => { setNewPassword(value); setPasswordState('idle'); setMessage(''); }} autoComplete="new-password" disabled={passwordState === 'saving'} />
+              <div className="password-requirements">
+                <strong>密码要求</strong>
+                <ul>{PASSWORD_REQUIREMENTS.map(({ label, test }) => { const met = test(newPassword); return <li className={met ? 'met' : ''} key={label}><span>{met ? '✓' : '○'}</span>{label}</li>; })}</ul>
+              </div>
+              <PasswordField label="确认新密码" value={confirmPassword} onChange={(value) => { setConfirmPassword(value); setPasswordState('idle'); setMessage(''); }} autoComplete="new-password" disabled={passwordState === 'saving'} />
+              <button className="button button-primary" type="submit" disabled={passwordState === 'saving' || !passwordRequirementsMet}>{passwordState === 'saving' ? '正在修改…' : passwordState === 'success' ? '✓ 密码已修改' : '修改密码'}</button>
+            </form>
           </div>
         ) : (
           <div className="auth-form">
@@ -165,7 +218,7 @@ function AccountDialog({
             <div className="auth-actions"><button className="button button-primary" disabled={busy || !email || password.length < 6} onClick={() => void auth('login')}>登录</button><button className="button" disabled={busy || !email || password.length < 6} onClick={() => void auth('register')}>注册</button></div>
           </div>
         )}
-        {message && <p className="dialog-message">{message}</p>}
+        {message && <p className={`dialog-message${passwordState === 'success' ? ' success' : ''}`} role={passwordState === 'success' ? 'status' : 'alert'}>{message}</p>}
         <details className="diagnostics">
           <summary>诊断日志</summary>
           <div className="diagnostics-head"><span>最近 {logs.length} 条记录</span>{logs.length > 0 && <button onClick={() => void onClearLogs()}>清空</button>}</div>
@@ -242,7 +295,7 @@ function WorkspaceRow({ record, onRefresh }: { record: WorkspaceLocalRecord; onR
         </div>
         <div className="workspace-actions">
           <button className="overview-button" onClick={() => setOverviewOpen(true)}>查看标签页</button>
-          <button className="open-button" disabled={Boolean(busy)} onClick={() => void run(() => restoreWorkspace(content.id).then(() => undefined), 'open')}>{busy === 'open' ? '正在打开…' : '打开'}</button>
+          <button className="open-button" disabled={Boolean(busy)} onClick={() => void run(() => browser.runtime.sendMessage({ type: 'OPEN_OR_FOCUS_WORKSPACE', workspaceId: content.id }).then(() => undefined), 'open')}>{busy === 'open' ? '正在打开…' : '打开'}</button>
           <div className="more-wrap">
             <button className="more-button" aria-label={`更多操作：${content.name}`} aria-expanded={menuOpen} onClick={() => setMenuOpen((value) => !value)}>•••</button>
             {menuOpen && <div className="more-menu">
@@ -287,6 +340,7 @@ function Dashboard() {
   const [filter, setFilter] = React.useState<Filter>('all');
   const [query, setQuery] = React.useState('');
   const [accountOpen, setAccountOpen] = React.useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = React.useState(false);
   const [issuesOpen, setIssuesOpen] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
   const [manualSyncState, setManualSyncState] = React.useState<ManualSyncState>('idle');
@@ -351,6 +405,12 @@ function Dashboard() {
     }
   }
 
+  async function logout() {
+    setAccountMenuOpen(false);
+    await authService.signOut();
+    await refresh();
+  }
+
   const unsyncedMessage = unsyncedRecords.length > 1 || manualSyncState === 'failed'
     ? `${unsyncedRecords.length} 个工作区暂未同步，数据已保存在本机。`
     : '云端暂未同步，数据已保存在本机。';
@@ -365,7 +425,13 @@ function Dashboard() {
             <button className="header-sync-button" disabled={manualSyncState === 'syncing'} onClick={() => void syncNow()}>
               {manualSyncState === 'syncing' ? '正在同步…' : manualSyncState === 'failed' ? '重试同步' : '立即同步'}
             </button>
-            <button className="account-button" onClick={() => setAccountOpen(true)}><span className="avatar">{session?.user.email?.[0]?.toUpperCase() ?? '?'}</span><span>{session?.user.email ?? '登录'}</span></button>
+            <div className="account-wrap" onBlur={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setAccountMenuOpen(false); }}>
+              <button className="account-button" aria-haspopup={session ? 'menu' : undefined} aria-expanded={session ? accountMenuOpen : undefined} onClick={() => session ? setAccountMenuOpen((open) => !open) : setAccountOpen(true)}><span className="avatar">{session?.user.email?.[0]?.toUpperCase() ?? '?'}</span><span>{session?.user.email ?? '登录'}</span></button>
+              {session && accountMenuOpen && <div className="account-menu" role="menu">
+                <button role="menuitem" onClick={() => { setAccountMenuOpen(false); setAccountOpen(true); }}>账户设置</button>
+                <button role="menuitem" onClick={() => void logout()}>退出登录</button>
+              </div>}
+            </div>
           </div>
         </header>
 

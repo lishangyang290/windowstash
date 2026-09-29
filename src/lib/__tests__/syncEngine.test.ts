@@ -81,4 +81,15 @@ describe('syncEngine.syncAll', () => {
     expect(records.get('one')?.content.tabs).toHaveLength(1);
     expect(records.get('one')?.sync.syncStatus).toBe('failed');
   });
+
+  it('uploads an offline local rename when connectivity returns', async () => {
+    const renamed = record('one', 'pending');
+    renamed.content.name = '离线重命名';
+    records.set('one', renamed);
+
+    await syncEngine.syncAll();
+
+    expect(remoteMock.upsert).toHaveBeenCalledWith(expect.objectContaining({ name: '离线重命名' }), expect.any(String));
+    expect(records.get('one')?.sync.syncStatus).toBe('synced');
+  });
 });

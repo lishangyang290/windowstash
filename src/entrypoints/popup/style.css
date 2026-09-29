@@ -6,8 +6,16 @@ body { width: 360px; max-height: 560px; overflow: hidden; background: #fff; }
 .window-summary strong { font-size: 14px; }
 .window-summary span { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .bound-summary { min-width: 0; }
-.bound-summary h1 { overflow: hidden; margin: 0; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; font-weight: 680; letter-spacing: -.025em; }
 .bound-summary p { margin: 6px 0 0; color: var(--muted); font-size: 12px; }
+.workspace-name-row { display: flex; min-width: 0; align-items: center; gap: 8px; }
+.workspace-name-button { display: flex; min-width: 0; align-items: center; gap: 7px; border: 0; border-radius: 5px; background: transparent; padding: 2px 3px 2px 0; color: var(--text); text-align: left; }
+.workspace-name-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; font-weight: 680; letter-spacing: -.025em; }
+.workspace-name-button svg { width: 14px; height: 14px; flex: 0 0 auto; fill: none; stroke: #a1a1aa; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; opacity: .55; transition: opacity .14s ease, stroke .14s ease; }
+.workspace-name-button:hover { background: #f7f7f8; }
+.workspace-name-button:hover svg { stroke: #52525b; opacity: 1; }
+.workspace-name-input { width: 100%; height: 30px; border: 1px solid #a1a1aa; border-radius: 6px; background: #fff; color: var(--text); padding: 0 8px; font-size: 16px; font-weight: 650; letter-spacing: -.02em; outline: none; box-shadow: 0 0 0 3px rgba(39, 39, 42, .06); }
+.rename-error { margin-top: 5px; color: #934a45; font-size: 11px; }
+.rename-success { flex: 0 0 auto; color: #5d756c; font-size: 11px; }
 .name-field { display: grid; gap: 8px; color: #3f3f46; font-size: 12px; font-weight: 600; }
 .name-field input { width: 100%; height: 40px; border: 1px solid var(--line-strong); border-radius: 7px; background: #fff; color: var(--text); padding: 0 11px; font-size: 13px; transition: border-color .16s ease, box-shadow .16s ease; }
 .name-field input:hover { border-color: #a1a1aa; }

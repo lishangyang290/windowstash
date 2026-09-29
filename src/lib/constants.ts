@@ -7,6 +7,7 @@ export const STORAGE_KEYS = {
   syncLogs: 'syncLogs',
   tombstones: 'deleteTombstones',
   windowBindings: 'windowBindings',
+  lazyRestoreEntries: 'lazyRestoreEntries',
 } as const;
 
 export function nextLocalExpiry(now = new Date()): string {

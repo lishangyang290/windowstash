@@ -17,7 +17,10 @@ import {
   reopenSavedTab,
   resolveWorkspaceForWindow,
   saveCurrentWindow,
+  updateWorkspace,
 } from '@/features/workspaces/workspaceService';
+import { LazyTabResolutionError, resolveLogicalTabs } from '@/features/workspaces/lazyRestore';
+import { validateWorkspaceName } from '@/features/workspaces/workspaceName';
 import type { WorkspaceLocalRecord, WorkspaceStatus } from '@/types/workspace';
 import '@/styles/base.css';
 import './style.css';
@@ -42,6 +45,15 @@ function GlobeIcon() {
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <circle cx="12" cy="12" r="8.25" />
       <path d="M3.9 12h16.2M12 3.75c2.15 2.27 3.25 5.02 3.25 8.25S14.15 17.98 12 20.25C9.85 17.98 8.75 15.23 8.75 12S9.85 6.02 12 3.75Z" />
+    </svg>
+  );
+}
+
+function PencilIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path d="m13.8 3.2 3 3L7.1 15.9l-3.7.7.7-3.7 9.7-9.7Z" />
+      <path d="m11.9 5.1 3 3" />
     </svg>
   );
 }
@@ -99,9 +111,10 @@ function UpdatedItem({ change, onOpen }: { change: UpdatedTabChange; onOpen: (ch
   );
 }
 
-function SaveButtons({ action, phase, onSave }: {
+function SaveButtons({ action, phase, blocked, onSave }: {
   action: SaveAction | null;
   phase: SavePhase;
+  blocked: boolean;
   onSave: (closeAfterSave: boolean) => void;
 }) {
   const label = (buttonAction: SaveAction, idleLabel: string) => {
@@ -113,8 +126,8 @@ function SaveButtons({ action, phase, onSave }: {
 
   return (
     <div className="popup-actions">
-      <button className="button button-primary" disabled={phase !== 'idle'} onClick={() => onSave(false)}>{label('save', '保存当前状态')}</button>
-      <button className="button" disabled={phase !== 'idle'} onClick={() => onSave(true)}>{label('close', '保存并关闭窗口')}</button>
+      <button className="button button-primary" disabled={blocked || phase !== 'idle'} onClick={() => onSave(false)}>{label('save', '保存当前状态')}</button>
+      <button className="button" disabled={blocked || phase !== 'idle'} onClick={() => onSave(true)}>{label('close', '保存并关闭窗口')}</button>
     </div>
   );
 }
@@ -131,21 +144,32 @@ function Popup() {
   const [saveAction, setSaveAction] = React.useState<SaveAction | null>(null);
   const [savePhase, setSavePhase] = React.useState<SavePhase>('idle');
   const [error, setError] = React.useState('');
+  const [logicalTabsReady, setLogicalTabsReady] = React.useState(false);
+  const [editingName, setEditingName] = React.useState(false);
+  const [draftName, setDraftName] = React.useState('');
+  const [renameError, setRenameError] = React.useState('');
+  const [renaming, setRenaming] = React.useState(false);
+  const [renamed, setRenamed] = React.useState(false);
   const windowIdRef = React.useRef<number | null>(null);
   const resetTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const renameTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const renameInputRef = React.useRef<HTMLInputElement>(null);
+  const renameSubmittingRef = React.useRef(false);
 
   const refresh = React.useCallback(async (knownWindowId?: number) => {
     const snapshot = knownWindowId == null
       ? await getCurrentWindowSnapshot()
       : await browser.windows.get(knownWindowId, { populate: true }).then((window) => {
         if (window.id == null) throw new Error('Missing window');
-        return { windowId: window.id, tabs: window.tabs ?? [] };
+        return resolveLogicalTabs(window.tabs ?? []).then((tabs) => ({ windowId: window.id!, tabs }));
       });
     const nextTabs = [...(snapshot.tabs ?? [])].sort((a, b) => a.index - b.index);
     const nextRecord = await resolveWorkspaceForWindow(snapshot.windowId, nextTabs);
     windowIdRef.current = snapshot.windowId;
     setWindowId(snapshot.windowId);
     setTabs(nextTabs);
+    setLogicalTabsReady(true);
+    setError('');
     setRecord(nextRecord);
     if (nextRecord) {
       setName(nextRecord.content.name);
@@ -153,10 +177,15 @@ function Popup() {
     }
   }, []);
 
+  const handleRefreshError = React.useCallback((reason: unknown) => {
+    setLogicalTabsReady(false);
+    setError(reason instanceof LazyTabResolutionError ? reason.message : '暂时无法读取当前窗口');
+  }, []);
+
   React.useEffect(() => {
-    void refresh().catch(() => setError('暂时无法读取当前窗口'));
+    void refresh().catch(handleRefreshError);
     const refreshBoundWindow = (changedWindowId: number) => {
-      if (changedWindowId === windowIdRef.current) void refresh(changedWindowId).catch(() => setError('暂时无法更新窗口状态'));
+      if (changedWindowId === windowIdRef.current) void refresh(changedWindowId).catch(handleRefreshError);
     };
     const onCreated = (tab: { windowId: number }) => refreshBoundWindow(tab.windowId);
     const onRemoved = (_tabId: number, info: { windowId: number }) => refreshBoundWindow(info.windowId);
@@ -172,8 +201,13 @@ function Popup() {
       browser.tabs.onUpdated.removeListener(onUpdated);
       browser.tabs.onMoved.removeListener(onMoved);
       if (resetTimer.current) clearTimeout(resetTimer.current);
+      if (renameTimer.current) clearTimeout(renameTimer.current);
     };
-  }, [refresh]);
+  }, [handleRefreshError, refresh]);
+
+  React.useEffect(() => {
+    if (editingName) renameInputRef.current?.select();
+  }, [editingName]);
 
   const diff = React.useMemo(() => calculateTabDiff(record?.content.tabs ?? [], tabs), [record?.content.tabs, tabs]);
   const counts = { added: diff.added.length, removed: diff.removed.length, updated: diff.updated.length };
@@ -232,8 +266,51 @@ function Popup() {
     }
   }
 
+  function startRename() {
+    if (!record || renaming) return;
+    setDraftName(name);
+    setRenameError('');
+    setRenamed(false);
+    setEditingName(true);
+  }
+
+  function cancelRename() {
+    if (renaming || renameSubmittingRef.current) return;
+    setEditingName(false);
+    setDraftName(name);
+    setRenameError('');
+  }
+
+  async function submitRename() {
+    if (!record || renaming) return;
+    const validation = validateWorkspaceName(draftName, name);
+    if (validation.error) {
+      setRenameError(validation.error);
+      return;
+    }
+    if (!validation.changed) return cancelRename();
+
+    renameSubmittingRef.current = true;
+    setRenaming(true);
+    setRenameError('');
+    try {
+      await updateWorkspace(record.content.id, { name: validation.name });
+      setName(validation.name);
+      setRecord((current) => current ? { ...current, content: { ...current.content, name: validation.name } } : current);
+      setEditingName(false);
+      setRenamed(true);
+      if (renameTimer.current) clearTimeout(renameTimer.current);
+      renameTimer.current = setTimeout(() => setRenamed(false), 1000);
+    } catch {
+      setRenameError('重命名失败，请重试');
+    } finally {
+      renameSubmittingRef.current = false;
+      setRenaming(false);
+    }
+  }
+
   const isBound = record != null;
-  const buttons = <SaveButtons action={saveAction} phase={savePhase} onSave={(close) => void submit(close)} />;
+  const buttons = <SaveButtons action={saveAction} phase={savePhase} blocked={!logicalTabsReady} onSave={(close) => void submit(close)} />;
 
   if (page === 'details' && isBound) {
     const activeChanges = activeKind === 'added' ? diff.added : activeKind === 'removed' ? diff.removed : diff.updated;
@@ -273,7 +350,39 @@ function Popup() {
       <section className="popup-content">
         {isBound ? (
           <div className="bound-summary">
-            <h1>{name}</h1>
+            {editingName ? (
+              <input
+                ref={renameInputRef}
+                className="workspace-name-input"
+                value={draftName}
+                maxLength={100}
+                disabled={renaming}
+                aria-label="工作区名称"
+                onChange={(event) => { setDraftName(event.target.value); setRenameError(''); }}
+                onBlur={cancelRename}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void submitRename();
+                  }
+                  if (event.key === 'Escape') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    cancelRename();
+                  }
+                }}
+              />
+            ) : (
+              <div className="workspace-name-row">
+                <button className="workspace-name-button" onClick={startRename} aria-label={`重命名 ${name}`}>
+                  <span>{name}</span>
+                  <PencilIcon />
+                </button>
+                {renamed ? <span className="rename-success">✓ 已重命名</span> : null}
+              </div>
+            )}
+            {renameError ? <div className="rename-error" role="alert">{renameError}</div> : null}
             <p>当前窗口 · {tabs.length} 个标签页</p>
           </div>
         ) : (
