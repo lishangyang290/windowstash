@@ -392,7 +392,7 @@ function Popup() {
         ) : (
           <>
             <div className="window-summary"><strong>当前窗口</strong><span>{tabs.length} 个标签页</span></div>
-            <label className="name-field"><span>名称</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：PetLifeHub 首页" autoFocus /></label>
+            <label className="name-field"><span>名称</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="请输入工作区名称" autoFocus /></label>
           </>
         )}
 
