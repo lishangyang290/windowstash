@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { browser } from 'wxt/browser';
 import { Logo } from '@/components/Logo';
+import { SuccessToast } from '@/components/SuccessToast';
 import { SupabaseConfigForm } from '@/components/SupabaseConfigForm';
 import {
   calculateTabDiff,
@@ -29,7 +30,7 @@ import '@/styles/base.css';
 import './style.css';
 
 type SaveAction = 'save' | 'close';
-type SavePhase = 'idle' | 'saving' | 'saved';
+type SavePhase = 'idle' | 'saving';
 
 const CHANGE_LABELS: Record<TabChangeKind, string> = {
   added: '会加入',
@@ -123,7 +124,6 @@ function SaveButtons({ action, phase, blocked, onSave }: {
   const label = (buttonAction: SaveAction, idleLabel: string) => {
     if (action !== buttonAction) return idleLabel;
     if (phase === 'saving') return '正在保存…';
-    if (phase === 'saved') return '✓ 已保存';
     return idleLabel;
   };
 
@@ -153,10 +153,8 @@ function Popup() {
   const [draftName, setDraftName] = React.useState('');
   const [renameError, setRenameError] = React.useState('');
   const [renaming, setRenaming] = React.useState(false);
-  const [renamed, setRenamed] = React.useState(false);
+  const [success, setSuccess] = React.useState('');
   const windowIdRef = React.useRef<number | null>(null);
-  const resetTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  const renameTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const renameInputRef = React.useRef<HTMLInputElement>(null);
   const renameSubmittingRef = React.useRef(false);
 
@@ -206,8 +204,6 @@ function Popup() {
       browser.tabs.onRemoved.removeListener(onRemoved);
       browser.tabs.onUpdated.removeListener(onUpdated);
       browser.tabs.onMoved.removeListener(onMoved);
-      if (resetTimer.current) clearTimeout(resetTimer.current);
-      if (renameTimer.current) clearTimeout(renameTimer.current);
     };
   }, [handleRefreshError, refresh]);
 
@@ -260,11 +256,9 @@ function Popup() {
         await refresh(windowId);
         setPage('main');
       }
-      setSavePhase('saved');
-      resetTimer.current = setTimeout(() => {
-        setSavePhase('idle');
-        setSaveAction(null);
-      }, 1000);
+      setSavePhase('idle');
+      setSaveAction(null);
+      setSuccess('已保存');
     } catch {
       setSavePhase('idle');
       setSaveAction(null);
@@ -276,7 +270,6 @@ function Popup() {
     if (!record || renaming) return;
     setDraftName(name);
     setRenameError('');
-    setRenamed(false);
     setEditingName(true);
   }
 
@@ -304,9 +297,7 @@ function Popup() {
       setName(validation.name);
       setRecord((current) => current ? { ...current, content: { ...current.content, name: validation.name } } : current);
       setEditingName(false);
-      setRenamed(true);
-      if (renameTimer.current) clearTimeout(renameTimer.current);
-      renameTimer.current = setTimeout(() => setRenamed(false), 1000);
+      setSuccess('已重命名');
     } catch {
       setRenameError('重命名失败，请重试');
     } finally {
@@ -318,11 +309,13 @@ function Popup() {
   const isBound = resolution?.status === 'resolved' && record != null;
   const isUnavailable = resolution?.status === 'unavailable';
   const buttons = <SaveButtons action={saveAction} phase={savePhase} blocked={!logicalTabsReady || isUnavailable} onSave={(close) => void submit(close)} />;
+  const successToast = success ? <SuccessToast message={success} onDismiss={() => setSuccess('')} /> : null;
 
   if (page === 'details' && isBound) {
     const activeChanges = activeKind === 'added' ? diff.added : activeKind === 'removed' ? diff.removed : diff.updated;
     return (
-      <main className="popup-shell detail-shell">
+      <><main className="popup-shell detail-shell">
+        {successToast}
         <header className="detail-header">
           <button className="back-button" onClick={() => setPage('main')} aria-label="返回">← <span>返回</span></button>
           <h1>本次保存的变更</h1>
@@ -347,12 +340,13 @@ function Popup() {
           {error ? <div className="inline-error" role="alert">{error}</div> : null}
           {buttons}
         </footer>
-      </main>
+      </main></>
     );
   }
 
   return (
     <main className="popup-shell">
+      {successToast}
       <header className="popup-header"><Logo /></header>
       <section className="popup-content">
         {resolution == null ? (
@@ -390,7 +384,6 @@ function Popup() {
                   <span>{name}</span>
                   <PencilIcon />
                 </button>
-                {renamed ? <span className="rename-success">✓ 已重命名</span> : null}
               </div>
             )}
             {renameError ? <div className="rename-error" role="alert">{renameError}</div> : null}

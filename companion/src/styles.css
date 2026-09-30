@@ -16,6 +16,9 @@ button, input { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: default; opacity: .55; }
 :focus-visible { outline: 2px solid rgba(24, 24, 27, .26); outline-offset: 2px; }
+.success-toast { position: fixed; z-index: 20; top: 10px; left: 50%; display: flex; align-items: center; gap: 7px; max-width: calc(100vw - 20px); min-height: 36px; transform: translateX(-50%); border: 1px solid #e1e1e5; border-radius: 8px; background: #fff; box-shadow: 0 7px 20px rgba(24,24,27,.12); color: #3f3f46; padding: 0 11px 0 8px; font-size: 11px; font-weight: 600; white-space: nowrap; animation: success-toast-life 2s both; }
+.success-toast span { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: #e8f6ee; color: #287553; font-size: 11px; font-weight: 750; }
+@keyframes success-toast-life { 0% { opacity: 0; transform: translate(-50%, -12px) scale(.96); } 10% { opacity: 1; transform: translate(-50%, 0) scale(1.02); } 16%, 86% { opacity: 1; transform: translate(-50%, 0) scale(1); } 100% { opacity: 0; transform: translate(-50%, -6px) scale(.98); } }
 
 .popover-shell, .auth-shell, .config-shell { display: grid; width: 100%; height: 100%; background: #fff; }
 .popover-shell { grid-template-rows: auto minmax(0, 1fr) 48px; }
@@ -102,8 +105,12 @@ button:disabled { cursor: default; opacity: .55; }
 .supabase-form label { display: grid; min-width: 0; gap: 6px; color: #62636a; font-size: 10.5px; font-weight: 600; }
 .supabase-form input { width: 100%; min-width: 0; height: 36px; border: 1px solid #d8d8dc; border-radius: 7px; padding: 0 9px; outline: 0; font-size: 11px; }
 .supabase-form input:focus { border-color: #999aa1; box-shadow: 0 0 0 3px rgba(24,24,27,.05); }
+.password-input-wrap { position: relative; }
+.password-input-wrap input { padding-right: 40px; }
+.password-visibility { position: absolute; top: 50%; right: 4px; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; transform: translateY(-50%); border: 0; border-radius: 5px; background: transparent; color: #71717a; }
+.password-visibility:hover:not(:disabled) { background: #f1f1f3; color: #27272a; }
+.password-visibility svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .supabase-form > small { color: #934a45; font-size: 10px; }
-.supabase-form > small.success { color: #365b46; }
 .config-buttons { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
 .config-buttons > button { min-width: 0; height: 37px; margin: 0; border: 1px solid #d4d4d8; border-radius: 7px; background: #fff; color: #3f3f46; font-size: 11px; font-weight: 620; }
 .config-buttons > .primary-button { border-color: #202124; background: #202124; color: #fff; }
@@ -111,4 +118,5 @@ button:disabled { cursor: default; opacity: .55; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+  .success-toast { animation: none; }
 }

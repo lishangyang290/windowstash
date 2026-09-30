@@ -18,6 +18,8 @@ import {
 } from './lib/supabase';
 import { workspaceService } from './features/workspaces';
 import type { SupabaseConfig, View, WorkspaceSummary } from './types';
+import { SuccessToast } from './SuccessToast';
+import { VisibilityToggleInput } from './VisibilityToggleInput';
 
 const REFRESH_INTERVAL = 7 * 60 * 1000;
 
@@ -31,6 +33,7 @@ function SupabaseConfigPanel({ config, setup, onSaved, onCancel }: {
   const [url, setUrl] = React.useState(config?.url ?? developmentDefault?.url ?? '');
   const [publishableKey, setPublishableKey] = React.useState(config?.publishableKey ?? developmentDefault?.publishableKey ?? '');
   const [message, setMessage] = React.useState('');
+  const [success, setSuccess] = React.useState('');
   const [tested, setTested] = React.useState('');
   const [busy, setBusy] = React.useState<'test' | 'save' | null>(null);
   const signature = `${url.trim()}\n${publishableKey.trim()}`;
@@ -38,6 +41,7 @@ function SupabaseConfigPanel({ config, setup, onSaved, onCancel }: {
   const update = (setter: (value: string) => void, value: string) => {
     setter(value);
     setMessage('');
+    setSuccess('');
     setTested('');
   };
 
@@ -50,10 +54,12 @@ function SupabaseConfigPanel({ config, setup, onSaved, onCancel }: {
     }
     setBusy('test');
     setMessage('');
+    setSuccess('');
     const connected = await testSupabaseConnection({ url, publishableKey });
     setBusy(null);
     setTested(connected ? signature : '');
-    setMessage(connected ? '✓ 连接成功' : CONNECTION_FAILED);
+    setMessage(connected ? '' : CONNECTION_FAILED);
+    setSuccess(connected ? '连接成功' : '');
   }
 
   async function save() {
@@ -71,16 +77,17 @@ function SupabaseConfigPanel({ config, setup, onSaved, onCancel }: {
 
   return (
     <main className="config-shell">
+      {success ? <SuccessToast message={success} onDismiss={() => setSuccess('')} /> : null}
       <header className="page-header">{onCancel ? <button className="back-button" onClick={onCancel} aria-label="返回">‹</button> : <span />}<h1>{setup ? '连接 Supabase' : '连接设置'}</h1><span /></header>
       <section className="supabase-form">
         {setup ? <div className="config-brand"><LogoMark /><strong>WindowStash</strong></div> : null}
         <p>WindowStash 使用你自己的 Supabase 项目保存 Workspace。</p>
         {!setup ? <aside>更换 Supabase 项目后，将切换到另一套 Workspace 数据。旧项目里的数据不会被删除。</aside> : null}
         <label><span>Project URL</span><input type="url" value={url} onChange={(event) => update(setUrl, event.target.value)} placeholder="https://your-project.supabase.co" autoFocus /></label>
-        <label><span>Publishable Key</span><input value={publishableKey} onChange={(event) => update(setPublishableKey, event.target.value)} autoComplete="off" spellCheck={false} /></label>
-        {message ? <small className={tested === signature ? 'success' : ''} role="status">{message}</small> : null}
+        <label><span>Publishable Key</span><VisibilityToggleInput value={publishableKey} onChange={(value) => update(setPublishableKey, value)} showLabel="显示 Publishable Key" hideLabel="隐藏 Publishable Key" autoComplete="off" spellCheck={false} /></label>
+        {message ? <small role="alert">{message}</small> : null}
         <div className="config-buttons"><button disabled={busy !== null} onClick={() => void test()}>{busy === 'test' ? '正在测试…' : '测试连接'}</button><button className="primary-button" disabled={busy !== null || tested !== signature} onClick={() => void save()}>{busy === 'save' ? '正在保存…' : setup ? '保存并继续' : '保存'}</button></div>
-        {developmentDefault ? <button className="restore-button" onClick={() => { setUrl(developmentDefault.url); setPublishableKey(developmentDefault.publishableKey); setMessage(''); setTested(''); }}>恢复默认</button> : null}
+        {developmentDefault ? <button className="restore-button" onClick={() => { setUrl(developmentDefault.url); setPublishableKey(developmentDefault.publishableKey); setMessage(''); setSuccess(''); setTested(''); }}>恢复默认</button> : null}
       </section>
     </main>
   );
