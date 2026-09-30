@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const browserMock = vi.hoisted(() => ({
   runtime: { getURL: vi.fn((path: string) => `chrome-extension://test${path}`) },
-  tabs: { get: vi.fn(), update: vi.fn() },
+  tabs: { get: vi.fn(), update: vi.fn(), reload: vi.fn() },
   windows: { getAll: vi.fn() },
+  storage: { session: { get: vi.fn(), set: vi.fn(), remove: vi.fn() } },
+  alarms: { create: vi.fn() },
 }));
 const lazyMock = vi.hoisted(() => ({
   list: vi.fn(), get: vi.fn(), put: vi.fn(), remove: vi.fn(), removeByTabId: vi.fn(), removeMany: vi.fn(),
@@ -13,23 +15,37 @@ vi.mock('wxt/browser', () => ({ browser: browserMock }));
 vi.mock('@/lib/storage/lazyRestoreRepository', () => ({ lazyRestoreRepository: lazyMock }));
 
 import {
+  beginStartupLazyReconciliation,
+  claimLazyTab,
   cleanupOrphanedLazyEntries,
   confirmLazyNavigation,
+  finishStartupLazyReconciliation,
   handleLazyTabReady,
+  hydrateStartupLazyTab,
   LazyTabResolutionError,
   lazyIdFromUrl,
+  noteStartupLazyActivity,
   removeLazyTab,
   resolveLazyTab,
   resolveLogicalTab,
   resolveLogicalTabs,
+  STARTUP_RECONCILIATION_GRACE_MS,
 } from '@/features/workspaces/lazyRestore';
 import { calculateTabDiff, getTabDomain } from '@/features/workspaces/tabDiff';
 import type { StoredTab } from '@/types/workspace';
 
 describe('lazyRestore', () => {
+  let session: Record<string, unknown>;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    session = {};
+    browserMock.storage.session.get.mockImplementation(async (key: string) => ({ [key]: session[key] }));
+    browserMock.storage.session.set.mockImplementation(async (values: Record<string, unknown>) => { Object.assign(session, values); });
+    browserMock.storage.session.remove.mockImplementation(async (key: string) => { delete session[key]; });
+    browserMock.tabs.get.mockResolvedValue({ id: 42, windowId: 7, url: 'chrome-extension://test/lazy-tab.html?id=lazy-1' });
     browserMock.tabs.update.mockResolvedValue({ id: 42 });
+    browserMock.tabs.reload.mockResolvedValue(undefined);
     lazyMock.put.mockResolvedValue(undefined);
     lazyMock.remove.mockResolvedValue(undefined);
     lazyMock.removeByTabId.mockResolvedValue(undefined);
@@ -47,24 +63,29 @@ describe('lazyRestore', () => {
   });
 
   it('keeps an inactive placeholder lazy when its page becomes ready', async () => {
-    await expect(handleLazyTabReady(42, false, 'lazy-1')).resolves.toBe('waiting');
+    lazyMock.get.mockResolvedValue({ id: 'lazy-1', originalUrl: 'https://real.example/page', tabId: 900, windowId: 90 });
+
+    await expect(handleLazyTabReady(42, 7, false, 'lazy-1')).resolves.toBe('waiting');
 
     expect(browserMock.tabs.update).not.toHaveBeenCalled();
-    expect(lazyMock.get).not.toHaveBeenCalled();
+    expect(lazyMock.put).toHaveBeenCalledWith(expect.objectContaining({ id: 'lazy-1', tabId: 42, windowId: 7 }));
   });
 
   it('automatically resolves an active placeholder when its page becomes ready', async () => {
-    lazyMock.get.mockResolvedValue({ id: 'lazy-1', originalUrl: 'https://real.example/page' });
+    lazyMock.get.mockResolvedValue({
+      id: 'lazy-1', originalUrl: 'https://real.example/page', tabId: 900, windowId: 90,
+    });
 
-    await expect(handleLazyTabReady(42, true, 'lazy-1')).resolves.toBe('resolved');
+    await expect(handleLazyTabReady(42, 7, true, 'lazy-1')).resolves.toBe('resolved');
 
+    expect(lazyMock.put).toHaveBeenCalledWith(expect.objectContaining({ tabId: 42, windowId: 7 }));
     expect(browserMock.tabs.update).toHaveBeenCalledWith(42, { url: 'https://real.example/page' });
   });
 
   it('self-recovers when an already active placeholder reloads without onActivated', async () => {
     lazyMock.get.mockResolvedValue({ id: 'lazy-refresh', originalUrl: 'https://real.example/refreshed' });
 
-    await expect(handleLazyTabReady(51, true, 'lazy-refresh')).resolves.toBe('resolved');
+    await expect(handleLazyTabReady(51, 8, true, 'lazy-refresh')).resolves.toBe('resolved');
 
     expect(browserMock.tabs.update).toHaveBeenCalledWith(51, { url: 'https://real.example/refreshed' });
   });
@@ -90,17 +111,19 @@ describe('lazyRestore', () => {
   it('reports a missing registry entry without navigating or retrying forever', async () => {
     lazyMock.get.mockResolvedValue(null);
 
-    await expect(handleLazyTabReady(42, true, 'missing')).resolves.toBe('missing');
+    await expect(handleLazyTabReady(42, 7, true, 'missing')).resolves.toBe('missing');
 
     expect(browserMock.tabs.update).not.toHaveBeenCalled();
     expect(lazyMock.removeByTabId).not.toHaveBeenCalled();
   });
 
   it('keeps fifty inactive placeholders from loading together', async () => {
-    const results = await Promise.all(Array.from({ length: 50 }, (_, index) => handleLazyTabReady(index, false, `lazy-${index}`)));
+    lazyMock.get.mockImplementation(async (id: string) => ({ id, originalUrl: `https://example.com/${id}`, tabId: 1000, windowId: 100 }));
+    const results = await Promise.all(Array.from({ length: 50 }, (_, index) => handleLazyTabReady(index, 7, false, `lazy-${index}`)));
 
     expect(results.every((result) => result === 'waiting')).toBe(true);
     expect(browserMock.tabs.update).not.toHaveBeenCalled();
+    expect(lazyMock.put).toHaveBeenCalledTimes(50);
   });
 
   it('removes the registry only after onUpdated confirms a non-lazy committed URL', async () => {
@@ -117,7 +140,7 @@ describe('lazyRestore', () => {
     lazyMock.get.mockResolvedValue({ id: 'lazy-1', originalUrl: 'https://real.example/page', tabId: 42 });
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      await expect(handleLazyTabReady(42, true, 'lazy-1')).resolves.toBe('resolved');
+      await expect(handleLazyTabReady(42, 7, true, 'lazy-1')).resolves.toBe('resolved');
       await expect(confirmLazyNavigation(42, 'chrome-extension://test/lazy-tab.html?id=lazy-1')).resolves.toBe(false);
     }
 
@@ -156,6 +179,80 @@ describe('lazyRestore', () => {
     await cleanupOrphanedLazyEntries(new Date('2026-01-02T00:00:00.000Z').getTime());
 
     expect(lazyMock.removeMany).toHaveBeenCalledWith(['orphan']);
+  });
+
+  it('keeps all existing entries while Chrome has not restored startup tabs yet', async () => {
+    lazyMock.list.mockResolvedValue(Array.from({ length: 45 }, (_, index) => ({
+      id: `lazy-${index}`,
+      createdAt: '2025-01-01T00:00:00.000Z',
+    })));
+
+    await beginStartupLazyReconciliation(1_000);
+
+    expect(lazyMock.list).not.toHaveBeenCalled();
+    expect(lazyMock.removeMany).not.toHaveBeenCalled();
+    expect(browserMock.alarms.create).toHaveBeenCalledOnce();
+  });
+
+  it('rebinds a restored lazyId to its new tab and window ids without losing its URL', async () => {
+    const entry = {
+      id: 'lazy-a', originalUrl: 'https://real.example/a', createdAt: '2025-01-01T00:00:00.000Z',
+      tabId: 11, windowId: 12,
+    };
+    lazyMock.get.mockResolvedValue(entry);
+
+    await expect(claimLazyTab('lazy-a', 101, 202)).resolves.toEqual(expect.objectContaining({
+      originalUrl: 'https://real.example/a', tabId: 101, windowId: 202,
+    }));
+    expect(lazyMock.put).toHaveBeenCalledWith({ ...entry, tabId: 101, windowId: 202 });
+  });
+
+  it('hydrates an inactive restored placeholder without loading its original URL', async () => {
+    const entry = {
+      id: 'lazy-visual', originalUrl: 'https://real.example/visual', title: 'Saved title',
+      favIconUrl: 'https://real.example/favicon.ico', tabId: 11, windowId: 12,
+    };
+    lazyMock.get.mockResolvedValue(entry);
+    await beginStartupLazyReconciliation(1_000);
+
+    await expect(hydrateStartupLazyTab({
+      id: 101, windowId: 202, url: 'chrome-extension://test/lazy-tab.html?id=lazy-visual', index: 0,
+    })).resolves.toBe(true);
+
+    expect(lazyMock.put).toHaveBeenCalledWith({ ...entry, tabId: 101, windowId: 202 });
+    expect(browserMock.tabs.reload).toHaveBeenCalledWith(101);
+    expect(browserMock.tabs.update).not.toHaveBeenCalled();
+  });
+
+  it('cleans only entries absent after startup grace and a complete tab scan', async () => {
+    lazyMock.list.mockResolvedValue([
+      { id: 'live', originalUrl: 'https://real.example/live' },
+      { id: 'orphan', originalUrl: 'https://real.example/orphan' },
+    ]);
+    lazyMock.get.mockResolvedValue({ id: 'live', originalUrl: 'https://real.example/live', tabId: 1, windowId: 1 });
+    browserMock.windows.getAll.mockResolvedValue([{ id: 88, tabs: [{
+      id: 77, windowId: 88, url: 'chrome-extension://test/lazy-tab.html?id=live',
+    }] }]);
+    await beginStartupLazyReconciliation(1_000);
+
+    await expect(finishStartupLazyReconciliation(1_000 + STARTUP_RECONCILIATION_GRACE_MS - 1)).resolves.toBe(false);
+    expect(lazyMock.removeMany).not.toHaveBeenCalled();
+
+    await expect(finishStartupLazyReconciliation(1_000 + STARTUP_RECONCILIATION_GRACE_MS)).resolves.toBe(true);
+    expect(lazyMock.put).toHaveBeenCalledWith(expect.objectContaining({ id: 'live', tabId: 77, windowId: 88 }));
+    expect(lazyMock.removeMany).toHaveBeenCalledWith(['orphan']);
+  });
+
+  it('waits for restored tab activity to become quiet before final cleanup', async () => {
+    browserMock.windows.getAll.mockResolvedValue([]);
+    lazyMock.list.mockResolvedValue([{ id: 'old' }]);
+    await beginStartupLazyReconciliation(1_000);
+    await noteStartupLazyActivity(1_000 + STARTUP_RECONCILIATION_GRACE_MS);
+
+    await expect(finishStartupLazyReconciliation(1_000 + STARTUP_RECONCILIATION_GRACE_MS)).resolves.toBe(false);
+
+    expect(browserMock.windows.getAll).not.toHaveBeenCalled();
+    expect(lazyMock.removeMany).not.toHaveBeenCalled();
   });
 
   it('does not treat other internal pages as lazy tabs', () => {

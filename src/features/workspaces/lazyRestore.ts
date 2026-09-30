@@ -1,10 +1,22 @@
 import { browser } from 'wxt/browser';
+import { LAZY_RECONCILIATION_ALARM, STORAGE_KEYS } from '@/lib/constants';
 import { lazyRestoreRepository, type LazyRestoreEntry } from '@/lib/storage/lazyRestoreRepository';
 import type { StoredTab } from '@/types/workspace';
 import type { MatchableTab } from './workspaceMatcher';
 
 const resolvingTabs = new Map<number, Promise<boolean>>();
+const hydratedStartupTabs = new Set<number>();
 const ORPHAN_GRACE_MS = 5 * 60 * 1000;
+let startupReconciliationStarting = false;
+let startupActivityRevision = 0;
+export const STARTUP_RECONCILIATION_GRACE_MS = 60 * 1000;
+export const STARTUP_RECONCILIATION_QUIET_MS = 5 * 1000;
+
+interface StartupReconciliationState {
+  startedAt: number;
+  lastActivityAt: number;
+  revision: number;
+}
 
 export function lazyTabUrl(id: string): string {
   return `${browser.runtime.getURL('/lazy-tab.html')}?id=${encodeURIComponent(id)}`;
@@ -99,15 +111,15 @@ export async function resolveLazyStoredTab(
   };
 }
 
-export function resolveLazyTab(tabId: number, lazyId?: string): Promise<boolean> {
+export function resolveLazyTab(tabId: number, lazyId?: string, windowId?: number): Promise<boolean> {
   const existing = resolvingTabs.get(tabId);
   if (existing) return existing;
   const task = (async () => {
-    const id = lazyId ?? lazyIdFromTab(await browser.tabs.get(tabId));
+    const tab = lazyId && windowId !== undefined ? undefined : await browser.tabs.get(tabId);
+    const id = lazyId ?? lazyIdFromTab(tab!);
     if (!id) return false;
-    const entry = await lazyRestoreRepository.get(id);
+    const entry = await claimLazyTab(id, tabId, windowId ?? tab?.windowId);
     if (!entry) return false;
-    if (entry.tabId !== tabId) await lazyRestoreRepository.put({ ...entry, tabId });
     await browser.tabs.update(tabId, { url: entry.originalUrl });
     return true;
   })().finally(() => {
@@ -123,10 +135,46 @@ export async function confirmLazyNavigation(tabId: number, url?: string): Promis
   return true;
 }
 
-export async function handleLazyTabReady(tabId: number, active: boolean, lazyId: string) {
-  if (!active) return 'waiting' as const;
+export async function claimLazyTab(lazyId: string, tabId: number, windowId?: number): Promise<LazyRestoreEntry | null> {
+  const entry = await lazyRestoreRepository.get(lazyId);
+  if (!entry) return null;
+  if (entry.tabId !== tabId || entry.windowId !== windowId) {
+    const claimed = { ...entry, tabId, windowId };
+    await lazyRestoreRepository.put(claimed);
+    return claimed;
+  }
+  return entry;
+}
+
+export async function claimLazyTabFromBrowserTab(tab: MatchableTab & { id?: number; windowId?: number }): Promise<boolean> {
+  const lazyId = lazyIdFromTab(tab);
+  if (!lazyId || tab.id == null) return false;
+  return Boolean(await claimLazyTab(lazyId, tab.id, tab.windowId));
+}
+
+export async function hydrateStartupLazyTab(tab: MatchableTab & { id?: number; windowId?: number }): Promise<boolean> {
+  const lazyId = lazyIdFromTab(tab);
+  if (!lazyId || tab.id == null) return false;
+  const claimed = await claimLazyTab(lazyId, tab.id, tab.windowId);
+  if (!claimed || !await isStartupLazyReconciliationActive() || hydratedStartupTabs.has(tab.id)) return false;
+  hydratedStartupTabs.add(tab.id);
+  await browser.tabs.reload(tab.id);
+  return true;
+}
+
+export async function hydrateStartupLazyTabs(): Promise<void> {
+  const windows = await browser.windows.getAll({ populate: true });
+  for (const window of windows) {
+    for (const tab of window.tabs ?? []) await hydrateStartupLazyTab(tab);
+  }
+}
+
+export async function handleLazyTabReady(tabId: number, windowId: number | undefined, active: boolean, lazyId: string) {
   try {
-    return await resolveLazyTab(tabId, lazyId) ? 'resolved' as const : 'missing' as const;
+    const entry = await claimLazyTab(lazyId, tabId, windowId);
+    if (!entry) return 'missing' as const;
+    if (!active) return 'waiting' as const;
+    return await resolveLazyTab(tabId, lazyId, windowId) ? 'resolved' as const : 'missing' as const;
   } catch {
     return 'failed' as const;
   }
@@ -144,4 +192,74 @@ export async function cleanupOrphanedLazyEntries(now = Date.now()): Promise<void
   await lazyRestoreRepository.removeMany(entries
     .filter((entry) => !liveIds.has(entry.id) && now - new Date(entry.createdAt).getTime() >= ORPHAN_GRACE_MS)
     .map((entry) => entry.id));
+}
+
+async function getStartupReconciliation(): Promise<StartupReconciliationState | null> {
+  const result = await browser.storage.session.get(STORAGE_KEYS.lazyStartupReconciliation);
+  return (result[STORAGE_KEYS.lazyStartupReconciliation] as StartupReconciliationState | undefined) ?? null;
+}
+
+async function scheduleStartupReconciliation(state: StartupReconciliationState): Promise<void> {
+  await browser.alarms.create(LAZY_RECONCILIATION_ALARM, {
+    when: Math.max(
+      state.startedAt + STARTUP_RECONCILIATION_GRACE_MS,
+      state.lastActivityAt + STARTUP_RECONCILIATION_QUIET_MS,
+    ),
+  });
+}
+
+export async function beginStartupLazyReconciliation(now = Date.now()): Promise<void> {
+  startupReconciliationStarting = true;
+  startupActivityRevision = 0;
+  hydratedStartupTabs.clear();
+  const state = { startedAt: now, lastActivityAt: now, revision: 0 };
+  await browser.storage.session.set({ [STORAGE_KEYS.lazyStartupReconciliation]: state });
+  await scheduleStartupReconciliation(state);
+}
+
+export async function noteStartupLazyActivity(now = Date.now()): Promise<void> {
+  startupActivityRevision += 1;
+  const state = await getStartupReconciliation();
+  if (!state) return;
+  const next = { ...state, lastActivityAt: now, revision: state.revision + 1 };
+  await browser.storage.session.set({ [STORAGE_KEYS.lazyStartupReconciliation]: next });
+  await scheduleStartupReconciliation(next);
+}
+
+export async function isStartupLazyReconciliationActive(): Promise<boolean> {
+  return startupReconciliationStarting || Boolean(await getStartupReconciliation());
+}
+
+export async function finishStartupLazyReconciliation(now = Date.now()): Promise<boolean> {
+  const state = await getStartupReconciliation();
+  if (!state) return false;
+  if (now < state.startedAt + STARTUP_RECONCILIATION_GRACE_MS
+    || now < state.lastActivityAt + STARTUP_RECONCILIATION_QUIET_MS) {
+    await scheduleStartupReconciliation(state);
+    return false;
+  }
+
+  const localRevision = startupActivityRevision;
+  const windows = await browser.windows.getAll({ populate: true });
+  const liveIds = new Set<string>();
+  for (const window of windows) {
+    for (const tab of window.tabs ?? []) {
+      const lazyId = lazyIdFromTab(tab);
+      if (!lazyId || tab.id == null) continue;
+      liveIds.add(lazyId);
+      await claimLazyTab(lazyId, tab.id, tab.windowId ?? window.id);
+    }
+  }
+
+  const latest = await getStartupReconciliation();
+  if (!latest || latest.revision !== state.revision || startupActivityRevision !== localRevision) {
+    if (latest) await scheduleStartupReconciliation(latest);
+    return false;
+  }
+
+  const entries = await lazyRestoreRepository.list();
+  await lazyRestoreRepository.removeMany(entries.filter((entry) => !liveIds.has(entry.id)).map((entry) => entry.id));
+  await browser.storage.session.remove(STORAGE_KEYS.lazyStartupReconciliation);
+  startupReconciliationStarting = false;
+  return true;
 }
