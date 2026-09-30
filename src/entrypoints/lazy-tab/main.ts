@@ -1,4 +1,5 @@
 import { browser } from 'wxt/browser';
+import { applyLazyTabAppearance } from '@/features/workspaces/lazyTabAppearance';
 import { lazyRestoreRepository } from '@/lib/storage/lazyRestoreRepository';
 
 const recovery = document.getElementById('recovery')!;
@@ -40,18 +41,16 @@ async function initialize() {
   if (!lazyId) return showRecovery(true);
   const entry = await lazyRestoreRepository.get(lazyId);
   if (!entry) return showRecovery(true);
-  document.title = entry.title;
-
-  const icon = new Image();
-  icon.onload = () => {
-    const link = document.createElement('link');
-    link.rel = 'icon';
-    link.href = entry.favIconUrl;
-    document.head.append(link);
+  const favicon = applyLazyTabAppearance(entry);
+  const extensionPage = browser.runtime.getURL('/lazy-tab.html');
+  const cachedFavicon = `${new URL('/_favicon/', extensionPage)}?pageUrl=${encodeURIComponent(entry.originalUrl)}&size=32`;
+  favicon.onerror = () => {
+    if (favicon.href !== cachedFavicon) favicon.href = cachedFavicon;
+    else {
+      favicon.onerror = null;
+      favicon.href = new URL('/lazy-favicon.svg', extensionPage).toString();
+    }
   };
-  icon.onerror = () => void requestResolve(lazyId);
-  icon.referrerPolicy = 'no-referrer';
-  icon.src = entry.favIconUrl;
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') beginActiveRecovery(lazyId);
   });
