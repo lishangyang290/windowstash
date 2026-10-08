@@ -42,6 +42,10 @@ jobs:
           done
           VERSION="${GITHUB_REF_NAME#v}"
           node scripts/validate-release-version.mjs "$VERSION"
+          test -s ".github/release-notes/$GITHUB_REF_NAME.md" || {
+            echo "缺少当前版本更新说明：.github/release-notes/$GITHUB_REF_NAME.md" >&2
+            exit 1
+          }
           {
             echo "RELEASE_VERSION=$VERSION"
             echo "PACKAGE_NAME=WindowStash-v$VERSION"
@@ -114,4 +118,14 @@ jobs:
       - name: Create GitHub Release and upload macOS asset
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" "$ZIP_PATH" --verify-tag --title "WindowStash $GITHUB_REF_NAME" --generate-notes
+        run: |
+          set -euo pipefail
+          RELEASE_NOTES="$(cat ".github/release-notes/$GITHUB_REF_NAME.md")"
+          RELEASE_BODY="$RUNNER_TEMP/release-body.md"
+          DOWNLOAD_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$ZIP_NAME"
+          {
+            printf '# WindowStash %s\n\n<details>\n<summary>版本更新说明</summary>\n\n' "$GITHUB_REF_NAME"
+            printf '%s\n\n</details>\n\n## 下载地址\n\n### macOS\n\n' "$RELEASE_NOTES"
+            printf -- '- [Apple M芯片](%s)\n' "$DOWNLOAD_URL"
+          } > "$RELEASE_BODY"
+          gh release create "$GITHUB_REF_NAME" "$ZIP_PATH" --verify-tag --title "WindowStash $GITHUB_REF_NAME" --notes-file "$RELEASE_BODY"
