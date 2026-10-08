@@ -1,0 +1,117 @@
+name: Release macOS
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            companion/package-lock.json
+
+      - name: Check tag and declared versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "Tag 必须符合 vX.Y.Z：$GITHUB_REF_NAME" >&2
+            exit 1
+          }
+          git describe --tags --exact-match HEAD | grep -Fx "$GITHUB_REF_NAME"
+          for path in .env companion/.env .output companion/dist companion/src-tauri/target; do
+            test ! -e "$path" || { echo "干净 checkout 不应包含：$path" >&2; exit 1; }
+          done
+          VERSION="${GITHUB_REF_NAME#v}"
+          node scripts/validate-release-version.mjs "$VERSION"
+          {
+            echo "RELEASE_VERSION=$VERSION"
+            echo "PACKAGE_NAME=WindowStash-v$VERSION"
+            echo "ZIP_NAME=WindowStash-v$VERSION-macOS.zip"
+          } >> "$GITHUB_ENV"
+
+      - name: Install Extension dependencies
+        run: npm ci
+
+      - name: Install Companion dependencies
+        working-directory: companion
+        run: npm ci
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Remove user paths from Rust build metadata
+        shell: bash
+        run: echo "RUSTFLAGS=--remap-path-prefix=$HOME=/workspace" >> "$GITHUB_ENV"
+
+      - name: Check Git whitespace
+        run: git diff --check
+
+      - name: Validate Extension
+        run: |
+          npm run lint
+          npm test
+          npm run typecheck
+          npm run build
+
+      - name: Validate Companion frontend
+        working-directory: companion
+        run: |
+          npm run lint
+          npm test
+          npm run typecheck
+          npm run build
+
+      - name: Build Companion app
+        working-directory: companion
+        run: npm run tauri:build
+
+      - name: Run existing production privacy validation
+        run: |
+          node scripts/validate-release-build.mjs .output/chrome-mv3 companion/dist
+          git diff --check
+          git diff --exit-code
+
+      - name: Assemble macOS package
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGING_DIR="$(mktemp -d "$RUNNER_TEMP/windowstash-release.XXXXXX")"
+          PACKAGE_DIR="$STAGING_DIR/$PACKAGE_NAME"
+          ZIP_PATH="$RUNNER_TEMP/$ZIP_NAME"
+          mkdir -p "$PACKAGE_DIR/Chrome Extension"
+          cp -R .output/chrome-mv3/. "$PACKAGE_DIR/Chrome Extension/"
+          cp -R "companion/src-tauri/target/release/bundle/macos/WindowStash Companion.app" "$PACKAGE_DIR/"
+          cp "public/开始使用.html" "$PACKAGE_DIR/开始使用.html"
+          printf 'WindowStash v%s\n\n请先双击打开：\n开始使用.html\n\n按照教程完成 Chrome Extension、Supabase 和 WindowStash Companion 的安装。\n' "$RELEASE_VERSION" > "$PACKAGE_DIR/README.txt"
+          ditto -c -k --keepParent --norsrc --noextattr --noqtn --noacl "$PACKAGE_DIR" "$ZIP_PATH"
+          {
+            echo "PACKAGE_DIR=$PACKAGE_DIR"
+            echo "ZIP_PATH=$ZIP_PATH"
+          } >> "$GITHUB_ENV"
+
+      - name: Scan and validate final ZIP
+        run: node scripts/validate-release-artifact.mjs "$PACKAGE_DIR" "$ZIP_PATH" "$RELEASE_VERSION"
+
+      - name: Create GitHub Release and upload macOS asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" "$ZIP_PATH" --verify-tag --title "WindowStash $GITHUB_REF_NAME" --generate-notes
