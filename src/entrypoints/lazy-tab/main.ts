@@ -1,28 +1,24 @@
 import { browser } from 'wxt/browser';
 import { applyLazyTabAppearance } from '@/features/workspaces/lazyTabAppearance';
 import { lazyRestoreRepository } from '@/lib/storage/lazyRestoreRepository';
+import { renderLazyRecovery } from './recovery';
 
 const recovery = document.getElementById('recovery')!;
 let fallbackTimer: ReturnType<typeof setTimeout> | undefined;
 
-function showRecovery(unavailable: boolean, lazyId?: string) {
+function showRecovery(unavailable: boolean, lazyId?: string, originalUrl?: string) {
   if (unavailable && fallbackTimer) clearTimeout(fallbackTimer);
-  const brand = document.createElement('strong');
-  brand.textContent = 'WindowStash';
-  const message = document.createElement('p');
-  message.textContent = unavailable ? '无法恢复此标签页' : '无法自动恢复此标签页';
-  const action = document.createElement('button');
-  action.type = 'button';
-  action.textContent = unavailable ? '关闭此标签页' : '重新加载原页面';
-  action.onclick = unavailable
-    ? () => void browser.runtime.sendMessage({ type: 'CLOSE_LAZY_TAB' }).catch(() => undefined)
-    : () => void requestResolve(lazyId!);
-  recovery.replaceChildren(brand, message, action);
+  renderLazyRecovery(recovery, {
+    unavailable,
+    originalUrl,
+    onClose: () => void browser.runtime.sendMessage({ type: 'CLOSE_LAZY_TAB' }).catch(() => undefined),
+    onRetry: () => void requestResolve(lazyId!, originalUrl),
+  });
 }
 
-async function requestResolve(lazyId: string) {
+async function requestResolve(lazyId: string, originalUrl?: string) {
   const resolved = await browser.runtime.sendMessage({ type: 'RESOLVE_LAZY_TAB', lazyId }).catch(() => false);
-  if (resolved === false) showRecovery(true);
+  if (resolved === false) showRecovery(false, lazyId, originalUrl);
 }
 
 async function notifyReady(lazyId: string) {
@@ -30,10 +26,10 @@ async function notifyReady(lazyId: string) {
   if (result === 'missing') showRecovery(true);
 }
 
-function beginActiveRecovery(lazyId: string) {
+function beginActiveRecovery(lazyId: string, originalUrl: string) {
   if (fallbackTimer) clearTimeout(fallbackTimer);
   void notifyReady(lazyId);
-  fallbackTimer = setTimeout(() => showRecovery(false, lazyId), 2000);
+  fallbackTimer = setTimeout(() => showRecovery(false, lazyId, originalUrl), 2000);
 }
 
 async function initialize() {
@@ -52,9 +48,9 @@ async function initialize() {
     }
   };
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') beginActiveRecovery(lazyId);
+    if (document.visibilityState === 'visible') beginActiveRecovery(lazyId, entry.originalUrl);
   });
-  if (document.visibilityState === 'visible') beginActiveRecovery(lazyId);
+  if (document.visibilityState === 'visible') beginActiveRecovery(lazyId, entry.originalUrl);
   else await notifyReady(lazyId);
 }
 
