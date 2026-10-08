@@ -3,7 +3,7 @@ import { CLEANUP_ALARM, LAZY_RECONCILIATION_ALARM, SYNC_ALARM } from '@/lib/cons
 import { syncEngine } from '@/lib/sync/syncEngine';
 import { bindingRepository } from '@/lib/storage/bindingRepository';
 import type { BackgroundMessage } from '@/types/messages';
-import { openOrFocusWorkspace } from '@/features/workspaces/workspaceService';
+import { openOrFocusWorkspace, reopenWorkspace } from '@/features/workspaces/workspaceService';
 import {
   beginStartupLazyReconciliation,
   claimLazyTabFromBrowserTab,
@@ -67,6 +67,7 @@ export default defineBackground(() => {
   browser.runtime.onMessage.addListener((rawMessage, sender) => {
     const message = rawMessage as BackgroundMessage;
     if (message.type === 'OPEN_OR_FOCUS_WORKSPACE') return openOrFocusWorkspace(message.workspaceId);
+    if (message.type === 'REOPEN_WORKSPACE') return reopenWorkspace(message.workspaceId, message.sourceWindowId);
     if (message.type === 'LAZY_TAB_READY' && sender.tab?.id != null) {
       void noteStartupLazyActivity();
       return handleLazyTabReady(sender.tab.id, sender.tab.windowId, Boolean(sender.tab.active), message.lazyId);

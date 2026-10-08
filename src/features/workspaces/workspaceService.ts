@@ -57,6 +57,9 @@ export async function resolveWorkspaceStateForWindow(
       ? { status: 'resolved', workspaceId: boundId, record: bound, source: 'binding' }
       : { status: 'unavailable', workspaceId: boundId, record: null, source: 'binding' };
   }
+  if (await bindingRepository.isSuppressed(windowId)) {
+    return { status: 'unbound', workspaceId: null, record: null, source: null };
+  }
 
   const matched = matchWorkspace(await resolveLogicalTabs(tabs), await workspaceRepository.list());
   if (matched) await bindingRepository.set(windowId, matched.content.id);
@@ -112,16 +115,28 @@ export async function saveCurrentWindow(input: {
   return content;
 }
 
-export async function restoreWorkspace(workspaceId: string): Promise<number> {
+interface RestoreWorkspaceOptions {
+  focused?: boolean;
+  cleanupOnFailure?: boolean;
+  deferBinding?: boolean;
+}
+
+export async function restoreWorkspace(
+  workspaceId: string,
+  options: RestoreWorkspaceOptions = {},
+): Promise<number> {
   const record = await workspaceRepository.get(workspaceId);
   if (!record) throw new Error('本地工作区不存在，请先完成云端同步');
-  const createdWindow = await browser.windows.create({ url: 'about:blank', focused: true });
+  const createdWindow = await browser.windows.create({ url: 'about:blank', focused: options.focused ?? true });
   if (!createdWindow || createdWindow.id == null) throw new Error('无法创建新的 Chrome 窗口');
-  await bindingRepository.set(createdWindow.id, workspaceId);
   const initialTabId = createdWindow.tabs?.[0]?.id;
   const createdByPosition = new Map<number, number>();
+  const lazyEntryIds: string[] = [];
 
   try {
+    if (options.deferBinding) await bindingRepository.suppress(createdWindow.id);
+    else await bindingRepository.set(createdWindow.id, workspaceId);
+
     for (const tab of [...record.content.tabs].sort((a, b) => a.position - b.position)) {
       try {
         let created;
@@ -129,10 +144,13 @@ export async function restoreWorkspace(workspaceId: string): Promise<number> {
           const entry = createLazyEntry(workspaceId, tab);
           try {
             await lazyRestoreRepository.put(entry);
+            lazyEntryIds.push(entry.id);
             created = await browser.tabs.create({ windowId: createdWindow.id, url: lazyTabUrl(entry.id), active: false, pinned: tab.pinned });
             await lazyRestoreRepository.put({ ...entry, tabId: created.id, windowId: createdWindow.id });
           } catch {
             await lazyRestoreRepository.remove(entry.id).catch(() => undefined);
+            const index = lazyEntryIds.indexOf(entry.id);
+            if (index >= 0) lazyEntryIds.splice(index, 1);
             created = await browser.tabs.create({ windowId: createdWindow.id, url: tab.url, active: false, pinned: tab.pinned });
           }
         } else {
@@ -162,8 +180,66 @@ export async function restoreWorkspace(workspaceId: string): Promise<number> {
     return createdWindow.id;
   } catch (error) {
     await bindingRepository.remove(createdWindow.id).catch(() => undefined);
+    if (options.cleanupOnFailure) {
+      await lazyRestoreRepository.removeMany(lazyEntryIds).catch(() => undefined);
+      await browser.windows.remove(createdWindow.id).catch(() => undefined);
+    }
     throw error;
   }
+}
+
+const reopenWorkspaceTasks = new Map<string, Promise<number>>();
+
+async function cleanupReopenedWindow(windowId: number): Promise<void> {
+  await bindingRepository.remove(windowId).catch(() => undefined);
+  await lazyRestoreRepository.removeByWindowId(windowId).catch(() => undefined);
+  await browser.windows.remove(windowId).catch(() => undefined);
+}
+
+async function runReopenWorkspace(workspaceId: string, sourceWindowId: number): Promise<number> {
+  if (await bindingRepository.get(sourceWindowId) !== workspaceId) throw new Error('当前窗口未绑定此工作区');
+  let newWindowId: number;
+  try {
+    newWindowId = await restoreWorkspace(workspaceId, {
+      focused: true,
+      cleanupOnFailure: true,
+      deferBinding: true,
+    });
+  } catch (error) {
+    await browser.windows.update(sourceWindowId, { focused: true }).catch(() => undefined);
+    throw error;
+  }
+
+  let transferStarted = false;
+  try {
+    if (await bindingRepository.get(sourceWindowId) !== workspaceId) throw new Error('当前窗口绑定已变更');
+    transferStarted = true;
+    await bindingRepository.suppress(sourceWindowId);
+    await bindingRepository.set(newWindowId, workspaceId);
+  } catch (error) {
+    if (transferStarted) await bindingRepository.set(sourceWindowId, workspaceId).catch(() => undefined);
+    await cleanupReopenedWindow(newWindowId);
+    await browser.windows.update(sourceWindowId, { focused: true }).catch(() => undefined);
+    throw error;
+  }
+
+  try {
+    await browser.windows.remove(sourceWindowId);
+  } catch {
+    await browser.windows.update(newWindowId, { focused: true }).catch(() => undefined);
+  }
+  return newWindowId;
+}
+
+export function reopenWorkspace(workspaceId: string, sourceWindowId: number): Promise<number> {
+  const key = `${sourceWindowId}:${workspaceId}`;
+  const existing = reopenWorkspaceTasks.get(key);
+  if (existing) return existing;
+  const task = runReopenWorkspace(workspaceId, sourceWindowId).finally(() => {
+    if (reopenWorkspaceTasks.get(key) === task) reopenWorkspaceTasks.delete(key);
+  });
+  reopenWorkspaceTasks.set(key, task);
+  return task;
 }
 
 interface WindowCandidate {

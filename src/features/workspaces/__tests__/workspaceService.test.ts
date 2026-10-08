@@ -5,7 +5,7 @@ const browserMock = vi.hoisted(() => ({
   tabs: { create: vi.fn(), get: vi.fn(), remove: vi.fn(), update: vi.fn() },
   runtime: { sendMessage: vi.fn().mockResolvedValue(undefined), getURL: vi.fn((path: string) => `chrome-extension://test${path}`) },
 }));
-const bindingMock = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), remove: vi.fn() }));
+const bindingMock = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), suppress: vi.fn(), isSuppressed: vi.fn(), remove: vi.fn() }));
 const logMock = vi.hoisted(() => ({ add: vi.fn() }));
 const tombstoneMock = vi.hoisted(() => ({ add: vi.fn() }));
 const workspaceMock = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), saveContent: vi.fn(), put: vi.fn(), remove: vi.fn() }));
@@ -27,6 +27,7 @@ import {
   openOrFocusWorkspace,
   openWorkspaceTab,
   reopenSavedTab,
+  reopenWorkspace,
   resolveWorkspaceForWindow,
   resolveWorkspaceStateForWindow,
   restoreWorkspace,
@@ -55,6 +56,8 @@ describe('workspaceService', () => {
     vi.clearAllMocks();
     bindingMock.get.mockResolvedValue(null);
     bindingMock.set.mockResolvedValue(undefined);
+    bindingMock.suppress.mockResolvedValue(undefined);
+    bindingMock.isSuppressed.mockResolvedValue(false);
     bindingMock.remove.mockResolvedValue(undefined);
     logMock.add.mockResolvedValue(undefined);
     workspaceMock.saveContent.mockImplementation(async (content) => ({ ...localRecord, content }));
@@ -66,6 +69,8 @@ describe('workspaceService', () => {
     lazyMock.get.mockResolvedValue(null);
     lazyMock.put.mockResolvedValue(undefined);
     lazyMock.remove.mockResolvedValue(undefined);
+    lazyMock.removeByWindowId.mockResolvedValue(undefined);
+    lazyMock.removeMany.mockResolvedValue(undefined);
   });
 
   it('captures only the explicitly requested window and closes it after local persistence', async () => {
@@ -278,6 +283,18 @@ describe('workspaceService', () => {
     expect(bindingMock.set).toHaveBeenCalledWith(8675, 'workspace-1');
   });
 
+  it('does not run the matcher for a suppressed window', async () => {
+    bindingMock.isSuppressed.mockResolvedValue(true);
+
+    await expect(resolveWorkspaceStateForWindow(22, [
+      { url: 'https://a.example', index: 0, pinned: true },
+      { url: 'https://b.example', index: 1, pinned: false },
+    ])).resolves.toEqual({ status: 'unbound', workspaceId: null, record: null, source: null });
+
+    expect(workspaceMock.list).not.toHaveBeenCalled();
+    expect(bindingMock.set).not.toHaveBeenCalled();
+  });
+
   it('keeps the existing runtime binding as the fast path', async () => {
     bindingMock.get.mockResolvedValue('workspace-1');
     workspaceMock.get.mockResolvedValue(localRecord);
@@ -384,6 +401,202 @@ describe('workspaceService', () => {
 
     expect(bindingMock.set).toHaveBeenCalledWith(99, record.content.id);
     expect(bindingMock.remove).toHaveBeenCalledWith(99);
+  });
+
+  it('reopens from saved data and transfers the authoritative binding only after restore', async () => {
+    const record = recordWithTabs(3, 1);
+    workspaceMock.get.mockResolvedValue(record);
+    bindingMock.get.mockImplementation(async (windowId: number) => windowId === 22 ? record.content.id : null);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockImplementation(async () => ({ id: 901 + browserMock.tabs.create.mock.calls.length }));
+    browserMock.tabs.remove.mockResolvedValue(undefined);
+    browserMock.tabs.update.mockResolvedValue(undefined);
+    browserMock.windows.remove.mockResolvedValue(undefined);
+
+    await expect(reopenWorkspace(record.content.id, 22)).resolves.toBe(99);
+
+    expect(browserMock.windows.get).not.toHaveBeenCalled();
+    expect(workspaceMock.saveContent).not.toHaveBeenCalled();
+    expect(workspaceMock.put).toHaveBeenCalledWith(expect.objectContaining({ content: record.content }));
+    expect(browserMock.runtime.sendMessage).not.toHaveBeenCalled();
+    expect(browserMock.windows.create).toHaveBeenCalledWith({ url: 'about:blank', focused: true });
+    expect(bindingMock.suppress).toHaveBeenNthCalledWith(1, 99);
+    expect(bindingMock.suppress).toHaveBeenNthCalledWith(2, 22);
+    expect(bindingMock.set).toHaveBeenCalledWith(99, record.content.id);
+    expect(bindingMock.suppress.mock.invocationCallOrder[1]).toBeGreaterThan(browserMock.tabs.update.mock.invocationCallOrder[0]!);
+    expect(bindingMock.suppress.mock.invocationCallOrder[1]).toBeLessThan(bindingMock.set.mock.invocationCallOrder[0]!);
+    expect(browserMock.windows.remove).toHaveBeenCalledWith(22);
+    expect(bindingMock.set.mock.invocationCallOrder[0]).toBeLessThan(browserMock.windows.remove.mock.invocationCallOrder[0]!);
+    expect(browserMock.windows.update).not.toHaveBeenCalledWith(22, { focused: true });
+  });
+
+  it('keeps the source binding while the reopened window is still restoring', async () => {
+    const record = recordWithTabs(2, 1);
+    let releaseFirstTab!: () => void;
+    const firstTab = new Promise<{ id: number }>((resolve) => { releaseFirstTab = () => resolve({ id: 901 }); });
+    workspaceMock.get.mockResolvedValue(record);
+    bindingMock.get.mockImplementation(async (windowId: number) => windowId === 22 ? record.content.id : null);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockReturnValueOnce(firstTab).mockResolvedValue({ id: 902 });
+    browserMock.tabs.remove.mockResolvedValue(undefined);
+    browserMock.tabs.update.mockResolvedValue(undefined);
+    browserMock.windows.update.mockResolvedValue(undefined);
+
+    const reopening = reopenWorkspace(record.content.id, 22);
+    await vi.waitFor(() => expect(browserMock.tabs.create).toHaveBeenCalledOnce());
+
+    expect(browserMock.windows.create).toHaveBeenCalledWith({ url: 'about:blank', focused: true });
+    expect(browserMock.windows.create.mock.invocationCallOrder[0]).toBeLessThan(browserMock.tabs.create.mock.invocationCallOrder[0]!);
+    expect(bindingMock.suppress).toHaveBeenCalledWith(99);
+    expect(bindingMock.suppress).not.toHaveBeenCalledWith(22);
+    expect(bindingMock.set).not.toHaveBeenCalledWith(99, record.content.id);
+    expect(browserMock.windows.remove).not.toHaveBeenCalledWith(22);
+
+    releaseFirstTab();
+    await reopening;
+    expect(bindingMock.suppress).toHaveBeenCalledWith(22);
+    expect(browserMock.windows.remove).toHaveBeenCalledWith(22);
+  });
+
+  it('keeps the source binding and removes a failed reopened window with its lazy registry', async () => {
+    const record = recordWithTabs(2, 1);
+    workspaceMock.get.mockResolvedValue(record);
+    workspaceMock.put.mockRejectedValueOnce(new Error('metadata write failed'));
+    bindingMock.get.mockImplementation(async (windowId: number) => windowId === 22 ? record.content.id : null);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValueOnce({ id: 901 }).mockResolvedValueOnce({ id: 902 });
+    browserMock.tabs.remove.mockResolvedValue(undefined);
+    browserMock.tabs.update.mockResolvedValue(undefined);
+    browserMock.windows.remove.mockResolvedValue(undefined);
+
+    await expect(reopenWorkspace(record.content.id, 22)).rejects.toThrow('metadata write failed');
+
+    expect(bindingMock.suppress).toHaveBeenCalledWith(99);
+    expect(bindingMock.suppress).not.toHaveBeenCalledWith(22);
+    expect(bindingMock.set).not.toHaveBeenCalledWith(99, record.content.id);
+    expect(bindingMock.remove).toHaveBeenCalledWith(99);
+    expect(lazyMock.removeMany).toHaveBeenCalledWith(expect.arrayContaining([expect.any(String)]));
+    expect(browserMock.windows.remove).toHaveBeenCalledWith(99);
+    expect(browserMock.windows.remove).not.toHaveBeenCalledWith(22);
+    expect(browserMock.windows.update).toHaveBeenCalledWith(22, { focused: true });
+  });
+
+  it('closes the reopened window when its binding cannot be created', async () => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+    bindingMock.get.mockResolvedValue('workspace-1');
+    bindingMock.set.mockImplementation(async (windowId: number) => {
+      if (windowId === 99) throw new Error('binding failed');
+    });
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+    browserMock.tabs.remove.mockResolvedValue(undefined);
+    browserMock.tabs.update.mockResolvedValue(undefined);
+    browserMock.windows.remove.mockResolvedValue(undefined);
+
+    await expect(reopenWorkspace('workspace-1', 22)).rejects.toThrow('binding failed');
+
+    expect(bindingMock.remove).toHaveBeenCalledWith(99);
+    expect(lazyMock.removeByWindowId).toHaveBeenCalledWith(99);
+    expect(browserMock.windows.remove).toHaveBeenCalledWith(99);
+    expect(bindingMock.suppress).toHaveBeenCalledWith(22);
+    expect(bindingMock.set).toHaveBeenCalledWith(22, 'workspace-1');
+    expect(browserMock.windows.update).toHaveBeenCalledWith(22, { focused: true });
+  });
+
+  it('restores the source binding when suppression fails during transfer', async () => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+    bindingMock.get.mockResolvedValue('workspace-1');
+    bindingMock.suppress.mockImplementation(async (windowId: number) => {
+      if (windowId === 22) throw new Error('suppression failed');
+    });
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+    browserMock.tabs.remove.mockResolvedValue(undefined);
+    browserMock.tabs.update.mockResolvedValue(undefined);
+    browserMock.windows.remove.mockResolvedValue(undefined);
+
+    await expect(reopenWorkspace('workspace-1', 22)).rejects.toThrow('suppression failed');
+
+    expect(bindingMock.set).toHaveBeenCalledWith(22, 'workspace-1');
+    expect(bindingMock.remove).toHaveBeenCalledWith(99);
+    expect(browserMock.windows.remove).toHaveBeenCalledWith(99);
+    expect(browserMock.windows.update).toHaveBeenCalledWith(22, { focused: true });
+  });
+
+  it('keeps the restored window authoritative when closing the source window fails', async () => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+    bindingMock.get.mockResolvedValue('workspace-1');
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+    browserMock.tabs.remove.mockResolvedValue(undefined);
+    browserMock.tabs.update.mockResolvedValue(undefined);
+    browserMock.windows.remove.mockRejectedValueOnce(new Error('close failed'));
+    browserMock.windows.update.mockResolvedValue(undefined);
+
+    await expect(reopenWorkspace('workspace-1', 22)).resolves.toBe(99);
+
+    expect(bindingMock.suppress).toHaveBeenCalledWith(22);
+    expect(bindingMock.set).toHaveBeenCalledWith(99, 'workspace-1');
+    expect(bindingMock.remove).not.toHaveBeenCalledWith(99);
+    expect(browserMock.windows.update).toHaveBeenCalledWith(99, { focused: true });
+  });
+
+  it('rejects reopening when the source window is not bound to the workspace', async () => {
+    bindingMock.get.mockResolvedValue(null);
+
+    await expect(reopenWorkspace('workspace-1', 22)).rejects.toThrow('当前窗口未绑定此工作区');
+
+    expect(workspaceMock.get).not.toHaveBeenCalled();
+    expect(browserMock.windows.create).not.toHaveBeenCalled();
+  });
+
+  it('deduplicates concurrent reopen requests for the same source and workspace', async () => {
+    let releaseFirstTab!: () => void;
+    const firstTab = new Promise<{ id: number }>((resolve) => { releaseFirstTab = () => resolve({ id: 901 }); });
+    workspaceMock.get.mockResolvedValue(localRecord);
+    bindingMock.get.mockImplementation(async (windowId: number) => windowId === 22 ? 'workspace-1' : null);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockReturnValueOnce(firstTab).mockResolvedValue({ id: 902 });
+    browserMock.tabs.remove.mockResolvedValue(undefined);
+    browserMock.tabs.update.mockResolvedValue(undefined);
+    browserMock.windows.update.mockResolvedValue(undefined);
+
+    const first = reopenWorkspace('workspace-1', 22);
+    const second = reopenWorkspace('workspace-1', 22);
+    await vi.waitFor(() => expect(browserMock.tabs.create).toHaveBeenCalledOnce());
+    releaseFirstTab();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([99, 99]);
+    expect(browserMock.windows.create).toHaveBeenCalledOnce();
+  });
+
+  it('creates a new workspace when the suppressed old window is explicitly saved', async () => {
+    bindingMock.get.mockResolvedValue(null);
+    bindingMock.isSuppressed.mockResolvedValue(true);
+    browserMock.windows.get.mockResolvedValue({
+      id: 22,
+      tabs: [{ id: 1, title: 'Old state', url: 'https://old.example', index: 0, active: true, pinned: false }],
+    });
+
+    const saved = await saveCurrentWindow({ windowId: 22, name: '旧窗口副本', status: 'active', closeAfterSave: false });
+
+    expect(saved.id).not.toBe('workspace-1');
+    expect(bindingMock.set).toHaveBeenCalledWith(22, saved.id);
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: saved.id }));
+  });
+
+  it('continues updating the original workspace when the reopened window is saved', async () => {
+    bindingMock.get.mockResolvedValue('workspace-1');
+    workspaceMock.get.mockResolvedValue(localRecord);
+    browserMock.windows.get.mockResolvedValue({
+      id: 99,
+      tabs: [{ id: 1, title: 'New state', url: 'https://new.example', index: 0, active: true, pinned: false }],
+    });
+
+    const saved = await saveCurrentWindow({ windowId: 99, name: 'PetLifeHub', status: 'active', closeAfterSave: false });
+
+    expect(saved.id).toBe('workspace-1');
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: 'workspace-1' }));
   });
 
   it('focuses an already bound workspace instead of restoring a duplicate', async () => {

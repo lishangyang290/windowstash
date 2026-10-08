@@ -26,6 +26,7 @@ import { LazyTabResolutionError, resolveLogicalTabs } from '@/features/workspace
 import { validateWorkspaceName } from '@/features/workspaces/workspaceName';
 import type { WorkspaceLocalRecord, WorkspaceStatus } from '@/types/workspace';
 import { getSupabaseConfig, type SupabaseConfig } from '@/lib/supabase/client';
+import { WorkspaceActions } from './WorkspaceActions';
 import '@/styles/base.css';
 import './style.css';
 
@@ -115,26 +116,6 @@ function UpdatedItem({ change, onOpen }: { change: UpdatedTabChange; onOpen: (ch
   );
 }
 
-function SaveButtons({ action, phase, blocked, onSave }: {
-  action: SaveAction | null;
-  phase: SavePhase;
-  blocked: boolean;
-  onSave: (closeAfterSave: boolean) => void;
-}) {
-  const label = (buttonAction: SaveAction, idleLabel: string) => {
-    if (action !== buttonAction) return idleLabel;
-    if (phase === 'saving') return '正在保存…';
-    return idleLabel;
-  };
-
-  return (
-    <div className="popup-actions">
-      <button className="button button-primary" disabled={blocked || phase !== 'idle'} onClick={() => onSave(false)}>{label('save', '保存当前状态')}</button>
-      <button className="button" disabled={blocked || phase !== 'idle'} onClick={() => onSave(true)}>{label('close', '保存并关闭窗口')}</button>
-    </div>
-  );
-}
-
 function Popup() {
   const [windowId, setWindowId] = React.useState<number | null>(null);
   const [tabs, setTabs] = React.useState<CurrentTabSnapshot[]>([]);
@@ -145,6 +126,7 @@ function Popup() {
   const [page, setPage] = React.useState<'main' | 'details'>('main');
   const [activeKind, setActiveKind] = React.useState<TabChangeKind>('added');
   const [reopening, setReopening] = React.useState('');
+  const [reopeningWorkspace, setReopeningWorkspace] = React.useState(false);
   const [saveAction, setSaveAction] = React.useState<SaveAction | null>(null);
   const [savePhase, setSavePhase] = React.useState<SavePhase>('idle');
   const [error, setError] = React.useState('');
@@ -266,6 +248,23 @@ function Popup() {
     }
   }
 
+  async function reopen() {
+    if (windowId == null || resolution?.status !== 'resolved') return;
+    setReopeningWorkspace(true);
+    setError('');
+    try {
+      await browser.runtime.sendMessage({
+        type: 'REOPEN_WORKSPACE',
+        workspaceId: resolution.workspaceId,
+        sourceWindowId: windowId,
+      });
+      setReopeningWorkspace(false);
+    } catch {
+      setReopeningWorkspace(false);
+      setError('无法重新打开工作区，请重试');
+    }
+  }
+
   function startRename() {
     if (!record || renaming) return;
     setDraftName(name);
@@ -308,7 +307,7 @@ function Popup() {
 
   const isBound = resolution?.status === 'resolved' && record != null;
   const isUnavailable = resolution?.status === 'unavailable';
-  const buttons = <SaveButtons action={saveAction} phase={savePhase} blocked={!logicalTabsReady || isUnavailable} onSave={(close) => void submit(close)} />;
+  const buttons = <WorkspaceActions action={saveAction} phase={savePhase} blocked={!logicalTabsReady || isUnavailable} reopeningWorkspace={reopeningWorkspace} showReopen={isBound} onSave={(close) => void submit(close)} onReopen={() => void reopen()} />;
   const successToast = success ? <SuccessToast message={success} onDismiss={() => setSuccess('')} /> : null;
 
   if (page === 'details' && isBound) {
