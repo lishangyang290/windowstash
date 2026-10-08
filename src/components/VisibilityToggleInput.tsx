@@ -21,7 +21,7 @@ export function VisibilityToggleInput({
     const selection = input ? [input.selectionStart, input.selectionEnd] as const : null;
     setVisible((current) => !current);
     requestAnimationFrame(() => {
-      if (!input || !selection || selection[0] === null || selection[1] === null) return;
+      if (!input || !selection || selection[0] === null || selection[1] === null || typeof input.setSelectionRange !== 'function') return;
       input.focus({ preventScroll: true });
       input.setSelectionRange(selection[0], selection[1]);
     });
