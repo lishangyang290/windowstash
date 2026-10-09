@@ -1,9 +1,15 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const listeners = vi.hoisted(() => ({ onMessage: undefined as ((message: unknown, sender: unknown) => unknown) | undefined }));
+const listeners = vi.hoisted(() => ({
+  onMessage: undefined as ((message: unknown, sender: unknown) => unknown) | undefined,
+  onCreated: undefined as ((tab: { windowId: number }) => void) | undefined,
+  onRemoved: undefined as ((tabId: number, info: { windowId: number; isWindowClosing: boolean }) => void) | undefined,
+  onMoved: undefined as ((tabId: number, info: { windowId: number }) => void) | undefined,
+}));
 const reopenMock = vi.hoisted(() => vi.fn());
 const recoverMock = vi.hoisted(() => vi.fn());
 const restoreSavedMock = vi.hoisted(() => vi.fn());
+const refreshAssociationMock = vi.hoisted(() => vi.fn());
 
 const browserMock = vi.hoisted(() => {
   const event = () => ({ addListener: vi.fn() });
@@ -15,7 +21,14 @@ const browserMock = vi.hoisted(() => {
       onMessage: { addListener: vi.fn((listener) => { listeners.onMessage = listener; }) },
     },
     windows: { onRemoved: event() },
-    tabs: { onActivated: event(), onCreated: event(), onUpdated: event(), onRemoved: event() },
+    tabs: {
+      onActivated: event(),
+      onCreated: { addListener: vi.fn((listener) => { listeners.onCreated = listener; }) },
+      onUpdated: event(),
+      onRemoved: { addListener: vi.fn((listener) => { listeners.onRemoved = listener; }) },
+      onMoved: { addListener: vi.fn((listener) => { listeners.onMoved = listener; }) },
+      onAttached: event(), onDetached: event(),
+    },
   };
 });
 
@@ -35,13 +48,18 @@ vi.mock('@/features/workspaces/lazyRestore', () => ({
   confirmLazyNavigation: vi.fn(),
   finishStartupLazyReconciliation: vi.fn(),
   handleLazyTabReady: vi.fn(),
-  hydrateStartupLazyTab: vi.fn(),
+  hydrateStartupLazyTab: vi.fn().mockResolvedValue(false),
   hydrateStartupLazyTabs: vi.fn(),
-  isStartupLazyReconciliationActive: vi.fn(),
+  isStartupLazyReconciliationActive: vi.fn().mockResolvedValue(false),
   isStartupLazyReconciliationComplete: vi.fn(),
-  noteStartupLazyActivity: vi.fn(),
-  removeLazyTab: vi.fn(),
+  noteStartupLazyActivity: vi.fn().mockResolvedValue(undefined),
+  removeLazyTab: vi.fn().mockResolvedValue(undefined),
   resolveLazyTab: vi.fn(),
+}));
+vi.mock('@/features/workspaces/windowAssociation', () => ({
+  maintainWindowAssociations: vi.fn(),
+  refreshBoundWindowAssociation: refreshAssociationMock,
+  restorePersistentWindowAssociations: vi.fn(),
 }));
 
 beforeAll(async () => {
@@ -50,7 +68,18 @@ beforeAll(async () => {
 });
 
 describe('background messages', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    refreshAssociationMock.mockResolvedValue(true);
+  });
+
+  it('starts persistence directly for tab creation, removal and movement', () => {
+    listeners.onCreated?.({ windowId: 11 });
+    listeners.onRemoved?.(1, { windowId: 22, isWindowClosing: false });
+    listeners.onMoved?.(2, { windowId: 33 });
+
+    expect(refreshAssociationMock.mock.calls.map(([windowId]) => windowId)).toEqual([11, 22, 33]);
+  });
 
   it('runs the complete reopen flow in background', async () => {
     reopenMock.mockResolvedValue(99);

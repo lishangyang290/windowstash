@@ -14,7 +14,9 @@ import {
   type UpdatedTabChange,
 } from '@/features/workspaces/tabDiff';
 import {
+  associateExistingWorkspace,
   focusWindowTab,
+  listWorkspacesForAssociation,
   reopenSavedTab,
   resolveWorkspaceStateForWindow,
   saveCurrentWindow,
@@ -122,7 +124,7 @@ function Popup() {
   const [resolution, setResolution] = React.useState<WorkspaceWindowResolution | null>(null);
   const [name, setName] = React.useState('');
   const [status, setStatus] = React.useState<WorkspaceStatus>('active');
-  const [page, setPage] = React.useState<'main' | 'details'>('main');
+  const [page, setPage] = React.useState<'main' | 'details' | 'associate'>('main');
   const [activeKind, setActiveKind] = React.useState<TabChangeKind>('added');
   const [reopening, setReopening] = React.useState('');
   const [reopeningWorkspace, setReopeningWorkspace] = React.useState(false);
@@ -135,6 +137,8 @@ function Popup() {
   const [renameError, setRenameError] = React.useState('');
   const [renaming, setRenaming] = React.useState(false);
   const [success, setSuccess] = React.useState('');
+  const [associationOptions, setAssociationOptions] = React.useState<WorkspaceLocalRecord[]>([]);
+  const [associating, setAssociating] = React.useState('');
   const windowIdRef = React.useRef<number | null>(null);
   const renameInputRef = React.useRef<HTMLInputElement>(null);
   const renameSubmittingRef = React.useRef(false);
@@ -282,6 +286,32 @@ function Popup() {
     }
   }
 
+  async function openAssociationPicker() {
+    setError('');
+    try {
+      setAssociationOptions(await listWorkspacesForAssociation());
+      setPage('associate');
+    } catch {
+      setError('无法读取已保存工作区，请重试');
+    }
+  }
+
+  async function associate(workspaceId: string) {
+    if (windowId == null) return;
+    setAssociating(workspaceId);
+    setError('');
+    try {
+      await associateExistingWorkspace(windowId, workspaceId, tabs);
+      await refresh(windowId);
+      setPage('main');
+      setSuccess('已关联工作区');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '关联失败，请重试');
+    } finally {
+      setAssociating('');
+    }
+  }
+
   function startRename() {
     if (!record || renaming) return;
     setDraftName(name);
@@ -338,6 +368,31 @@ function Popup() {
     onReopen={() => void reopen()}
   />;
   const successToast = success ? <SuccessToast message={success} onDismiss={() => setSuccess('')} /> : null;
+
+  if (page === 'associate') {
+    return (
+      <main className="popup-shell association-shell">
+        <header className="detail-header">
+          <button className="back-button" onClick={() => { setPage('main'); setError(''); }} aria-label="返回">← <span>返回</span></button>
+          <h1>关联已有工作区</h1>
+          <span className="header-spacer" />
+        </header>
+        <section className="association-content">
+          <p>保留当前窗口和全部标签页，只恢复工作区身份。</p>
+          <div className="association-list">
+            {associationOptions.map((option) => (
+              <button key={option.content.id} disabled={Boolean(associating)} onClick={() => void associate(option.content.id)}>
+                <span><strong>{option.content.name}</strong><small>{option.content.tabs.length} 个已保存标签页</small></span>
+                <b>{associating === option.content.id ? '关联中…' : '关联'}</b>
+              </button>
+            ))}
+            {!associationOptions.length ? <div className="unchanged-state">暂无已保存工作区</div> : null}
+          </div>
+          {error ? <div className="inline-error" role="alert">{error}</div> : null}
+        </section>
+      </main>
+    );
+  }
 
   if (page === 'details' && isBound) {
     const activeChanges = activeKind === 'added' ? diff.added : activeKind === 'removed' ? diff.removed : diff.updated;
@@ -447,6 +502,9 @@ function Popup() {
         ) : null}
 
         {error ? <div className="inline-error" role="alert">{error}</div> : null}
+        {!isBound && !isUnavailable && !isUnresolved ? (
+          <button className="associate-link" onClick={() => void openAssociationPicker()}>关联已有工作区</button>
+        ) : null}
         {buttons}
       </section>
       <button className="manager-link" onClick={() => void browser.runtime.openOptionsPage()}>管理工作区 <span>→</span></button>

@@ -311,6 +311,19 @@ describe('workspaceService', () => {
     expect(bindingMock.set).toHaveBeenCalledWith(8675, 'workspace-1');
   });
 
+  it('does not let matcher auto-claim a workspace already bound to another window', async () => {
+    workspaceMock.list.mockResolvedValue([localRecord]);
+    browserMock.windows.getAll.mockResolvedValue([{ id: 55 }, { id: 8675 }]);
+    bindingMock.get.mockImplementation(async (windowId: number) => windowId === 55 ? 'workspace-1' : null);
+
+    await expect(resolveWorkspaceStateForWindow(8675, [
+      { url: 'https://a.example', index: 0, pinned: true },
+      { url: 'https://b.example', index: 1, pinned: false },
+    ])).resolves.toEqual({ status: 'unbound', workspaceId: null, record: null, source: null });
+
+    expect(bindingMock.set).not.toHaveBeenCalled();
+  });
+
   it('does not run the matcher for a suppressed window', async () => {
     bindingMock.isSuppressed.mockResolvedValue(true);
 

@@ -15,6 +15,12 @@ import {
   resolveLazyStoredTab,
 } from './lazyRestore';
 import { lazyRestoreRepository } from '@/lib/storage/lazyRestoreRepository';
+import { windowAssociationRepository } from '@/lib/storage/windowAssociationRepository';
+import {
+  associateExistingWorkspace,
+  bindWindow,
+  restorePersistentWindowAssociations,
+} from './windowAssociation';
 
 function requestSync(message: BackgroundMessage): void {
   void browser.runtime.sendMessage(message).catch(() => undefined);
@@ -47,7 +53,11 @@ export async function resolveWorkspaceStateForWindow(
   windowId: number,
   tabs: MatchableTab[],
 ): Promise<WorkspaceWindowResolution> {
-  const boundId = await bindingRepository.get(windowId);
+  let boundId = await bindingRepository.get(windowId);
+  if (!boundId && !await bindingRepository.isSuppressed(windowId)) {
+    await restorePersistentWindowAssociations();
+    boundId = await bindingRepository.get(windowId);
+  }
   if (boundId) {
     let bound = await workspaceRepository.get(boundId);
     if (!bound) {
@@ -69,8 +79,15 @@ export async function resolveWorkspaceStateForWindow(
     return { status: 'unresolved', workspaceId: null, record: null, source: null };
   }
   const matched = matchWorkspace(logicalTabs, await workspaceRepository.list());
-  if (matched) await bindingRepository.set(windowId, matched.content.id);
-  return matched
+  const conflict = matched && await (async () => {
+    const windows = await browser.windows.getAll({ populate: false });
+    for (const window of windows) {
+      if (window.id != null && window.id !== windowId && await bindingRepository.get(window.id) === matched.content.id) return true;
+    }
+    return false;
+  })();
+  if (matched && !conflict) await bindWindow(windowId, matched.content.id, logicalTabs);
+  return matched && !conflict
     ? { status: 'resolved', workspaceId: matched.content.id, record: matched, source: 'matcher' }
     : { status: 'unbound', workspaceId: null, record: null, source: null };
 }
@@ -114,7 +131,7 @@ export async function saveCurrentWindow(input: {
   };
 
   await workspaceRepository.saveContent(content);
-  await bindingRepository.set(input.windowId, content.id);
+  await bindWindow(input.windowId, content.id, tabs);
   await recordLog(content.id, content.name, 'local-save', 'success', 'Local save success');
   requestSync({ type: 'SYNC_WORKSPACE', workspaceId: content.id });
 
@@ -355,7 +372,7 @@ async function runOpenOrFocusWorkspace(workspaceId: string): Promise<number> {
     throw new Error('找到多个相似的 Workspace 窗口，已取消自动恢复');
   }
   if (best?.eligible) {
-    await bindingRepository.set(best.windowId, workspaceId);
+    await bindWindow(best.windowId, workspaceId, windows.find((window) => window.id === best.windowId)?.tabs);
     await logLaunch(record, 'rebind-and-focus', candidates).catch(() => undefined);
     await browser.windows.update(best.windowId, { focused: true });
     return best.windowId;
@@ -413,5 +430,12 @@ export async function deleteWorkspace(workspaceId: string): Promise<void> {
     deletedAt: new Date().toISOString(),
   });
   await workspaceRepository.remove(workspaceId);
+  await windowAssociationRepository.removeForWorkspace(workspaceId).catch(() => undefined);
   requestSync({ type: 'SYNC_ALL' });
 }
+
+export async function listWorkspacesForAssociation(): Promise<WorkspaceLocalRecord[]> {
+  return workspaceRepository.list();
+}
+
+export { associateExistingWorkspace };

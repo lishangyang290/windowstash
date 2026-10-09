@@ -2,6 +2,7 @@ export const LOCAL_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const SYNC_ALARM = 'windowstash-sync';
 export const CLEANUP_ALARM = 'windowstash-cleanup';
 export const LAZY_RECONCILIATION_ALARM = 'windowstash-lazy-reconciliation';
+export const WINDOW_ASSOCIATION_ALARM = 'windowstash-window-association';
 
 export const STORAGE_KEYS = {
   supabaseConfig: 'supabaseConfig',
@@ -12,6 +13,7 @@ export const STORAGE_KEYS = {
   lazyRestoreEntries: 'lazyRestoreEntries',
   lazyStartupReconciliation: 'lazyStartupReconciliation',
   lazyStartupReconciled: 'lazyStartupReconciled',
+  windowAssociationPrefix: 'persistentWindowAssociation:',
 } as const;
 
 export function nextLocalExpiry(now = new Date()): string {
