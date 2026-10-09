@@ -12,7 +12,9 @@
     "lint": "eslint .",
     "test": "vitest run",
     "create:test-user": "node --env-file=.env scripts/create-test-user.mjs",
-    "create:test-user:interactive": "zsh scripts/create-test-user-interactive.sh"
+    "create:test-user:interactive": "zsh scripts/create-test-user-interactive.sh",
+    "release": "node scripts/release.mjs",
+    "test:release": "node --test scripts/release-tests.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.1",
@@ -26,6 +28,7 @@
     "@types/react-dom": "^19.3.0",
     "@wxt-dev/module-react": "^1.2.2",
     "eslint": "^10.11.0",
+    "marked": "18.1.0",
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.70.1",
     "vitest": "^4.0.14",

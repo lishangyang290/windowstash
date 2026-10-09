@@ -14,3 +14,6 @@ companion/src-tauri/icons/*
 !.env.example
 coverage
 .DS_Store
+.windowstash-release.json
+
+.windowstash-release.json.*.tmp

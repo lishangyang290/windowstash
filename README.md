@@ -142,3 +142,5 @@ src/
 └── types/                   # Workspace、同步与消息类型
 supabase/schema.sql          # 数据表、trigger、index、RLS
 ```
+
+发布维护者可使用 [交互式一键发布工具](docs/release-cli.md)：双击 `WindowStash Release.command`，粘贴发布信息并确认。支持严格只读的 `npm run release -- --dry-run`。
