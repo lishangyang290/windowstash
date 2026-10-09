@@ -26,10 +26,12 @@ import {
   focusWindowTab,
   openOrFocusWorkspace,
   openWorkspaceTab,
+  recoverWorkspace,
   reopenSavedTab,
   reopenWorkspace,
   resolveWorkspaceForWindow,
   resolveWorkspaceStateForWindow,
+  restoreSavedWorkspace,
   restoreWorkspace,
   saveCurrentWindow,
   updateWorkspace,
@@ -142,6 +144,32 @@ describe('workspaceService', () => {
     expect(browserMock.tabs.remove).toHaveBeenCalledWith(900);
     expect(browserMock.tabs.update).toHaveBeenCalledWith(902, { active: true });
     expect(bindingMock.set).toHaveBeenCalledWith(99, 'workspace-1');
+  });
+
+  it('restores an explicitly selected workspace without inspecting current windows or saving content', async () => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+    browserMock.tabs.remove.mockResolvedValue(undefined);
+    browserMock.tabs.update.mockResolvedValue(undefined);
+
+    await expect(restoreSavedWorkspace('workspace-1')).resolves.toBe(99);
+
+    expect(browserMock.windows.getAll).not.toHaveBeenCalled();
+    expect(workspaceMock.saveContent).not.toHaveBeenCalled();
+    expect(browserMock.windows.remove).not.toHaveBeenCalledWith(22);
+  });
+
+  it('downloads a missing local workspace before an explicit saved restore', async () => {
+    workspaceMock.get.mockResolvedValueOnce(null).mockResolvedValue(localRecord);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+    browserMock.tabs.remove.mockResolvedValue(undefined);
+    browserMock.tabs.update.mockResolvedValue(undefined);
+
+    await expect(restoreSavedWorkspace('workspace-1')).resolves.toBe(99);
+
+    expect(syncMock.syncAll).toHaveBeenCalledOnce();
   });
 
   it('restores only active position 4 directly and lazily restores the other eligible tabs', async () => {
@@ -303,6 +331,26 @@ describe('workspaceService', () => {
 
     expect(result).toBe(localRecord);
     expect(workspaceMock.list).not.toHaveBeenCalled();
+    expect(bindingMock.set).not.toHaveBeenCalled();
+  });
+
+  it('keeps bound workspace identity when a lazy registry entry is missing', async () => {
+    bindingMock.get.mockResolvedValue('workspace-1');
+    workspaceMock.get.mockResolvedValue(localRecord);
+    lazyMock.get.mockResolvedValue(null);
+
+    await expect(resolveWorkspaceStateForWindow(22, [{
+      url: 'chrome-extension://test/lazy-tab.html?id=missing', index: 0,
+    }])).resolves.toEqual({ status: 'resolved', workspaceId: 'workspace-1', record: localRecord, source: 'binding' });
+  });
+
+  it('reports unresolved identity instead of guessing when an unbound lazy entry is missing', async () => {
+    lazyMock.get.mockResolvedValue(null);
+
+    await expect(resolveWorkspaceStateForWindow(22, [{
+      url: 'chrome-extension://test/lazy-tab.html?id=missing', index: 0,
+    }])).resolves.toEqual({ status: 'unresolved', workspaceId: null, record: null, source: null });
+
     expect(bindingMock.set).not.toHaveBeenCalled();
   });
 
@@ -496,7 +544,7 @@ describe('workspaceService', () => {
     await expect(reopenWorkspace('workspace-1', 22)).rejects.toThrow('binding failed');
 
     expect(bindingMock.remove).toHaveBeenCalledWith(99);
-    expect(lazyMock.removeByWindowId).toHaveBeenCalledWith(99);
+    expect(lazyMock.removeByWindowId).not.toHaveBeenCalled();
     expect(browserMock.windows.remove).toHaveBeenCalledWith(99);
     expect(bindingMock.suppress).toHaveBeenCalledWith(22);
     expect(bindingMock.set).toHaveBeenCalledWith(22, 'workspace-1');
@@ -548,6 +596,36 @@ describe('workspaceService', () => {
 
     expect(workspaceMock.get).not.toHaveBeenCalled();
     expect(browserMock.windows.create).not.toHaveBeenCalled();
+  });
+
+  it('recovers from saved content while preserving and suppressing the damaged source window', async () => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+    bindingMock.get.mockImplementation(async (windowId: number) => windowId === 22 ? 'workspace-1' : null);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+    browserMock.tabs.remove.mockResolvedValue(undefined);
+    browserMock.tabs.update.mockResolvedValue(undefined);
+
+    await expect(recoverWorkspace('workspace-1', 22)).resolves.toBe(99);
+
+    expect(bindingMock.suppress).toHaveBeenCalledWith(22);
+    expect(bindingMock.set).toHaveBeenCalledWith(99, 'workspace-1');
+    expect(browserMock.windows.remove).not.toHaveBeenCalledWith(22);
+    expect(workspaceMock.saveContent).not.toHaveBeenCalled();
+    expect(browserMock.runtime.sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'SYNC_WORKSPACE' }));
+  });
+
+  it('leaves the damaged source untouched when recovery fails', async () => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+    bindingMock.get.mockImplementation(async (windowId: number) => windowId === 22 ? 'workspace-1' : null);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockRejectedValue(new Error('cannot create tab'));
+    browserMock.windows.remove.mockResolvedValue(undefined);
+
+    await expect(recoverWorkspace('workspace-1', 22)).rejects.toThrow('Workspace 标签页恢复失败');
+
+    expect(bindingMock.suppress).not.toHaveBeenCalledWith(22);
+    expect(browserMock.windows.remove).not.toHaveBeenCalledWith(22);
   });
 
   it('deduplicates concurrent reopen requests for the same source and workspace', async () => {
@@ -623,6 +701,24 @@ describe('workspaceService', () => {
     await expect(openOrFocusWorkspace('workspace-1')).resolves.toBe(33);
 
     expect(bindingMock.set).toHaveBeenCalledWith(33, 'workspace-1');
+    expect(browserMock.windows.create).not.toHaveBeenCalled();
+  });
+
+  it('isolates an unrelated window with a missing lazy entry while opening a healthy workspace', async () => {
+    workspaceMock.get.mockResolvedValue(localRecord);
+    lazyMock.get.mockResolvedValue(null);
+    browserMock.windows.getAll.mockResolvedValue([
+      { id: 31, tabs: [{ url: 'chrome-extension://test/lazy-tab.html?id=missing', index: 0 }] },
+      { id: 32, tabs: [
+        { url: 'https://a.example', index: 0, pinned: true },
+        { url: 'https://b.example', index: 1, pinned: false },
+      ] },
+    ]);
+    browserMock.windows.update.mockResolvedValue({});
+
+    await expect(openOrFocusWorkspace('workspace-1')).resolves.toBe(32);
+
+    expect(bindingMock.set).toHaveBeenCalledWith(32, 'workspace-1');
     expect(browserMock.windows.create).not.toHaveBeenCalled();
   });
 

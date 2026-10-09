@@ -15,7 +15,6 @@ import {
 } from '@/features/workspaces/tabDiff';
 import {
   focusWindowTab,
-  getCurrentWindowSnapshot,
   reopenSavedTab,
   resolveWorkspaceStateForWindow,
   saveCurrentWindow,
@@ -141,25 +140,36 @@ function Popup() {
   const renameSubmittingRef = React.useRef(false);
 
   const refresh = React.useCallback(async (knownWindowId?: number) => {
-    const snapshot = knownWindowId == null
-      ? await getCurrentWindowSnapshot()
-      : await browser.windows.get(knownWindowId, { populate: true }).then((window) => {
-        if (window.id == null) throw new Error('Missing window');
-        return resolveLogicalTabs(window.tabs ?? []).then((tabs) => ({ windowId: window.id!, tabs }));
-      });
-    const nextTabs = [...(snapshot.tabs ?? [])].sort((a, b) => a.index - b.index);
-    const nextResolution = await resolveWorkspaceStateForWindow(snapshot.windowId, nextTabs);
-    const nextRecord = nextResolution.record;
-    windowIdRef.current = snapshot.windowId;
-    setWindowId(snapshot.windowId);
-    setTabs(nextTabs);
-    setLogicalTabsReady(true);
-    setError('');
-    setResolution(nextResolution);
-    setRecord(nextRecord);
-    if (nextRecord) {
-      setName(nextRecord.content.name);
-      setStatus(nextRecord.content.status);
+    const current = knownWindowId == null
+      ? await browser.windows.getCurrent({ populate: true })
+      : await browser.windows.get(knownWindowId, { populate: true });
+    if (current.id == null) throw new Error('Missing window');
+    const rawTabs = [...(current.tabs ?? [])].sort((a, b) => a.index - b.index);
+    let nextResolution = await resolveWorkspaceStateForWindow(current.id, rawTabs);
+    const applyResolution = (value: WorkspaceWindowResolution) => {
+      setResolution(value);
+      setRecord(value.record);
+      if (value.record) {
+        setName(value.record.content.name);
+        setStatus(value.record.content.status);
+      }
+    };
+    windowIdRef.current = current.id;
+    setWindowId(current.id);
+    applyResolution(nextResolution);
+    try {
+      const nextTabs = await resolveLogicalTabs(rawTabs);
+      if (nextResolution.status === 'unresolved') {
+        nextResolution = await resolveWorkspaceStateForWindow(current.id, nextTabs);
+        applyResolution(nextResolution);
+      }
+      setTabs(nextTabs);
+      setLogicalTabsReady(true);
+      setError('');
+    } catch (reason) {
+      setTabs(rawTabs);
+      setLogicalTabsReady(false);
+      setError(reason instanceof LazyTabResolutionError ? reason.message : '暂时无法读取当前窗口');
     }
   }, []);
 
@@ -249,12 +259,19 @@ function Popup() {
   }
 
   async function reopen() {
-    if (windowId == null || resolution?.status !== 'resolved') return;
+    if (windowId == null) return;
+    if (resolution?.status === 'unresolved') {
+      const url = new URL('/options.html', browser.runtime.getURL('/'));
+      url.searchParams.set('recover', '1');
+      await browser.tabs.create({ url: url.toString(), active: true });
+      return;
+    }
+    if (resolution?.status !== 'resolved') return;
     setReopeningWorkspace(true);
     setError('');
     try {
       await browser.runtime.sendMessage({
-        type: 'REOPEN_WORKSPACE',
+        type: logicalTabsReady ? 'REOPEN_WORKSPACE' : 'RECOVER_WORKSPACE',
         workspaceId: resolution.workspaceId,
         sourceWindowId: windowId,
       });
@@ -307,7 +324,19 @@ function Popup() {
 
   const isBound = resolution?.status === 'resolved' && record != null;
   const isUnavailable = resolution?.status === 'unavailable';
-  const buttons = <WorkspaceActions action={saveAction} phase={savePhase} blocked={!logicalTabsReady || isUnavailable} reopeningWorkspace={reopeningWorkspace} showReopen={isBound} onSave={(close) => void submit(close)} onReopen={() => void reopen()} />;
+  const isUnresolved = resolution?.status === 'unresolved';
+  const recovering = !logicalTabsReady;
+  const buttons = <WorkspaceActions
+    action={saveAction}
+    phase={savePhase}
+    saveBlocked={!logicalTabsReady || isUnavailable}
+    reopenBlocked={isUnavailable}
+    reopenLabel={recovering ? '从已保存工作区恢复' : '重新打开工作区'}
+    reopeningWorkspace={reopeningWorkspace}
+    showReopen={isBound || isUnresolved}
+    onSave={(close) => void submit(close)}
+    onReopen={() => void reopen()}
+  />;
   const successToast = success ? <SuccessToast message={success} onDismiss={() => setSuccess('')} /> : null;
 
   if (page === 'details' && isBound) {
@@ -352,6 +381,8 @@ function Popup() {
           <div className="unchanged-state">正在识别当前工作区…</div>
         ) : isUnavailable ? (
           <div className="unchanged-state">暂时无法读取此工作区，请稍后重试</div>
+        ) : isUnresolved ? (
+          <div className="unchanged-state">无法可靠识别当前工作区，请从已保存工作区列表中选择恢复。</div>
         ) : isBound ? (
           <div className="bound-summary">
             {editingName ? (
@@ -395,7 +426,9 @@ function Popup() {
           </>
         )}
 
-        {isBound ? totalChanges === 0 ? (
+        {isBound ? !logicalTabsReady ? (
+          <div className="unchanged-state">当前窗口含异常标签页，保存已禁用。可从已保存版本恢复到新窗口，当前窗口会保留。</div>
+        ) : totalChanges === 0 ? (
           <div className="unchanged-state"><span>✓</span> 当前窗口与上次保存一致</div>
         ) : (
           <section className="save-preview">

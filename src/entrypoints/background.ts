@@ -3,7 +3,7 @@ import { CLEANUP_ALARM, LAZY_RECONCILIATION_ALARM, SYNC_ALARM } from '@/lib/cons
 import { syncEngine } from '@/lib/sync/syncEngine';
 import { bindingRepository } from '@/lib/storage/bindingRepository';
 import type { BackgroundMessage } from '@/types/messages';
-import { openOrFocusWorkspace, reopenWorkspace } from '@/features/workspaces/workspaceService';
+import { openOrFocusWorkspace, recoverWorkspace, reopenWorkspace, restoreSavedWorkspace } from '@/features/workspaces/workspaceService';
 import {
   beginStartupLazyReconciliation,
   claimLazyTabFromBrowserTab,
@@ -14,6 +14,7 @@ import {
   hydrateStartupLazyTab,
   hydrateStartupLazyTabs,
   isStartupLazyReconciliationActive,
+  isStartupLazyReconciliationComplete,
   noteStartupLazyActivity,
   removeLazyTab,
   resolveLazyTab,
@@ -38,8 +39,8 @@ export default defineBackground(() => {
     if (alarm.name === SYNC_ALARM) void syncEngine.syncAll();
     if (alarm.name === CLEANUP_ALARM) {
       void syncEngine.cleanupExpiredLocalCopies();
-      void isStartupLazyReconciliationActive().then((active) => {
-        if (!active) return cleanupOrphanedLazyEntries();
+      void Promise.all([isStartupLazyReconciliationActive(), isStartupLazyReconciliationComplete()]).then(([active, complete]) => {
+        if (!active && complete) return cleanupOrphanedLazyEntries();
       });
     }
     if (alarm.name === LAZY_RECONCILIATION_ALARM) void finishStartupLazyReconciliation();
@@ -68,6 +69,8 @@ export default defineBackground(() => {
     const message = rawMessage as BackgroundMessage;
     if (message.type === 'OPEN_OR_FOCUS_WORKSPACE') return openOrFocusWorkspace(message.workspaceId);
     if (message.type === 'REOPEN_WORKSPACE') return reopenWorkspace(message.workspaceId, message.sourceWindowId);
+    if (message.type === 'RECOVER_WORKSPACE') return recoverWorkspace(message.workspaceId, message.sourceWindowId);
+    if (message.type === 'RESTORE_SAVED_WORKSPACE') return restoreSavedWorkspace(message.workspaceId);
     if (message.type === 'LAZY_TAB_READY' && sender.tab?.id != null) {
       void noteStartupLazyActivity();
       return handleLazyTabReady(sender.tab.id, sender.tab.windowId, Boolean(sender.tab.active), message.lazyId);

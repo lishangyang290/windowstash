@@ -2,6 +2,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const listeners = vi.hoisted(() => ({ onMessage: undefined as ((message: unknown, sender: unknown) => unknown) | undefined }));
 const reopenMock = vi.hoisted(() => vi.fn());
+const recoverMock = vi.hoisted(() => vi.fn());
+const restoreSavedMock = vi.hoisted(() => vi.fn());
 
 const browserMock = vi.hoisted(() => {
   const event = () => ({ addListener: vi.fn() });
@@ -20,7 +22,9 @@ const browserMock = vi.hoisted(() => {
 vi.mock('wxt/browser', () => ({ browser: browserMock }));
 vi.mock('@/features/workspaces/workspaceService', () => ({
   openOrFocusWorkspace: vi.fn(),
+  recoverWorkspace: recoverMock,
   reopenWorkspace: reopenMock,
+  restoreSavedWorkspace: restoreSavedMock,
 }));
 vi.mock('@/lib/sync/syncEngine', () => ({ syncEngine: { syncAll: vi.fn(), syncWorkspace: vi.fn(), cleanupExpiredLocalCopies: vi.fn() } }));
 vi.mock('@/lib/storage/bindingRepository', () => ({ bindingRepository: { remove: vi.fn() } }));
@@ -34,6 +38,7 @@ vi.mock('@/features/workspaces/lazyRestore', () => ({
   hydrateStartupLazyTab: vi.fn(),
   hydrateStartupLazyTabs: vi.fn(),
   isStartupLazyReconciliationActive: vi.fn(),
+  isStartupLazyReconciliationComplete: vi.fn(),
   noteStartupLazyActivity: vi.fn(),
   removeLazyTab: vi.fn(),
   resolveLazyTab: vi.fn(),
@@ -57,5 +62,28 @@ describe('background messages', () => {
     }, {})).resolves.toBe(99);
 
     expect(reopenMock).toHaveBeenCalledWith('workspace-1', 22);
+  });
+
+  it('runs the safe recovery flow in background', async () => {
+    recoverMock.mockResolvedValue(99);
+
+    await expect(listeners.onMessage?.({
+      type: 'RECOVER_WORKSPACE',
+      workspaceId: 'workspace-1',
+      sourceWindowId: 22,
+    }, {})).resolves.toBe(99);
+
+    expect(recoverMock).toHaveBeenCalledWith('workspace-1', 22);
+  });
+
+  it('restores an explicitly selected saved workspace without a source window', async () => {
+    restoreSavedMock.mockResolvedValue(99);
+
+    await expect(listeners.onMessage?.({
+      type: 'RESTORE_SAVED_WORKSPACE',
+      workspaceId: 'workspace-1',
+    }, {})).resolves.toBe(99);
+
+    expect(restoreSavedMock).toHaveBeenCalledWith('workspace-1');
   });
 });

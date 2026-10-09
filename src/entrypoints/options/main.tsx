@@ -249,7 +249,7 @@ function DiagnosticsDialog({ logs, onClose, onClear }: { logs: SyncLogEntry[]; o
   );
 }
 
-function WorkspaceRow({ record, onRefresh }: { record: WorkspaceLocalRecord; onRefresh: () => Promise<unknown> }) {
+function WorkspaceRow({ record, recoveryMode, onRefresh }: { record: WorkspaceLocalRecord; recoveryMode: boolean; onRefresh: () => Promise<unknown> }) {
   const { content } = record;
   const [busy, setBusy] = React.useState<'open' | 'update' | null>(null);
   const [overviewOpen, setOverviewOpen] = React.useState(false);
@@ -287,6 +287,9 @@ function WorkspaceRow({ record, onRefresh }: { record: WorkspaceLocalRecord; onR
   }
 
   const archived = content.status === 'archived';
+  const openMessage = recoveryMode
+    ? { type: 'RESTORE_SAVED_WORKSPACE' as const, workspaceId: content.id }
+    : { type: 'OPEN_OR_FOCUS_WORKSPACE' as const, workspaceId: content.id };
   return (
     <article className="workspace-row">
       <div className="workspace-row-main">
@@ -313,7 +316,7 @@ function WorkspaceRow({ record, onRefresh }: { record: WorkspaceLocalRecord; onR
         </div>
         <div className="workspace-actions">
           <button className="overview-button" onClick={() => setOverviewOpen(true)}>查看标签页</button>
-          <button className="open-button" disabled={Boolean(busy)} onClick={() => void run(() => browser.runtime.sendMessage({ type: 'OPEN_OR_FOCUS_WORKSPACE', workspaceId: content.id }).then(() => undefined), 'open')}>{busy === 'open' ? '正在打开…' : '打开'}</button>
+          <button className="open-button" disabled={Boolean(busy)} onClick={() => void run(() => browser.runtime.sendMessage(openMessage).then(() => undefined), 'open')}>{busy === 'open' ? '正在恢复…' : recoveryMode ? '从保存版本恢复' : '打开'}</button>
           <div className="more-wrap">
             <button className="more-button" aria-label={`更多操作：${content.name}`} aria-expanded={menuOpen} onClick={() => setMenuOpen((value) => !value)}>•••</button>
             {menuOpen && <div className="more-menu">
@@ -351,7 +354,7 @@ function SyncIssues({ records, onRefresh, onClose }: { records: WorkspaceLocalRe
   );
 }
 
-function Dashboard({ config, initialAccountOpen, onConfigChanged }: { config: SupabaseConfig; initialAccountOpen: boolean; onConfigChanged: (config: SupabaseConfig) => void }) {
+function Dashboard({ config, initialAccountOpen, recoveryMode, onConfigChanged }: { config: SupabaseConfig; initialAccountOpen: boolean; recoveryMode: boolean; onConfigChanged: (config: SupabaseConfig) => void }) {
   const [records, setRecords] = React.useState<WorkspaceLocalRecord[]>([]);
   const [logs, setLogs] = React.useState<SyncLogEntry[]>([]);
   const [session, setSession] = React.useState<Session | null>(null);
@@ -453,6 +456,8 @@ function Dashboard({ config, initialAccountOpen, onConfigChanged }: { config: Su
           </div>
         </header>
 
+        {recoveryMode && <div className="notices"><div className="quiet-notice"><span aria-hidden="true">↗</span><p>选择一个已保存工作区恢复到新窗口；当前异常窗口会保留。</p></div></div>}
+
         {(unsyncedRecords.length > 0 || conflicts.length > 0) && <div className="notices" aria-live="polite">
           {unsyncedRecords.length > 0 && <div className="quiet-notice sync-notice">
             <span aria-hidden="true">↗</span>
@@ -470,7 +475,7 @@ function Dashboard({ config, initialAccountOpen, onConfigChanged }: { config: Su
         </nav>
 
         <section className="workspace-list" aria-live="polite">
-          {loading ? <div className="loading-list">{[0, 1, 2].map((item) => <div key={item}><span /><p /><button /></div>)}</div> : filtered.length ? filtered.map((record) => <WorkspaceRow key={record.content.id} record={record} onRefresh={refresh} />) : <div className="empty-state"><div className="empty-icon">□</div><h2>{query ? '没有找到工作区' : filter === 'archived' ? '没有已归档的工作区' : '还没有保存窗口'}</h2><p>{query ? '试试其他名称。' : filter === 'archived' ? '归档的工作区会显示在这里。' : '点击浏览器工具栏中的 WindowStash 开始保存。'}</p></div>}
+          {loading ? <div className="loading-list">{[0, 1, 2].map((item) => <div key={item}><span /><p /><button /></div>)}</div> : filtered.length ? filtered.map((record) => <WorkspaceRow key={record.content.id} record={record} recoveryMode={recoveryMode} onRefresh={refresh} />) : <div className="empty-state"><div className="empty-icon">□</div><h2>{query ? '没有找到工作区' : filter === 'archived' ? '没有已归档的工作区' : '还没有保存窗口'}</h2><p>{query ? '试试其他名称。' : filter === 'archived' ? '归档的工作区会显示在这里。' : '点击浏览器工具栏中的 WindowStash 开始保存。'}</p></div>}
         </section>
       </main>
       {manualSyncState === 'success' ? <SuccessToast message="已同步到云端" onDismiss={() => setManualSyncState('idle')} /> : null}
@@ -484,10 +489,11 @@ function Dashboard({ config, initialAccountOpen, onConfigChanged }: { config: Su
 function OptionsRoot() {
   const [config, setConfig] = React.useState<SupabaseConfig | null | undefined>(undefined);
   const [openLogin, setOpenLogin] = React.useState(() => new URLSearchParams(window.location.search).get('login') === '1');
+  const recoveryMode = new URLSearchParams(window.location.search).get('recover') === '1';
   React.useEffect(() => { void getSupabaseConfig().then(setConfig); }, []);
   if (config === undefined) return <main className="config-page">WindowStash</main>;
   if (!config) return <main className="config-page"><SupabaseConfigForm setup onSaved={(next) => { setOpenLogin(true); setConfig(next); }} /></main>;
-  return <Dashboard key={`${config.url}\n${config.publishableKey}`} config={config} initialAccountOpen={openLogin} onConfigChanged={(next) => { setOpenLogin(true); setConfig(next); }} />;
+  return <Dashboard key={`${config.url}\n${config.publishableKey}`} config={config} initialAccountOpen={openLogin} recoveryMode={recoveryMode} onConfigChanged={(next) => { setOpenLogin(true); setConfig(next); }} />;
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><OptionsRoot /></React.StrictMode>);

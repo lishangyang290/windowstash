@@ -40,6 +40,7 @@ export async function getCurrentWindowSnapshot() {
 export type WorkspaceWindowResolution =
   | { status: 'resolved'; workspaceId: string; record: WorkspaceLocalRecord; source: 'binding' | 'matcher' }
   | { status: 'unavailable'; workspaceId: string; record: null; source: 'binding' }
+  | { status: 'unresolved'; workspaceId: null; record: null; source: null }
   | { status: 'unbound'; workspaceId: null; record: null; source: null };
 
 export async function resolveWorkspaceStateForWindow(
@@ -61,7 +62,13 @@ export async function resolveWorkspaceStateForWindow(
     return { status: 'unbound', workspaceId: null, record: null, source: null };
   }
 
-  const matched = matchWorkspace(await resolveLogicalTabs(tabs), await workspaceRepository.list());
+  let logicalTabs;
+  try {
+    logicalTabs = await resolveLogicalTabs(tabs);
+  } catch {
+    return { status: 'unresolved', workspaceId: null, record: null, source: null };
+  }
+  const matched = matchWorkspace(logicalTabs, await workspaceRepository.list());
   if (matched) await bindingRepository.set(windowId, matched.content.id);
   return matched
     ? { status: 'resolved', workspaceId: matched.content.id, record: matched, source: 'matcher' }
@@ -192,11 +199,14 @@ const reopenWorkspaceTasks = new Map<string, Promise<number>>();
 
 async function cleanupReopenedWindow(windowId: number): Promise<void> {
   await bindingRepository.remove(windowId).catch(() => undefined);
-  await lazyRestoreRepository.removeByWindowId(windowId).catch(() => undefined);
   await browser.windows.remove(windowId).catch(() => undefined);
 }
 
-async function runReopenWorkspace(workspaceId: string, sourceWindowId: number): Promise<number> {
+async function restoreFromBoundWindow(
+  workspaceId: string,
+  sourceWindowId: number,
+  closeSource: boolean,
+): Promise<number> {
   if (await bindingRepository.get(sourceWindowId) !== workspaceId) throw new Error('当前窗口未绑定此工作区');
   let newWindowId: number;
   try {
@@ -223,10 +233,12 @@ async function runReopenWorkspace(workspaceId: string, sourceWindowId: number): 
     throw error;
   }
 
-  try {
-    await browser.windows.remove(sourceWindowId);
-  } catch {
-    await browser.windows.update(newWindowId, { focused: true }).catch(() => undefined);
+  if (closeSource) {
+    try {
+      await browser.windows.remove(sourceWindowId);
+    } catch {
+      await browser.windows.update(newWindowId, { focused: true }).catch(() => undefined);
+    }
   }
   return newWindowId;
 }
@@ -235,11 +247,29 @@ export function reopenWorkspace(workspaceId: string, sourceWindowId: number): Pr
   const key = `${sourceWindowId}:${workspaceId}`;
   const existing = reopenWorkspaceTasks.get(key);
   if (existing) return existing;
-  const task = runReopenWorkspace(workspaceId, sourceWindowId).finally(() => {
+  const task = restoreFromBoundWindow(workspaceId, sourceWindowId, true).finally(() => {
     if (reopenWorkspaceTasks.get(key) === task) reopenWorkspaceTasks.delete(key);
   });
   reopenWorkspaceTasks.set(key, task);
   return task;
+}
+
+const recoverWorkspaceTasks = new Map<string, Promise<number>>();
+
+export function recoverWorkspace(workspaceId: string, sourceWindowId: number): Promise<number> {
+  const key = `${sourceWindowId}:${workspaceId}`;
+  const existing = recoverWorkspaceTasks.get(key);
+  if (existing) return existing;
+  const task = restoreFromBoundWindow(workspaceId, sourceWindowId, false).finally(() => {
+    if (recoverWorkspaceTasks.get(key) === task) recoverWorkspaceTasks.delete(key);
+  });
+  recoverWorkspaceTasks.set(key, task);
+  return task;
+}
+
+export async function restoreSavedWorkspace(workspaceId: string): Promise<number> {
+  if (!await workspaceRepository.get(workspaceId)) await syncEngine.syncAll();
+  return restoreWorkspace(workspaceId, { focused: true, cleanupOnFailure: true });
 }
 
 interface WindowCandidate {
@@ -289,8 +319,15 @@ async function runOpenOrFocusWorkspace(workspaceId: string): Promise<number> {
 
   const windows = await browser.windows.getAll({ populate: true });
   const candidates: WindowCandidate[] = [];
+  let unhealthyBoundWindowId: number | undefined;
   for (const window of windows) {
     if (window.id != null && await bindingRepository.get(window.id) === workspaceId) {
+      try {
+        await resolveLogicalTabs(window.tabs ?? []);
+      } catch {
+        unhealthyBoundWindowId = window.id;
+        continue;
+      }
       candidates.push({ windowId: window.id, beforeTabs: window.tabs?.length ?? 0, afterTabs: window.tabs?.length ?? 0, bindingMatched: true, score: null, eligible: true });
       await logLaunch(record, 'focus-existing', candidates).catch(() => undefined);
       await browser.windows.update(window.id, { focused: true });
@@ -298,8 +335,14 @@ async function runOpenOrFocusWorkspace(workspaceId: string): Promise<number> {
     }
   }
   for (const window of windows) {
-    if (window.id == null) continue;
-    const resolvedTabs = await resolveLogicalTabs(window.tabs ?? []);
+    if (window.id == null || window.id === unhealthyBoundWindowId) continue;
+    let resolvedTabs;
+    try {
+      resolvedTabs = await resolveLogicalTabs(window.tabs ?? []);
+    } catch {
+      candidates.push({ windowId: window.id, beforeTabs: window.tabs?.length ?? 0, afterTabs: 0, bindingMatched: false, score: null, eligible: false });
+      continue;
+    }
     const tabs = resolvedTabs.filter((tab) => !isInternalTab(tab));
     const match = scoreWorkspaceMatch(tabs, record);
     candidates.push({ windowId: window.id, beforeTabs: window.tabs?.length ?? 0, afterTabs: tabs.length, bindingMatched: false, score: match.score, eligible: match.eligible });
@@ -318,6 +361,7 @@ async function runOpenOrFocusWorkspace(workspaceId: string): Promise<number> {
     return best.windowId;
   }
   await logLaunch(record, 'restore-new', candidates).catch(() => undefined);
+  if (unhealthyBoundWindowId != null) return recoverWorkspace(workspaceId, unhealthyBoundWindowId);
   return restoreWorkspace(workspaceId);
 }
 

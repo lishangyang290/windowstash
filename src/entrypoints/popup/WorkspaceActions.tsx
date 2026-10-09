@@ -1,7 +1,9 @@
-export function WorkspaceActions({ action, phase, blocked, reopeningWorkspace, showReopen, onSave, onReopen }: {
+export function WorkspaceActions({ action, phase, saveBlocked, reopenBlocked, reopenLabel, reopeningWorkspace, showReopen, onSave, onReopen }: {
   action: 'save' | 'close' | null;
   phase: 'idle' | 'saving';
-  blocked: boolean;
+  saveBlocked: boolean;
+  reopenBlocked: boolean;
+  reopenLabel: string;
   reopeningWorkspace: boolean;
   showReopen: boolean;
   onSave: (closeAfterSave: boolean) => void;
@@ -14,9 +16,9 @@ export function WorkspaceActions({ action, phase, blocked, reopeningWorkspace, s
 
   return (
     <div className="popup-actions">
-      <button className="button button-primary" disabled={blocked || busy} onClick={() => onSave(false)}>{label('save', '保存当前状态')}</button>
-      <button className="button" disabled={blocked || busy} onClick={() => onSave(true)}>{label('close', '保存并关闭窗口')}</button>
-      {showReopen ? <button className="button button-quiet reopen-workspace" disabled={blocked || busy} onClick={onReopen}>{reopeningWorkspace ? '正在重新打开…' : '重新打开工作区'}</button> : null}
+      <button className="button button-primary" disabled={saveBlocked || busy} onClick={() => onSave(false)}>{label('save', '保存当前状态')}</button>
+      <button className="button" disabled={saveBlocked || busy} onClick={() => onSave(true)}>{label('close', '保存并关闭窗口')}</button>
+      {showReopen ? <button className="button button-quiet reopen-workspace" disabled={reopenBlocked || busy} onClick={onReopen}>{reopeningWorkspace ? reopenLabel === '重新打开工作区' ? '正在重新打开…' : '正在恢复…' : reopenLabel}</button> : null}
     </div>
   );
 }

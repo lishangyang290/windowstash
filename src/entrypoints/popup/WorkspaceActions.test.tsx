@@ -8,7 +8,7 @@ const roots: ReturnType<typeof createRoot>[] = [];
 
 afterEach(() => act(() => roots.splice(0).forEach((root) => root.unmount())));
 
-function renderActions(showReopen: boolean, reopeningWorkspace = false) {
+function renderActions(showReopen: boolean, reopeningWorkspace = false, saveBlocked = false) {
   const { document, window } = parseHTML('<div id="root"></div>');
   Object.assign(globalThis, { document, window, HTMLElement: window.HTMLElement, Event: window.Event });
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -19,7 +19,9 @@ function renderActions(showReopen: boolean, reopeningWorkspace = false) {
   act(() => root.render(<WorkspaceActions
     action={null}
     phase="idle"
-    blocked={false}
+    saveBlocked={saveBlocked}
+    reopenBlocked={false}
+    reopenLabel={saveBlocked ? '从已保存工作区恢复' : '重新打开工作区'}
     reopeningWorkspace={reopeningWorkspace}
     showReopen={showReopen}
     onSave={vi.fn()}
@@ -47,5 +49,17 @@ describe('WorkspaceActions', () => {
     expect(buttons).toHaveLength(3);
     expect(buttons.every((button) => button.disabled)).toBe(true);
     expect(buttons[2]!.textContent).toBe('正在重新打开…');
+  });
+
+  it('keeps recovery available when damaged lazy tabs block saving', () => {
+    const { container, onReopen } = renderActions(true, false, true);
+    const buttons = [...container.querySelectorAll<HTMLButtonElement>('button')];
+
+    expect(buttons[0]!.disabled).toBe(true);
+    expect(buttons[1]!.disabled).toBe(true);
+    expect(buttons[2]!.disabled).toBe(false);
+    expect(buttons[2]!.textContent).toBe('从已保存工作区恢复');
+    act(() => buttons[2]!.click());
+    expect(onReopen).toHaveBeenCalledOnce();
   });
 });

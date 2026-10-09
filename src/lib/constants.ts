@@ -11,6 +11,7 @@ export const STORAGE_KEYS = {
   windowBindings: 'windowBindings',
   lazyRestoreEntries: 'lazyRestoreEntries',
   lazyStartupReconciliation: 'lazyStartupReconciliation',
+  lazyStartupReconciled: 'lazyStartupReconciled',
 } as const;
 
 export function nextLocalExpiry(now = new Date()): string {
