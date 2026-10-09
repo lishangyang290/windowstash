@@ -441,6 +441,7 @@ function Dashboard({ config, initialAccountOpen, recoveryMode, onConfigChanged }
           <div className="title-block"><Logo /><p>保存窗口，需要时继续。</p></div>
           <div className="header-actions">
             <label className="search-wrap"><span aria-hidden="true">⌕</span><span className="sr-only">搜索工作区</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索工作区" /></label>
+            <button className="header-sync-button" onClick={() => window.open('/开始使用.html', '_blank', 'noopener,noreferrer')}>使用教程</button>
             <button className="header-sync-button" disabled={manualSyncState === 'syncing'} onClick={() => void syncNow()}>
               {manualSyncState === 'syncing' ? '正在同步…' : manualSyncState === 'failed' ? '重试同步' : '立即同步'}
             </button>

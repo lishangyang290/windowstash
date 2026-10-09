@@ -1,4 +1,6 @@
 import { defineConfig } from 'wxt';
+import { resolve } from 'node:path';
+import { generateExtensionGuide } from './scripts/generate-extension-guide';
 
 function supabaseHostPermissions(): string[] {
   const value = process.env.VITE_SUPABASE_URL?.trim();
@@ -22,4 +24,10 @@ export default defineConfig({
     host_permissions: mode === 'development' ? supabaseHostPermissions() : [],
     optional_host_permissions: ['http://*/*', 'https://*/*'],
   }),
+  hooks: {
+    'build:done': (wxt) => generateExtensionGuide(
+      resolve(wxt.config.publicDir, '开始使用.html'),
+      wxt.config.outDir,
+    ),
+  },
 });
