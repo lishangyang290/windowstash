@@ -32,14 +32,14 @@
       <section class="step" id="extension"><div class="step-body">
         <p class="eyebrow">01 · 先安装浏览器部分</p><h2>把 WindowStash 放进 Chrome</h2><p class="intro">Chrome 扩展是你保存当前窗口和标签页的入口。安装包已经准备好所有文件，不需要下载其他内容。</p>
         <h3>先确认安装包位置</h3><p>你现在打开的 <span class="path">开始使用.html</span> 与需要选择的 Chrome 扩展文件夹 <span class="path">Chrome Extension</span> 在同一个文件夹。安装包结构应当是：</p>
-        <pre class="package-tree">WindowStash-v0.3.0/
+        <pre class="package-tree">WindowStash-v0.4.0/
 ├── 开始使用.html
 ├── Chrome Extension/
 ├── WindowStash Companion.app
 └── README.txt</pre>
         <h3>在 Chrome 中加载扩展</h3><ol class="tasks"><li>打开 Chrome，新建一个标签页。</li><li>把下面的地址复制到 Chrome 地址栏并按回车。不要粘贴到搜索框或本教程页面里。</li></ol>
         <div class="copy-row"><code id="chrome-address">chrome://extensions</code><button type="button" data-copy="#chrome-address">复制地址</button></div>
-        <ol class="tasks"><li>进入“扩展程序”页面后，找到右上角的 <strong>开发者模式</strong> 开关并打开。打开后，页面上方会出现几个新按钮。</li><li>点击页面上方的 <strong>加载已解压的扩展程序</strong>。</li><li>Chrome 会打开文件选择窗口。回到刚才的 <span class="path">WindowStash-v0.3.0</span> 安装包文件夹。</li><li>单击选中 <span class="path">Chrome Extension</span> 文件夹，然后点击“选择”。<strong>选择这个文件夹本身，不要进入文件夹后再选某个文件。</strong></li></ol>
+        <ol class="tasks"><li>进入“扩展程序”页面后，找到右上角的 <strong>开发者模式</strong> 开关并打开。打开后，页面上方会出现几个新按钮。</li><li>点击页面上方的 <strong>加载已解压的扩展程序</strong>。</li><li>Chrome 会打开文件选择窗口。回到刚才的 <span class="path">WindowStash-v0.4.0</span> 安装包文件夹。</li><li>单击选中 <span class="path">Chrome Extension</span> 文件夹，然后点击“选择”。<strong>选择这个文件夹本身，不要进入文件夹后再选某个文件。</strong></li></ol>
         <div class="note"><strong>什么时候算安装成功？</strong>Chrome 的扩展程序页面出现名为 “WindowStash” 的卡片，而且卡片上的开关处于开启状态。看到它以后再继续。</div>
       </div></section>
 
@@ -152,7 +152,7 @@ using ((select auth.uid()) = user_id);</code></pre></div>
 
       <section class="step" id="companion"><div class="step-body">
         <p class="eyebrow">07 · 把恢复入口放到 macOS 菜单栏</p><h2>安装 macOS 桌面应用</h2><p class="intro">WindowStash 的 macOS 桌面应用与本教程位于安装包的同一级目录，文件名为 <span class="path">WindowStash Companion.app</span>。</p>
-        <ol class="tasks"><li>回到包含 <span class="path">开始使用.html</span> 的 <span class="path">WindowStash-v0.3.0</span> 文件夹。</li><li>你会在旁边直接看到 <span class="path">WindowStash Companion.app</span>。</li><li>打开 Finder 的“应用程序”文件夹，把 <span class="path">WindowStash Companion.app</span> 拖进去。</li><li>复制完成后，从“应用程序”文件夹打开 WindowStash Companion。</li></ol>
+        <ol class="tasks"><li>回到包含 <span class="path">开始使用.html</span> 的 <span class="path">WindowStash-v0.4.0</span> 文件夹。</li><li>你会在旁边直接看到 <span class="path">WindowStash Companion.app</span>。</li><li>打开 Finder 的“应用程序”文件夹，把 <span class="path">WindowStash Companion.app</span> 拖进去。</li><li>复制完成后，从“应用程序”文件夹打开 WindowStash Companion。</li></ol>
         <div class="note"><strong>如果 macOS 第一次阻止打开</strong>在 Finder 的“应用程序”中找到 WindowStash Companion，右键点击它，选择“打开”，再在弹窗中确认“打开”。不需要输入终端命令。</div><p>打开后，macOS 顶部菜单栏会出现 WindowStash 图标，或者屏幕会显示桌面应用的连接窗口。看到其中任一项就表示应用已经运行。</p>
       </div></section>
 
