@@ -487,7 +487,7 @@ function Dashboard({ config, initialAccountOpen, recoveryMode, onConfigChanged }
   );
 }
 
-function OptionsRoot() {
+export function OptionsRoot() {
   const [config, setConfig] = React.useState<SupabaseConfig | null | undefined>(undefined);
   const [openLogin, setOpenLogin] = React.useState(() => new URLSearchParams(window.location.search).get('login') === '1');
   const recoveryMode = new URLSearchParams(window.location.search).get('recover') === '1';

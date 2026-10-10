@@ -3,7 +3,6 @@ import ReactDOM from 'react-dom/client';
 import { browser } from 'wxt/browser';
 import { Logo } from '@/components/Logo';
 import { SuccessToast } from '@/components/SuccessToast';
-import { SupabaseConfigForm } from '@/components/SupabaseConfigForm';
 import {
   calculateTabDiff,
   getTabDomain,
@@ -512,14 +511,21 @@ function Popup() {
   );
 }
 
-function PopupRoot() {
+export function PopupRoot() {
   const [config, setConfig] = React.useState<SupabaseConfig | null | undefined>(undefined);
+  const [setupError, setSetupError] = React.useState('');
   React.useEffect(() => { void getSupabaseConfig().then(setConfig); }, []);
   if (config === undefined) return <main className="popup-loading">WindowStash</main>;
-  if (!config) return <main className="config-page popup-config-page"><SupabaseConfigForm setup onSaved={(next) => {
-    setConfig(next);
-    void browser.tabs.create({ url: browser.runtime.getURL('/options.html?login=1') }).then(() => window.close());
-  }} /></main>;
+  if (!config) return <main className="popup-shell">
+    <header className="popup-header"><Logo /></header>
+    <section className="popup-content popup-setup">
+      <h1>连接你的数据存储</h1>
+      <p>WindowStash 使用你自己的 Supabase 项目保存工作区。在独立设置标签页中完成配置，切换页面复制信息时，已填写的内容会保留。</p>
+      <button className="button button-primary" onClick={() => void browser.runtime.openOptionsPage().catch(() => setSetupError('无法打开设置页，请重试'))}>开始设置</button>
+      {setupError ? <div className="inline-error" role="alert">{setupError}</div> : null}
+      <button className="config-tutorial" onClick={() => window.open('/开始使用.html', '_blank', 'noopener,noreferrer')}>查看开始使用教程 <span>↗</span></button>
+    </section>
+  </main>;
   return <Popup />;
 }
 
