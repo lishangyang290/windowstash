@@ -20,7 +20,7 @@ export function terminalUI(output = process.stdout, log = (text) => console.log(
 }
 
 export function presentedCommand(execute, ui, verbose = false) {
-  return async (program, args, live = false) => {
+  return async (program, args, live = false, timeout) => {
     const companion = args.includes('companion');
     const script = args[args.indexOf('run') + 1];
     const gitStep = program === 'git' && (args[0] === 'add' ? '暂存本次版本文件'
@@ -35,12 +35,65 @@ export function presentedCommand(execute, ui, verbose = false) {
     if (verbose) ui.hint(`检查 / 执行：${program} ${args.join(' ')}`);
     if (visible) ui.pending(label);
     try {
-      const result = await execute(program, args, live && verbose);
+      const result = await execute(program, args, live && verbose, timeout);
       if (visible) ui.success(label);
       return result;
     } catch (error) {
       if (visible) ui.error(`${label}未通过${verbose ? '' : '；使用 --verbose 可查看完整检查输出'}`);
       throw error;
     }
+  };
+}
+
+export function workflowProgress(workflow) {
+  const taskName = (name) => ({
+    'Validate Extension': 'Extension 检查与构建',
+    'Validate Companion frontend': 'Companion 前端检查与构建',
+    'Build Companion app': 'Companion 应用构建',
+    'Assemble macOS package': 'ZIP 打包',
+    'Scan and validate final ZIP': 'ZIP 检查',
+    'Create GitHub Release and upload macOS asset': '上传 Release 和 ZIP 附件',
+  })[name] ?? name;
+  const jobs = workflow?.jobs ?? [];
+  const steps = jobs.flatMap((job) => job.steps ?? []);
+  const completed = steps.filter((step) => step.status === 'completed');
+  const failed = completed.filter((step) => !['success', 'skipped'].includes(step.conclusion));
+  const current = jobs.flatMap((job) => {
+    const running = (job.steps ?? []).filter((step) => step.status === 'in_progress');
+    return running.length ? running.map((step) => `${job.name} · ${taskName(step.name)}`)
+      : job.status === 'in_progress' ? [`${job.name} · 等待步骤状态`] : [];
+  });
+  const status = workflow?.status ?? 'waiting';
+  const labels = { waiting: '等待 Workflow', queued: '排队中', pending: '等待中', waiting_for_review: '等待审核', in_progress: '构建中', completed: '已结束' };
+  return [
+    `Actions  ${labels[status] ?? status}${workflow?.conclusion ? ` · ${workflow.conclusion}` : ''}`,
+    steps.length ? `步骤  已结束 ${completed.length}/${steps.length}（成功 ${completed.filter((step) => step.conclusion === 'success').length}，跳过 ${completed.filter((step) => step.conclusion === 'skipped').length}，未成功 ${failed.length}）` : '步骤  尚未获取，进度未知',
+    `任务  ${current.join('；') || (failed.length ? failed.map((step) => `${taskName(step.name)} · ${step.conclusion ?? '未知'}`).join('；') : status === 'completed' ? workflow.conclusion === 'success' ? '检查 Release 和 ZIP 附件' : '查看 Workflow 及 Job 日志' : '等待 GitHub 更新任务状态')}`,
+  ];
+}
+
+export function liveProgress(output = process.stdout, log = (text) => console.log(text), allowRefresh = true) {
+  const refresh = Boolean(allowRefresh && output.isTTY && output.write && process.env.TERM !== 'dumb' && !('NO_COLOR' in process.env));
+  let drawn = false;
+  // Keep each row within the terminal width so cursor movement cannot erase other output.
+  const fit = (text) => {
+    let width = 0, result = '';
+    for (const char of text.replace(/[\p{Cc}\p{Cf}]/gu, ' ')) {
+      width += char.codePointAt(0) > 255 ? 2 : 1;
+      if (width > (output.columns || 80) - 2) return result + '…';
+      result += char;
+    }
+    return result;
+  };
+  return {
+    update(lines, elapsed, tick = false) {
+      if (!refresh && tick) return;
+      const seconds = Math.floor(elapsed / 1000);
+      const rows = [...lines, `等待  ${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒 · 每 12 秒查询 · Ctrl+C 结束等待`];
+      if (refresh) {
+        output.write((drawn ? '\x1b[4A' : '') + rows.map((row) => `\r\x1b[2K${fit('  ' + row)}\n`).join(''));
+        drawn = true;
+      } else log(rows.map((row) => '  ' + row).join('\n'));
+    },
   };
 }

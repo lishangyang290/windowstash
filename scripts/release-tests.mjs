@@ -5,12 +5,158 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { command, parseRelease, validateInput, planFiles, applyFiles, restoreFiles, saveJournal, recoverPrepared, preflight, runChecks, publish } from './release-core.mjs';
-import { terminalUI, presentedCommand } from './release-ui.mjs';
+import { terminalUI, presentedCommand, workflowProgress, liveProgress } from './release-ui.mjs';
 import { inputLines, editRelease, showResult } from './release.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const standard = '当前版本：v0.3.0\n目标版本：0.4.0\n\n更新内容：\n- 修复重启后关联丢失\n- 新增教程入口\n\nmain HEAD：\n56b8e2fe30517972e54cfe9a5ba4befd822f924c\n测试：\n224 项通过';
 const silent = new Writable({ write(chunk, encoding, done) { done(); } });
+
+test('Actions 进度只统计真实步骤，区分成功、跳过和失败，支持并行 Job', () => {
+  const lines = workflowProgress({ status: 'in_progress', jobs: [
+    { name: 'Extension', status: 'in_progress', steps: [{ name: '检查', status: 'completed', conclusion: 'success' }, { name: '构建', status: 'in_progress' }] },
+    { name: 'Companion', status: 'in_progress', steps: [{ name: '跳过', status: 'completed', conclusion: 'skipped' }, { name: '失败', status: 'completed', conclusion: 'failure' }, { name: '打包', status: 'in_progress' }] },
+  ] });
+  assert.match(lines[1], /已结束 3\/5（成功 1，跳过 1，未成功 1）/);
+  assert.match(lines[2], /Extension · 构建；Companion · 打包/);
+  assert.match(workflowProgress()[1], /进度未知/);
+  assert.match(workflowProgress({ status: 'completed', jobs: [{ steps: [{ name: '上传 Release', status: 'completed', conclusion: 'failure' }] }] })[2], /上传 Release · failure/);
+});
+
+for (const [tty, term, noColor] of [[true, 'xterm', false], [false, 'xterm', false], [true, 'dumb', false], [true, 'xterm', true]]) {
+  test(`进度区域 TTY=${tty} TERM=${term} NO_COLOR=${noColor}`, (t) => {
+    const previous = { TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR };
+    t.after(() => { for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
+    process.env.TERM = term;
+    if (noColor) process.env.NO_COLOR = ''; else delete process.env.NO_COLOR;
+    const chunks = [], messages = [];
+    const display = liveProgress({ isTTY: tty, columns: 38, write: (text) => chunks.push(text) }, (text) => messages.push(text));
+    const lines = workflowProgress({ status: 'queued' });
+    display.update(lines, 0); display.update(lines, 1000, true); display.update(lines, 12000);
+    if (tty && term !== 'dumb' && !noColor) {
+      assert.equal(chunks.length, 3); assert.ok(chunks[1].includes('\x1b[4A'));
+      assert.match(chunks[1], /0 分 1 秒/); assert.equal(messages.length, 0);
+      for (const row of chunks[0].replaceAll('\x1b', '').replace(/\[[\d;]*[AK]/g, '').trim().split('\n')) {
+        assert.ok([...row.trim()].reduce((n, char) => n + (char.codePointAt(0) > 255 ? 2 : 1), 0) < 38);
+      }
+    } else {
+      assert.equal(chunks.length, 0); assert.equal(messages.length, 2);
+      assert.match(messages[1], /0 分 12 秒/); assert.ok(!messages.join('').includes('\x1b'));
+    }
+  });
+}
+
+function resultHarness() {
+  const messages = [], snapshots = [];
+  let clock = 0;
+  return { messages, snapshots, options: {
+    wait: true, ui: terminalUI({ isTTY: false }, (text) => messages.push(text)),
+    display: { update: (lines, elapsed) => snapshots.push({ lines, elapsed }) },
+    now: () => clock, sleep: async (ms) => { clock += ms; },
+  } };
+}
+const actionRun = (status = 'in_progress', conclusion = null) => ({ databaseId: 123, status, conclusion, headBranch: 'v0.4.0', headSha: 'abc', url: 'https://example.test/actions', jobs: [{ name: 'macOS', status, steps: [{ name: 'Validate Extension', status, conclusion }] }] });
+
+test('Actions 每 12 秒查询 Job/Step，完成后校验 ZIP 并显示下载链接', async () => {
+  const harness = resultHarness(), calls = [];
+  let polls = 0;
+  await showResult(async (program, args, live, timeout) => {
+    calls.push(args);
+    assert.ok(timeout > 0 && timeout <= 30000);
+    if (args[0] === 'auth') return '';
+    if (args[1] === 'list') { polls++; return JSON.stringify([actionRun()]); }
+    if (args[0] === 'run') return JSON.stringify(actionRun(polls === 2 ? 'completed' : 'in_progress', polls === 2 ? 'success' : null));
+    return JSON.stringify({ url: 'https://example.test/release', isDraft: false, isPrerelease: false, assets: [{ name: 'WindowStash-v0.4.0-macOS.zip', size: 123, url: 'https://example.test/download.zip' }] });
+  }, '0.4.0', 'abc', harness.options);
+  assert.equal(polls, 2);
+  assert.ok(calls.some((args) => args[1] === 'view' && args[2] === '123' && args.includes('status,conclusion,url,headBranch,headSha,jobs')));
+  assert.ok(harness.snapshots.some(({ lines, elapsed }) => elapsed === 12000 && lines[1].includes('已结束 1/1')));
+  assert.match(harness.messages.join('\n'), /发布成功[\s\S]*ZIP 下载.*download.zip/);
+});
+
+for (const scenario of ['network', 'timeout', 'foreignCommit', 'foreignTag', 'cancelled', 'emptyZip', 'prerelease']) test(`Actions 保留实际状态且禁止误报成功：${scenario}`, async () => {
+  const harness = resultHarness(); let polls = 0, releaseQueries = 0;
+  if (scenario === 'timeout') harness.options.timeout = 12000;
+  if (scenario === 'cancelled') harness.options.active = () => { if (polls) throw new Error('用户取消'); };
+  if (scenario.startsWith('foreign')) harness.options.wait = false;
+  await showResult(async (program, args) => {
+    if (args[0] === 'auth') return '';
+    if (args[1] === 'list') {
+      polls++;
+      if (scenario === 'network' && polls === 2) throw new Error('network');
+      const workflow = actionRun();
+      if (scenario === 'foreignCommit') workflow.headSha = 'other';
+      if (scenario === 'foreignTag') workflow.headBranch = 'v0.5.0';
+      return JSON.stringify([workflow]);
+    }
+    if (args[0] === 'run') return JSON.stringify(actionRun(['emptyZip', 'prerelease'].includes(scenario) ? 'completed' : 'in_progress', ['emptyZip', 'prerelease'].includes(scenario) ? 'success' : null));
+    releaseQueries++;
+    return JSON.stringify({ isDraft: false, isPrerelease: scenario === 'prerelease', assets: [{ name: 'WindowStash-v0.4.0-macOS.zip', size: scenario === 'emptyZip' ? 0 : 100 }] });
+  }, '0.4.0', 'abc', harness.options);
+  assert.ok(!harness.messages.join('').includes('发布成功'));
+  if (!['emptyZip', 'prerelease'].includes(scenario)) assert.equal(releaseQueries, 0);
+  if (scenario === 'network') assert.match(harness.snapshots.at(-1).lines.join(' '), /构建中.*Extension 检查与构建/);
+  if (scenario === 'timeout') assert.match(harness.messages.join(' '), /等待超时/);
+});
+
+test('gh 查询挂起会超时停止，命令包装保留查询超时参数', async () => {
+  const ui = terminalUI({ isTTY: false }, () => {}), calls = [];
+  await presentedCommand(async (...args) => { calls.push(args); }, ui)('gh', ['auth', 'status'], false, 50);
+  assert.equal(calls[0][3], 50);
+  await assert.rejects(command(root)(process.execPath, ['-e', 'setInterval(()=>{},1000)'], false, 50), /失败/);
+});
+
+test('父 Workflow 状态不变时，Extension、Companion、ZIP、上传任务仍按真实 Step 更新', async () => {
+  const harness = resultHarness(), names = ['Validate Extension', 'Build Companion app', 'Assemble macOS package', 'Create GitHub Release and upload macOS asset'];
+  let index = -1;
+  await showResult(async (program, args) => {
+    if (args[0] === 'auth') return '';
+    if (args[1] === 'list') { index++; return JSON.stringify([actionRun()]); }
+    if (args[0] === 'run') {
+      const workflow = actionRun(index === names.length ? 'completed' : 'in_progress', index === names.length ? 'success' : null);
+      workflow.jobs[0].steps = names.map((name, i) => ({ name, status: i < index ? 'completed' : i === index ? 'in_progress' : 'queued', conclusion: i < index ? 'success' : null }));
+      return JSON.stringify(workflow);
+    }
+    return JSON.stringify({ isDraft: false, isPrerelease: false, assets: [] });
+  }, '0.4.0', 'abc', harness.options);
+  const snapshots = harness.snapshots.map(({ lines }) => lines.join(' '));
+  for (const name of ['Extension 检查与构建', 'Companion 应用构建', 'ZIP 打包', '上传 Release 和 ZIP 附件']) assert.ok(snapshots.some((text) => text.includes(name)));
+  assert.ok(snapshots.some((text) => text.includes('已结束 3/4')));
+  assert.ok(!harness.messages.join('').includes('发布成功'));
+});
+
+test('verbose 进度不覆盖日志，窄终端限制行宽并过滤远端控制字符', () => {
+  const chunks = [], messages = [];
+  const output = { isTTY: true, columns: 25, write: (text) => chunks.push(text) };
+  liveProgress(output, (text) => messages.push(text), false).update(workflowProgress(), 0);
+  assert.equal(chunks.length, 0); assert.equal(messages.length, 1);
+  const previous = process.env.TERM, noColor = process.env.NO_COLOR;
+  try {
+    process.env.TERM = 'xterm'; delete process.env.NO_COLOR;
+    liveProgress(output).update(['任务\x1b[2J\n远端\r名称很长'.repeat(10), '步骤', '状态'], 0);
+    assert.equal(chunks.length, 1);
+    assert.ok(!chunks[0].includes('\x1b[2J')); assert.equal(chunks[0].split('\n').length, 5);
+  } finally {
+    if (previous === undefined) delete process.env.TERM; else process.env.TERM = previous;
+    if (noColor === undefined) delete process.env.NO_COLOR; else process.env.NO_COLOR = noColor;
+  }
+});
+
+test('等待耗时在 gh 查询期间每秒刷新，退出后清理刷新计时器', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const harness = resultHarness();
+  let finish, elapsed = 0;
+  const promise = showResult(async (program, args) => args[0] === 'auth' ? new Promise((resolve) => { finish = resolve; }) : '[]', '0.4.0', 'abc', { ...harness.options, wait: false, now: () => elapsed });
+  elapsed = 1000;
+  t.mock.timers.tick(1000);
+  assert.equal(harness.snapshots.length, 2);
+  assert.equal(harness.snapshots[1].elapsed, 1000);
+  finish('');
+  await promise;
+  const count = harness.snapshots.length;
+  t.mock.timers.tick(5000);
+  assert.equal(harness.snapshots.length, count);
+});
 const io = (lines) => inputLines(Readable.from(lines.map((line) => line + '\n')), silent);
 
 test('标准格式、当前与目标版本、参考提交和测试', () => {
@@ -205,8 +351,12 @@ test('结果不会把进行中的构建误报成功', async () => {
   const messages = [], original = console.log;
   console.log = (text) => messages.push(text);
   try {
-    await showResult(async (program, args) => args[0] === 'auth' ? '' : JSON.stringify([{ headBranch: 'v0.4.0', status: 'in_progress', url: 'https://example.test' }]), '0.4.0', head);
-    assert.ok(messages.some((text) => text.includes('正在构建')));
+    await showResult(async (program, args) => {
+      if (args[0] === 'auth') return '';
+      const workflow = { databaseId: 123, headSha: head, headBranch: 'v0.4.0', status: 'in_progress', url: 'https://example.test' };
+      return JSON.stringify(args[1] === 'list' ? [workflow] : workflow);
+    }, '0.4.0', head);
+    assert.ok(messages.some((text) => text.includes('构建中')));
     assert.ok(!messages.some((text) => text.includes('发布成功')));
   } finally { console.log = original; }
 });
@@ -297,7 +447,10 @@ for (const scenario of ['missingGh', 'failed', 'success', 'missingAsset', 'draft
       await showResult(async (program, args) => {
         if (scenario === 'missingGh') throw new Error('missing gh');
         if (args[0] === 'auth') return '';
-        if (args[0] === 'run') return JSON.stringify([{ headBranch: 'v0.4.0', status: 'completed', conclusion: scenario === 'failed' ? 'failure' : 'success', url: 'https://example.test' }]);
+        if (args[0] === 'run') {
+          const workflow = { databaseId: 123, headSha: head, headBranch: 'v0.4.0', status: 'completed', conclusion: scenario === 'failed' ? 'failure' : 'success', url: 'https://example.test', jobs: [] };
+          return JSON.stringify(args[1] === 'list' ? [workflow] : workflow);
+        }
         return JSON.stringify({ isDraft: scenario === 'draft', isPrerelease: false, url: 'https://example.test/release', assets: scenario === 'missingAsset' ? [] : [{ name: 'WindowStash-v0.4.0-macOS.zip', size: 100 }] });
       }, '0.4.0', head);
       assert.equal(messages.some((text) => text.includes('发布成功')), scenario === 'success');
@@ -338,7 +491,7 @@ for (const verbose of [false, true]) test(`命令呈现保留参数和返回值�
   const calls = [], execute = presentedCommand(async (...args) => { calls.push(args); return 'original output'; }, ui, verbose);
   const args = ['--prefix', 'companion', 'run', 'test'];
   assert.equal(await execute('npm', args, true), 'original output');
-  assert.deepEqual(calls, [['npm', args, verbose]]);
+  assert.deepEqual(calls, [['npm', args, verbose, undefined]]);
   assert.match(messages.join('\n'), /进行中.*Companion · test[\s\S]*通过.*Companion · test/);
   assert.equal(messages.some((text) => text.includes('检查 / 执行：')), verbose);
 });

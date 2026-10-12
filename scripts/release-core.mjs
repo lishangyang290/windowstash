@@ -74,9 +74,9 @@ export function validateInput(version, current, notes) {
 }
 
 export function command(root, onProgress = () => {}) {
-  return (program, args, live = false) => new Promise((resolveResult, reject) => {
+  return (program, args, live = false, timeout) => new Promise((resolveResult, reject) => {
     onProgress(`${program} ${args.join(' ')}`);
-    const child = spawn(program, args, { cwd: root, shell: false,
+    const child = spawn(program, args, { cwd: root, shell: false, timeout,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', live ? 'inherit' : 'pipe', live ? 'inherit' : 'pipe'] });
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');

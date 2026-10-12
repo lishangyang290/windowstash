@@ -73,6 +73,7 @@ jobs:
         run: |
           npm run lint
           npm test
+          npm run test:release
           npm run typecheck
           npm run build
 
@@ -87,6 +88,13 @@ jobs:
       - name: Build Companion app
         working-directory: companion
         run: npm run tauri:build
+
+      - name: Validate native bridge
+        run: |
+          cargo test --locked --manifest-path companion/native-host/Cargo.toml
+          cargo test --locked --manifest-path companion/src-tauri/Cargo.toml
+          node scripts/verify-native-host-production.mjs
+          node scripts/verify-browser-auth.mjs
 
       - name: Run existing production privacy validation
         run: |

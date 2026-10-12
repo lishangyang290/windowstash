@@ -80,6 +80,24 @@ function validateStructure(root, label) {
   try {
     const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
     if (manifest.version !== version) errors.push(`${label} Extension manifest 版本为 ${manifest.version}，预期 ${version}`);
+    const extension = join(root, 'Chrome Extension');
+    const required = new Set([
+      'authorize.html', 'lazy-tab.html', 'launcher.html', '开始使用.html', '开始使用.js', 'lazy-favicon.svg',
+      manifest.background?.service_worker, manifest.action?.default_popup, manifest.options_ui?.page,
+      ...Object.values(manifest.icons ?? {}),
+    ]);
+    for (const page of [...required].filter((path) => path?.endsWith('.html'))) {
+      try {
+        for (const [, asset] of readFileSync(join(extension, page), 'utf8').matchAll(/\b(?:src|href)=["']([^"']+)["']/g)) {
+          if (!/^(?:[a-z]+:|#)/i.test(asset) && /\.(?:js|css|svg|png|ico)(?:[?#]|$)/i.test(asset)) required.add(asset.replace(/^\//, '').split(/[?#]/)[0]);
+        }
+      } catch { /* Missing pages are reported below with other missing assets. */ }
+    }
+    for (const asset of required) {
+      try {
+        if (!asset || !lstatSync(join(extension, asset)).isFile()) throw new Error();
+      } catch { errors.push(`${label} Extension 缺少必要文件：${asset ?? 'manifest 入口'}`); }
+    }
   } catch {
     errors.push(`${label} 缺少有效的 Chrome Extension/manifest.json`);
   }
@@ -87,7 +105,10 @@ function validateStructure(root, label) {
   const app = join(root, 'WindowStash Companion.app', 'Contents');
   try {
     readFileSync(join(app, 'Info.plist'));
-    if (!walk(join(app, 'MacOS')).some((path) => lstatSync(path).isFile())) throw new Error();
+    for (const executable of ['windowstash-companion', 'windowstash-native-host']) {
+      const stat = lstatSync(join(app, 'MacOS', executable));
+      if (!stat.isFile() || !(stat.mode & 0o111)) throw new Error();
+    }
     execFileSync('codesign', ['--verify', '--deep', '--strict', join(root, 'WindowStash Companion.app')], { stdio: 'pipe' });
   } catch {
     errors.push(`${label} 的 WindowStash Companion.app 不完整或签名无效`);

@@ -1,4 +1,4 @@
-import { terminalUI, presentedCommand } from './release-ui.mjs';
+import { terminalUI, presentedCommand, workflowProgress, liveProgress } from './release-ui.mjs';
 import { createInterface } from 'node:readline';
 import { readFile, unlink, access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
@@ -72,8 +72,11 @@ export async function releaseExists(version) {
   return true;
 }
 
-export async function showResult(run, version, commit, { wait = false, active = () => {} } = {}) {
-  const ui = terminalUI();
+export async function showResult(run, version, commit, {
+  wait = false, active = () => {}, ui = terminalUI(), display = liveProgress(),
+  now = Date.now, sleep = (ms) => new Promise((done) => globalThis.setTimeout(done, ms)),
+  timeout = 15 * 60 * 1000,
+} = {}) {
   const releaseUrl = `https://github.com/${repository}/releases/tag/v${version}`;
   ui.section('步骤 4 / 4 · 发布结果');
   ui.field('版本提交', commit);
@@ -82,32 +85,69 @@ export async function showResult(run, version, commit, { wait = false, active = 
   ui.hint('远端页面');
   ui.field('GitHub Actions', `https://github.com/${repository}/actions/workflows/release.yml`);
   ui.field('GitHub Release', releaseUrl);
+  const started = now(), deadline = started + timeout;
+  let workflow, timer;
+  let lines = workflowProgress();
+  const render = (tick = false) => display.update(lines, now() - started, tick);
+  const query = async (args) => {
+    active();
+    if (now() >= deadline) throw new Error('等待超时');
+    const result = await run('gh', args, false, Math.min(30000, deadline - now()));
+    active();
+    return result;
+  };
   try {
-    await run('gh', ['auth', 'status']);
-    // Match both workflow and exact release commit; unrelated runs must not count.
-    let workflow, lastStatus = '';
-    const deadline = Date.now() + 15 * 60 * 1000;
+    render();
+    timer = globalThis.setInterval(() => {
+      try { active(); render(true); }
+      catch { globalThis.clearInterval(timer); }
+    }, 1000);
+    await query(['auth', 'status']);
     while (true) {
       active();
-      const runs = JSON.parse(await run('gh', ['run', 'list', '--repo', repository, '--workflow', 'release.yml', '--commit', commit, '--limit', '10', '--json', 'status,conclusion,url,headBranch']));
-      workflow = runs.find((item) => item.headBranch === `v${version}`);
-      const status = workflow?.status ?? 'waiting';
-      if (status !== lastStatus) {
-        if (!workflow) ui.pending('已推送 Tag，等待构建；尚未发现对应 Workflow。');
-        else if (status === 'completed') ui.hint(`构建已结束：${workflow.url}`);
-        else ui.pending(`正在构建（${status}）：${workflow.url}`);
-        lastStatus = status;
+      const queriedAt = now();
+      const runs = JSON.parse(await query(['run', 'list', '--repo', repository, '--workflow', 'release.yml', '--commit', commit, '--limit', '10', '--json', 'databaseId,status,conclusion,url,headBranch,headSha']));
+      const match = runs.find((item) => item.headBranch === `v${version}` && item.headSha === commit);
+      if (match) {
+        workflow = workflow?.databaseId === match.databaseId ? { ...workflow, ...match } : match;
+        lines = workflowProgress(workflow);
+        const detail = JSON.parse(await query(['run', 'view', String(match.databaseId), '--repo', repository, '--json', 'status,conclusion,url,headBranch,headSha,jobs']));
+        if (detail.headSha !== commit || detail.headBranch !== `v${version}`) throw new Error('Workflow 与发布提交或 Tag 不匹配');
+        workflow = { ...match, ...detail };
+        lines = workflowProgress(workflow);
       }
-      if (status === 'completed') break;
-      if (!wait || Date.now() >= deadline) { ui.warning('正在等待构建完成；Release 尚未确认，请查看上述页面。'); return; }
-      await new Promise((done) => globalThis.setTimeout(done, 10000));
+      render();
+      if (workflow?.status === 'completed') break;
+      if (!wait) { ui.warning('正在等待构建完成；Release 尚未确认，请查看上述页面。'); return; }
+      const nextPoll = Math.min(queriedAt + 12000, deadline);
+      while (now() < nextPoll) {
+        await sleep(Math.min(1000, nextPoll - now()));
+        active();
+      }
     }
+    globalThis.clearInterval(timer);
+    if (workflow.conclusion !== 'success') {
+      ui.field('Workflow', workflow.url);
+      ui.error(`构建未成功：${workflow.conclusion}。请打开 Workflow 查看日志。`);
+      return;
+    }
+    const release = JSON.parse(await query(['release', 'view', `v${version}`, '--repo', repository, '--json', 'assets,url,isDraft,isPrerelease']));
+    const zip = release.assets.find((asset) => asset.name === `WindowStash-v${version}-macOS.zip` && asset.size > 0);
     ui.field('Workflow', workflow.url);
-    if (workflow.conclusion !== 'success') { ui.error(`构建未成功：${workflow.conclusion}。请打开 Workflow 查看日志。`); return; }
-    const release = JSON.parse(await run('gh', ['release', 'view', `v${version}`, '--repo', repository, '--json', 'assets,url,isDraft,isPrerelease']));
-    if (!release.isDraft && !release.isPrerelease && release.assets.some((asset) => asset.name === `WindowStash-v${version}-macOS.zip` && asset.size > 0)) ui.success(`发布成功，正式 ZIP 附件已生成：${release.url}`);
+    if (!release.isDraft && !release.isPrerelease && zip) {
+      ui.success(`发布成功，正式 ZIP 附件已生成：${release.url}`);
+      ui.field('ZIP 下载', zip.url || `https://github.com/${repository}/releases/download/v${version}/${zip.name}`);
+    }
     else ui.warning('构建已结束，但正式 Release 或 ZIP 附件尚未确认，请查看页面。');
-  } catch { ui.warning('无法自动确认远端状态。请安装并认证 gh，或打开上述页面；Tag 推送成功不代表 Release 已完成。'); }
+  } catch {
+    let cancelled = false;
+    try { active(); } catch { cancelled = true; }
+    render();
+    if (workflow?.url) ui.field('最后确认的 Workflow', workflow.url);
+    ui.warning(cancelled ? '已结束等待；以上为最后查询的实际状态，Release 尚未确认，请打开远端页面。'
+      : now() >= deadline ? '等待超时；以上为最后查询的实际状态，Release 尚未确认，请打开远端页面。'
+      : '无法自动确认远端状态：gh 未安装、未认证、网络异常或查询超过 30 秒。以上为最后查询的实际状态；请查看远端页面，Tag 推送成功不代表 Release 已完成。');
+  } finally { globalThis.clearInterval(timer); }
 }
 
 export async function main(args = process.argv.slice(2)) {
@@ -221,7 +261,7 @@ export async function main(args = process.argv.slice(2)) {
     await unlink(journalPath);
     journal = null;
     ui.hint('等待 GitHub Actions 完成（最多 15 分钟；Ctrl+C 可停止等待）。');
-    await showResult(run, version, progress.commit, { wait: true, active: ensureActive });
+    await showResult(run, version, progress.commit, { wait: true, active: ensureActive, display: liveProgress(process.stdout, undefined, !verbose) });
   } catch (error) {
     if (journal && !publishing) {
       try { await recoverPrepared(run, root, journal, true); await unlink(journalPath); ui.success('本次准备的版本改动已恢复。'); }

@@ -38,7 +38,7 @@ main HEAD：
 2. 生成七个版本文件的更新（九处正式声明），只改 JSON 版本键和 Cargo 对应包的版本；生成新 Release Notes，更新教程中的 `WindowStash-vX.Y.Z` 安装包名称。
 3. 执行既有版本一致性检查、发布工具测试、Extension 与 Companion 的 Test / Lint / Typecheck / Build、git diff --check。各端 Build 已包含正式隐私检查，避免重复运行。不在本地构建 macOS .app。
 4. 展示修改、说明、检查与 Commit / Tag，要求明确输入 `发布 vX.Y.Z`。确认后再次检查文件与远端，才暂存本次文件、提交、推送 main，在准确的发布提交上创建和推送 Tag。
-5. 继续使用原有 `.github/workflows/release.yml` 构建正式 ZIP 和 Release，不创建空 Release。gh 可用时等待最多 15 分钟，只有 Workflow 成功且对应正式 ZIP 非空才报告成功。等待超时或状态无法确认时给出网页，不把 Tag 推送等同于 Release 成功。Ctrl+C 可结束等待。
+5. 继续使用原有 `.github/workflows/release.yml` 构建正式 ZIP 和 Release，不创建空 Release。gh 可用时等待最多 15 分钟，每约 12 秒查询匹配 Tag 和发布提交的真实 Job/Step，显示当前任务、已结束/总步骤数及成功、跳过、未成功数量。支持刷新的终端原地更新四行进度，等待耗时每秒刷新；重定向输出、`TERM=dumb` 或 `NO_COLOR` 使用纯文本查询摘要。单次查询超过 30 秒会停止等待并保留最后确认的状态。只有 Workflow 成功且对应正式 ZIP 非空才报告成功，并显示 Release 与 ZIP 下载链接。等待超时或状态无法确认时给出网页，不把 Tag 推送等同于 Release 成功。Ctrl+C 可结束等待。
 
 ## 终端入口和预演
 
@@ -52,6 +52,8 @@ npm run test:release
 `--verbose` 显示底层命令与完整检查输出；默认仅显示步骤和状态。终端使用少量状态颜色，重定向、`NO_COLOR` 或 `TERM=dumb` 时输出纯文本。
 
 `--dry-run` 只解析、查询与展示计划，必须满足同样的 Git 发布前提。它不写版本、Notes 或恢复记录，不运行会生成文件的测试/构建，不创建 Commit/Tag、不推送，也不触发 Actions。它不能代替正式模式的构建验证。当前开发分支上会明确停止，因为正式发布必须在 main。
+
+`--verbose` 保留查询命令日志，Actions 进度使用追加式纯文本摘要，避免原地刷新覆盖诊断输出。
 
 ## 取消与恢复
 
