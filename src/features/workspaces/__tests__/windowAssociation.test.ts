@@ -1,3 +1,4 @@
+vi.mock('@/lib/storage/accountScope', () => ({ accountStorageKey: async (key: string) => key }));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PersistentWindowAssociation } from '@/lib/storage/windowAssociationRepository';
 import type { WorkspaceLocalRecord } from '@/types/workspace';
@@ -225,7 +226,7 @@ describe('persistent window association recovery', () => {
     expect(bindings.get(31)).toBe('bound');
     expect(associationMock.upsert).toHaveBeenCalledWith('bound', expect.objectContaining({
       tabs: [expect.objectContaining({ url: 'https://bound.example/remaining' })],
-    }));
+    }), undefined, 'workspaces');
   });
 
   it('can retry after a transient local-storage read failure', async () => {

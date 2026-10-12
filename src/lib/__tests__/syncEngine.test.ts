@@ -1,3 +1,4 @@
+vi.mock('@/lib/storage/accountScope', () => ({ accountStorageKey: async (key: string) => key }));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceLocalRecord } from '@/types/workspace';
 
@@ -119,6 +120,6 @@ describe('syncEngine.syncAll', () => {
 
     await expect(syncEngine.cleanupExpiredLocalCopies(new Date('2026-09-29T00:00:00.000Z'))).resolves.toBe(1);
 
-    expect(workspaceMock.remove).toHaveBeenCalledWith('one');
+    expect(workspaceMock.remove).toHaveBeenCalledWith('one', undefined);
   });
 });

@@ -17,3 +17,5 @@ coverage
 .windowstash-release.json
 
 .windowstash-release.json.*.tmp
+
+companion/src-tauri/binaries

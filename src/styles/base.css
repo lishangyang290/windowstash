@@ -47,10 +47,8 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .sync-failed, .sync-conflict { color: #b42318; }
 .sync-failed > span, .sync-conflict > span { color: #ef4444; font-weight: 800; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
-.success-toast { position: fixed; z-index: 40; top: 16px; left: 50%; display: flex; align-items: center; gap: 8px; max-width: calc(100vw - 24px); min-height: 40px; transform: translateX(-50%); border: 1px solid #e1e1e5; border-radius: 9px; background: #fff; box-shadow: 0 8px 24px rgba(24,24,27,.12); color: #3f3f46; padding: 0 13px 0 10px; font-size: 12px; font-weight: 600; white-space: nowrap; animation: success-toast-life 2s both; }
-.success-toast span { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: #e8f6ee; color: #287553; font-size: 12px; font-weight: 750; }
+.success-toast { position: fixed; z-index: 40; top: 16px; left: 50%; max-width: calc(100vw - 24px); min-height: 40px; transform: translateX(-50%); border: 1px solid rgba(255,255,255,.14); border-radius: 999px; background: rgba(0,0,0,.78); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); box-shadow: 0 8px 24px rgba(0,0,0,.18); color: #fff; padding: 10px 20px; font-size: 14px; font-weight: 500; line-height: 1.5; text-align: center; overflow-wrap: anywhere; animation: success-toast-life 2s both; }
 @keyframes success-toast-life { 0% { opacity: 0; transform: translate(-50%, -14px) scale(.96); } 10% { opacity: 1; transform: translate(-50%, 0) scale(1.02); } 16%, 86% { opacity: 1; transform: translate(-50%, 0) scale(1); } 100% { opacity: 0; transform: translate(-50%, -7px) scale(.98); } }
-.config-page { min-height: 100vh; display: grid; place-items: center; padding: 32px; background: var(--bg); }
 .supabase-config { position: relative; display: grid; gap: 16px; width: min(460px, 100%); padding: 24px; border: 1px solid var(--line); border-radius: 10px; background: #fff; box-shadow: 0 16px 42px rgba(24,24,27,.08); }
 .supabase-config.setup { box-shadow: none; }
 .config-close { position: absolute; top: 14px; right: 14px; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 22px; line-height: 1; }
@@ -67,7 +65,6 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .password-visibility { position: absolute; top: 50%; right: 4px; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; transform: translateY(-50%); border: 0; border-radius: 5px; background: transparent; color: #71717a; }
 .password-visibility:hover:not(:disabled) { background: #f1f1f3; color: #27272a; }
 .password-visibility svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.config-warning { margin: 0; border-left: 2px solid #a1a1aa; background: #f7f7f8; color: #52525b; padding: 10px 11px; font-size: 11px; line-height: 1.55; }
 .config-message { margin: -3px 0 0; color: #934a45; font-size: 11px; }
 .config-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .config-actions.with-cancel { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -78,3 +75,135 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .config-secondary button { border: 0; background: transparent; color: var(--muted); padding: 0; font-size: 11px; }
 .config-secondary button:hover { color: var(--text); }
 @media (prefers-reduced-motion: reduce) { .success-toast { animation: none; } }
+
+/* Both configuration modes share the same reading width. */
+.supabase-config { width: min(780px, 100%); max-height: calc(100dvh - 48px); overflow-y: auto; gap: 16px; padding: 28px; border-radius: 6px; }
+.supabase-config.setup { padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.config-title-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.config-title-row .brand-mark { width: 26px; height: 26px; }
+.config-full-guide { margin-left: auto; color: #52525b; font-size: 13px; text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
+.config-full-guide:hover { color: var(--text); }
+.supabase-config .config-heading h2 { margin: 0; font-size: 26px; font-weight: 650; letter-spacing: -.035em; }
+.supabase-config .config-heading p { margin: 10px 0 0; color: var(--muted); font-size: 14px; font-weight: 400; line-height: 1.65; }
+.config-modes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; padding: 3px; border: 1px solid var(--line); border-radius: 5px; background: #ededf0; }
+.config-modes button { min-width: 0; min-height: 34px; padding: 0 12px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 13px; font-weight: 550; }
+.config-modes button[aria-pressed="true"] { background: #fff; color: var(--text); }
+.config-modes button:hover { color: var(--text); }
+.config-steps{position:relative;display:flex;align-items:center;gap:8px;margin-bottom:24px;min-width:0}
+.config-steps button{flex:1;display:flex;min-width:0;min-height:44px;gap:9px;align-items:center;justify-content:center;padding:8px 10px;border:1px solid #dcdee2;border-radius:8px;background:#fff;color:#646a73;font-size:12px;font-weight:600;white-space:nowrap;transition:background .15s,border-color .15s,color .15s,box-shadow .15s}
+.config-steps button:hover:not(:disabled){background:#f0f1f3;border-color:#bfc2c9}
+.config-steps button[data-state="current"]{background:#e8e9ed;border-color:#c9cdd3;color:#202124;box-shadow:inset 0 0 0 1px #dbdde1}
+.config-steps button:disabled{cursor:not-allowed;color:#a2a6ad;background:#f4f5f6;border-color:#e8e9ec}
+.config-step-icon{display:grid;place-items:center;color:#656b74;flex:none}
+.config-steps button[data-state="current"] .config-step-icon{color:#25282d}
+.config-steps button:disabled .config-step-icon{color:#adb1b8}
+.config-step-icon svg{width:17px;height:17px;stroke:currentColor;stroke-linecap:round;stroke-linejoin:round;stroke-width:1.8;fill:none}
+.config-step-arrow{display:grid;place-items:center;flex:0 0 15px;color:#aeb2ba}
+.config-step-arrow svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round;stroke-width:1.9}
+.config-step-label{overflow:hidden;text-overflow:ellipsis}
+.config-steps button:disabled{opacity:1}
+.config-steps button:focus-visible{outline:2px solid #77808d;outline-offset:2px}
+@media(max-width:680px){.config-steps{overflow-x:auto;gap:6px;padding-bottom:7px;scrollbar-width:thin}.config-steps button{min-width:122px;flex:0 0 auto;padding:8px 10px}.config-step-arrow{flex:0 0 12px}}
+.config-guide { min-width: 0; font-size: 14px; line-height: 1.75; color: #52525b; }
+.config-guide h3 { margin: 0; color: var(--text); font-size: 22px; font-weight: 650; letter-spacing: -.025em; }
+.config-guide p { margin: 8px 0 0; }
+.config-guide h4, .config-task-heading h4 { margin: 0; color: var(--text); font-size: 15px; font-weight: 600; line-height: 1.5; }
+.config-task-action { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 16px 0; margin-top: 4px; }
+.config-task-action > p, .config-task-action > div { flex: 1; margin: 0; }
+.config-task-action .config-sql-actions { flex: none; }
+.config-security{width:min(100%,1040px);margin:22px 0 32px;border-collapse:collapse;background:#fff;font-size:14px}
+.config-security th,.config-security td{padding:14px 16px;border:1px solid var(--line);text-align:left;vertical-align:top;overflow-wrap:anywhere}
+.config-security th{width:34%;font-weight:700}
+.config-external { display: inline-flex; align-items: center; flex-shrink: 0; color: var(--text); text-decoration: none; font-size: 13px; }
+.config-external:hover { text-decoration: underline; }
+.config-help, .config-code { margin: 0; font-size: 13px; line-height: 1.7; }
+.config-help summary, .config-code summary { color: #52525b; cursor: pointer; }
+.config-help p { margin: 8px 0 0; max-width: 68ch; }
+.config-code pre { max-height: 240px; overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 4px; background: #fafafa; font-size: 14px; line-height: 1.7; }
+.config-sql-actions { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.config-guide .config-step-note { margin-top: 18px; color: var(--muted); font-size: 13px; }
+.config-guide .config-copy-feedback { margin: 0 0 12px; color: var(--text); font-size: 13px; }
+.config-fields { display: grid; min-width: 0; }
+.config-field-task { position: relative; display: grid; gap: 10px; min-width: 0; }
+.config-field-task + .config-field-task { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e8e8e8; }
+.config-task-heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; }
+.config-task-heading p { margin: 4px 0 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.config-field-task > label { color: #3f3f46; font-size: 13px; font-weight: 550; }
+.supabase-config input { height: 46px; font-size: 14px; border: 1px solid #a1a1aa; border-radius: 5px; background: #fff; color: #18181b; transition: border-color .15s, box-shadow .15s; }
+.supabase-config input:hover:not(:disabled) { border-color: #52525b; }
+.supabase-config input:focus { border-color: #27272a; box-shadow: 0 0 0 3px #27272a14; }
+.supabase-config input[aria-invalid="true"] { border-color: #934a45; }
+.supabase-config input[aria-invalid="true"]:focus { box-shadow: 0 0 0 3px #934a4514; }
+.supabase-config input:disabled { background: #ededf0; border-color: #c4c4ca; color: #71717a; cursor: wait; }
+.config-field-error { margin: 0; color: #934a45; font-size: 12px; line-height: 1.6; }
+.config-task-heading .config-external { min-height: 34px; padding: 5px 10px; font-size: 12px; }
+.config-key-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.supabase-config.guided { padding-bottom: calc(var(--config-bar-height, 100px) + 24px); }
+.supabase-config.setup.guided { padding-bottom: calc(var(--config-bar-height, 100px) + 24px); }
+.supabase-config .flow-footer { position: fixed; bottom: 0; left: var(--config-bar-left); width: var(--config-bar-width); z-index: 30; max-height: 45dvh; overflow-y: auto; padding: 14px 0 calc(14px + env(safe-area-inset-bottom)); background: #fff; }
+.setup .flow-footer { background: var(--bg); }
+.config-footer { display: grid; gap: 12px; padding: 18px 0 0; border-top: 1px solid var(--line-strong); }
+.config-footer-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; }
+.supabase-config .config-footer-actions .button { width: auto; min-width: 0; min-height: 38px; max-width: 100%; padding: 8px 14px; }
+.config-message, .config-feedback, .config-footer-hint { margin: 0; font-size: 13px; line-height: 1.6; }
+.config-feedback, .config-footer-hint { color: var(--muted); }
+@media (max-width: 640px) {
+  .supabase-config { padding: 24px 18px; }
+  .supabase-config .config-heading h2 { font-size: 26px; }
+  .config-full-guide { font-size: 12px; }
+  .config-task-action { align-items: flex-start; flex-direction: column; gap: 14px; padding: 16px 0; }
+  .config-task-heading { align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+  .supabase-config input { font-size: 16px; }
+}
+
+.config-site-header{position:fixed;top:0;left:0;right:0;z-index:40;height:64px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.96);backdrop-filter:blur(14px)}
+.config-site-header-inner{display:flex;height:100%;align-items:center;justify-content:space-between;padding:0 28px;gap:16px}
+.config-site-brand{display:flex;align-items:center;gap:12px;color:var(--text);font-size:16px;font-weight:700;letter-spacing:-.02em}
+.config-site-mark{display:grid;grid-template-columns:repeat(2,7px);gap:3px;padding:7px;background:#202124}
+.config-site-mark i{width:7px;height:7px;background:#fff}
+.config-site-header a{color:var(--muted);font-size:14px;text-decoration:none}
+.config-site-header a:hover{text-decoration:underline}
+
+/* Configuration text keeps controls and reading content at a comfortable size. */
+.supabase-config{font-size:14px;line-height:1.6}
+.config-modes button,.config-steps button{font-size:14px}
+.config-guide{font-size:16px;line-height:1.75}
+.config-guide h4,.config-task-heading h4{font-size:16px}
+.config-task-heading p,.config-field-task>label,.config-help,.config-code{font-size:14px}
+.supabase-config .config-external,.supabase-config .config-footer-actions .button,.config-sql-actions .button{font-size:14px}
+.config-task-heading .config-external{font-size:14px;min-height:38px;padding:7px 12px}
+.config-message,.config-feedback,.config-field-error{font-size:14px}
+.config-footer-hint,.config-guide .config-step-note{font-size:13px}
+.config-secondary button{font-size:13px}
+
+@media(max-width:600px){.config-security{display:block;overflow-x:auto}.config-security th{min-width:180px}}
+
+.supabase-config.setup{padding-bottom:calc(var(--config-bar-height,100px) + 24px)}
+.flow-account-content{display:grid;gap:16px}
+.flow-account .auth-form{margin:0;gap:20px}
+.flow-account .field{font-size:14px;font-weight:550}
+.flow-account .auth-switch{font-size:14px;text-align:left}
+.flow-account .auth-switch button{font-size:14px}
+
+.config-connection-check{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:12px;margin-top:16px}
+.config-connection-check .config-feedback{margin-right:auto}
+.config-verify-feedback{margin:0;color:#24703e;font-size:14px;line-height:1.6}
+
+.config-connection-heading{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px}
+.config-connection-heading>div{flex:1;min-width:240px}
+.config-connection-heading>.button{flex-shrink:0}
+
+.config-field-heading{min-height:28px;align-items:center;flex-wrap:wrap;gap:8px 20px}
+.config-field-heading label{font-size:14px;font-weight:600}
+.config-field-heading .config-field-help{margin:0;color:var(--muted);font-size:13px;line-height:1.6}
+.config-connection-check .config-verify-button{flex-shrink:0;min-height:30px;padding:4px 10px;font-size:14px}
+.config-connection-check .config-verify-success:disabled{opacity:1;color:#24703e}
+
+.config-footer-row{display:flex;align-items:center;flex-wrap:wrap;gap:12px 20px}
+.config-footer-row>p{flex:1;min-width:180px}
+.config-footer-row>.config-footer-actions{flex-shrink:0;margin-left:auto}
+
+@media(max-width:480px){.config-field-task + .config-field-task{margin-top:16px;padding-top:16px}}
+
+.dialog-backdrop > [role="dialog"]:has(.config-settings){width:min(640px,calc(100vw - 32px))}
+.config-settings{width:100%;box-shadow:none}

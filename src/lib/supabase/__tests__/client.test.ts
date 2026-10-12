@@ -110,4 +110,30 @@ describe('runtime Supabase client', () => {
     const { friendlySupabaseError } = await import('../client');
     expect(friendlySupabaseError({ code: '42P01', message: 'relation workspaces does not exist' })).toEqual(expect.objectContaining({ message: expect.stringContaining('开始使用.html') }));
   });
+it('preserves pending workspaces through the actual project-save flow A → B → A', async () => {
+  mocks.storage.clear();
+  const { workspaceRepository } = await import('@/lib/storage/workspaceRepository');
+  const { selectDataAccount } = await import('@/lib/storage/accountScope');
+  const { saveSupabaseConfig } = await import('../client');
+  const a = { url: 'https://one.supabase.co', publishableKey: 'one' };
+  const b = { url: 'https://two.supabase.co', publishableKey: 'two' };
+  const content = { id: 'same-id', name: 'A offline', tabs: [], status: 'active' as const, activeTabIndex: 0, createdAt: '2026-01-01', updatedAt: '2026-01-01' };
+  mocks.storage.set('supabaseConfig', a);
+  mocks.storage.set('windowstash-auth:sb-one-auth-token', JSON.stringify({ user: { id: 'same-user' } }));
+  await selectDataAccount(a.url, 'same-user');
+  await workspaceRepository.saveContent(content);
+  await saveSupabaseConfig(b);
+  expect(await workspaceRepository.list()).toEqual([]);
+  mocks.storage.set('windowstash-auth:sb-two-auth-token', JSON.stringify({ user: { id: 'same-user' } }));
+  await selectDataAccount(b.url, 'same-user');
+  expect(await workspaceRepository.list()).toEqual([]);
+  await workspaceRepository.saveContent({ ...content, name: 'B offline' });
+  await saveSupabaseConfig(a);
+  expect(await workspaceRepository.list()).toEqual([]);
+  mocks.storage.set('windowstash-auth:sb-one-auth-token', JSON.stringify({ user: { id: 'same-user' } }));
+  await selectDataAccount(a.url, 'same-user');
+  expect((await workspaceRepository.get(content.id))?.content.name).toBe('A offline');
+  expect((await workspaceRepository.get(content.id))?.sync.syncStatus).toBe('pending');
+});
+
 });

@@ -2,10 +2,15 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const listeners = vi.hoisted(() => ({
   onMessage: undefined as ((message: unknown, sender: unknown) => unknown) | undefined,
+  onInstalled: undefined as (() => void) | undefined,
+  onStartup: undefined as (() => void) | undefined,
   onCreated: undefined as ((tab: { windowId: number }) => void) | undefined,
   onRemoved: undefined as ((tabId: number, info: { windowId: number; isWindowClosing: boolean }) => void) | undefined,
   onMoved: undefined as ((tabId: number, info: { windowId: number }) => void) | undefined,
+  onUpdated: undefined as ((tabId: number, info: { url?: string; title?: string }, tab: { windowId: number; url?: string }) => void) | undefined,
 }));
+const accessMock = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/supabase/authService', () => ({ authService: { requireSession: accessMock } }));
 const reopenMock = vi.hoisted(() => vi.fn());
 const recoverMock = vi.hoisted(() => vi.fn());
 const restoreSavedMock = vi.hoisted(() => vi.fn());
@@ -16,15 +21,15 @@ const browserMock = vi.hoisted(() => {
   return {
     alarms: { create: vi.fn(), onAlarm: event() },
     runtime: {
-      onInstalled: event(),
-      onStartup: event(),
+      onInstalled: { addListener: vi.fn((listener) => { listeners.onInstalled = listener; }) },
+      onStartup: { addListener: vi.fn((listener) => { listeners.onStartup = listener; }) },
       onMessage: { addListener: vi.fn((listener) => { listeners.onMessage = listener; }) },
     },
     windows: { onRemoved: event() },
     tabs: {
       onActivated: event(),
       onCreated: { addListener: vi.fn((listener) => { listeners.onCreated = listener; }) },
-      onUpdated: event(),
+      onUpdated: { addListener: vi.fn((listener) => { listeners.onUpdated = listener; }) },
       onRemoved: { addListener: vi.fn((listener) => { listeners.onRemoved = listener; }) },
       onMoved: { addListener: vi.fn((listener) => { listeners.onMoved = listener; }) },
       onAttached: event(), onDetached: event(),
@@ -42,7 +47,7 @@ vi.mock('@/features/workspaces/workspaceService', () => ({
 vi.mock('@/lib/sync/syncEngine', () => ({ syncEngine: { syncAll: vi.fn(), syncWorkspace: vi.fn(), cleanupExpiredLocalCopies: vi.fn() } }));
 vi.mock('@/lib/storage/bindingRepository', () => ({ bindingRepository: { remove: vi.fn() } }));
 vi.mock('@/features/workspaces/lazyRestore', () => ({
-  beginStartupLazyReconciliation: vi.fn(),
+  beginStartupLazyReconciliation: vi.fn().mockResolvedValue(undefined),
   claimLazyTabFromBrowserTab: vi.fn(),
   cleanupOrphanedLazyEntries: vi.fn(),
   confirmLazyNavigation: vi.fn(),
@@ -71,6 +76,16 @@ describe('background messages', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     refreshAssociationMock.mockResolvedValue(true);
+    accessMock.mockResolvedValue({ user: { id: 'A' } });
+  });
+
+  it('rehydrates lazy placeholders at browser startup before maintenance', async () => {
+    const lazy = await import('@/features/workspaces/lazyRestore');
+    listeners.onStartup?.();
+    await vi.waitFor(() => expect(lazy.hydrateStartupLazyTabs).toHaveBeenCalledOnce());
+    expect(lazy.beginStartupLazyReconciliation).toHaveBeenCalledOnce();
+    expect(vi.mocked(lazy.beginStartupLazyReconciliation).mock.invocationCallOrder[0]!).toBeLessThan(vi.mocked(lazy.hydrateStartupLazyTabs).mock.invocationCallOrder[0]!);
+    expect(browserMock.alarms.create).toHaveBeenCalledWith('windowstash-window-association', expect.anything());
   });
 
   it('starts persistence directly for tab creation, removal and movement', () => {
@@ -115,4 +130,27 @@ describe('background messages', () => {
 
     expect(restoreSavedMock).toHaveBeenCalledWith('workspace-1');
   });
+});
+
+
+it('blocks manager operations in background after logout', async () => {
+  accessMock.mockRejectedValue(new Error('请先登录 WindowStash'));
+  await expect(listeners.onMessage?.({ type: 'RESTORE_SAVED_WORKSPACE', workspaceId: 'A' }, { url: 'chrome-extension://fixture/options.html?recover=1' })).rejects.toThrow('请先登录');
+  expect(restoreSavedMock).not.toHaveBeenCalledWith('A');
+});
+
+it('allows authenticated manager operations', async () => {
+  accessMock.mockResolvedValue({ user: { id: 'A' } });
+  restoreSavedMock.mockResolvedValue(99);
+  await expect(listeners.onMessage?.({ type: 'RESTORE_SAVED_WORKSPACE', workspaceId: 'A' }, { url: 'chrome-extension://fixture/options.html' })).resolves.toBe(99);
+  expect(restoreSavedMock).toHaveBeenCalledWith('A');
+});
+
+it.each(['REOPEN_WORKSPACE', 'RECOVER_WORKSPACE', 'RESTORE_SAVED_WORKSPACE', 'OPEN_OR_FOCUS_WORKSPACE', 'SYNC_WORKSPACE', 'SYNC_ALL'])('blocks %s from popup or other senders after logout', async (type) => {
+  vi.clearAllMocks();
+  accessMock.mockRejectedValue(new Error('请先登录 WindowStash'));
+  await expect(listeners.onMessage?.({ type, workspaceId: 'A', sourceWindowId: 22 }, { url: 'chrome-extension://fixture/popup.html' })).rejects.toThrow('请先登录');
+  expect(reopenMock).not.toHaveBeenCalled();
+  expect(recoverMock).not.toHaveBeenCalled();
+  expect(restoreSavedMock).not.toHaveBeenCalled();
 });

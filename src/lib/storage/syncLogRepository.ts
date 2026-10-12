@@ -1,20 +1,23 @@
+import { accountStorageKey } from './accountScope';
 import { browser } from 'wxt/browser';
 import { STORAGE_KEYS } from '@/lib/constants';
 import type { SyncLogEntry } from '@/types/workspace';
 
 export const syncLogRepository = {
   async list(): Promise<SyncLogEntry[]> {
-    const result = await browser.storage.local.get(STORAGE_KEYS.syncLogs);
-    return (result[STORAGE_KEYS.syncLogs] as SyncLogEntry[] | undefined) ?? [];
+    const storageKey = await accountStorageKey(STORAGE_KEYS.syncLogs);
+    const result = await browser.storage.local.get(storageKey);
+    return (result[storageKey] as SyncLogEntry[] | undefined) ?? [];
   },
 
-  async add(entry: Omit<SyncLogEntry, 'id' | 'timestamp'>): Promise<void> {
-    const logs = await this.list();
+  async add(entry: Omit<SyncLogEntry, 'id' | 'timestamp'>, requestedKey?: string): Promise<void> {
+    const storageKey = requestedKey ?? await accountStorageKey(STORAGE_KEYS.syncLogs);
+    const logs = ((await browser.storage.local.get(storageKey))[storageKey] as SyncLogEntry[] | undefined) ?? [];
     logs.unshift({ ...entry, id: crypto.randomUUID(), timestamp: new Date().toISOString() });
-    await browser.storage.local.set({ [STORAGE_KEYS.syncLogs]: logs.slice(0, 100) });
+    await browser.storage.local.set({ [storageKey]: logs.slice(0, 100) });
   },
 
   async clear(): Promise<void> {
-    await browser.storage.local.set({ [STORAGE_KEYS.syncLogs]: [] });
+    await browser.storage.local.set({ [await accountStorageKey(STORAGE_KEYS.syncLogs)]: [] });
   },
 };

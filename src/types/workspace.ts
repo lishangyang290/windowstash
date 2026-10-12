@@ -29,6 +29,7 @@ export interface SyncMetadata {
 }
 
 export interface WorkspaceLocalRecord {
+  accountStorageKey?: string;
   content: WorkspaceContent;
   sync: SyncMetadata;
 }
@@ -44,12 +45,14 @@ export interface SyncLogEntry {
 }
 
 export interface DeleteTombstone {
+  accountStorageKey?: string;
   workspaceId: string;
   workspaceName: string;
   deletedAt: string;
 }
 
 export interface CloudWorkspaceRow {
+  accountStorageKey?: string;
   id: string;
   user_id: string;
   name: string;

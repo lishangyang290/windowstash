@@ -1,0 +1,18 @@
+[package]
+name = "windowstash-native-host"
+version = "0.4.0"
+edition = "2021"
+publish = false
+
+[features]
+# Explicit negative control, forbidden in optimized production builds.
+insecure-test-store = []
+
+[dependencies]
+fs2 = "0.4"
+p256 = { version = "0.13", features = ["ecdsa"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"

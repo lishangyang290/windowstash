@@ -1,5 +1,7 @@
 import { browser } from 'wxt/browser';
-import { nextLocalExpiry } from '@/lib/constants';
+import { accountStorageKey } from '@/lib/storage/accountScope';
+import type { WorkspaceLocalRecord } from '@/types/workspace';
+import { nextLocalExpiry, STORAGE_KEYS } from '@/lib/constants';
 import { cloudRowToLocal } from '@/lib/converters';
 import { contentHash } from '@/lib/hash';
 import { canCleanLocalCopy, decideSync } from '@/lib/syncRules';
@@ -15,27 +17,30 @@ async function log(
   action: string,
   result: 'success' | 'failed' | 'info',
   message: string,
+  storageKey?: string,
 ) {
-  await syncLogRepository.add({ workspaceId, workspaceName, action, result, message });
+  await syncLogRepository.add({ workspaceId, workspaceName, action, result, message }, storageKey?.replace(/^workspaces/, STORAGE_KEYS.syncLogs));
 }
 
-async function markFailed(workspaceId: string, error: unknown): Promise<void> {
-  const record = await workspaceRepository.get(workspaceId);
+async function markFailed(workspaceId: string, error: unknown, storageKey: string): Promise<void> {
+  const record = await workspaceRepository.get(workspaceId, storageKey);
   if (!record) return;
   const message = error instanceof Error ? error.message : '未知同步错误';
   await workspaceRepository.put({
     ...record,
     sync: { ...record.sync, syncStatus: 'failed', lastSyncError: message },
   });
-  await log(workspaceId, record.content.name, 'cloud-sync', 'failed', message);
+  await log(workspaceId, record.content.name, 'cloud-sync', 'failed', message, storageKey);
 }
 
-async function upload(workspaceId: string): Promise<void> {
-  const record = await workspaceRepository.get(workspaceId);
-  if (!record) return;
+async function upload(record: WorkspaceLocalRecord): Promise<void> {
+  const workspaceId = record.content.id;
   const hash = await contentHash(record.content);
-  const row = await workspaceRemoteRepository.upsert(record.content, hash);
+  const row = await workspaceRemoteRepository.upsert(record.content, hash, ...(record.accountStorageKey ? [record.accountStorageKey] : []));
+  const latest = await workspaceRepository.get(workspaceId, record.accountStorageKey);
+  if (!latest || await contentHash(latest.content) !== hash) return;
   await workspaceRepository.put({
+    ...(record.accountStorageKey ? { accountStorageKey: record.accountStorageKey } : {}),
     content: { ...record.content, updatedAt: row.updated_at },
     sync: {
       syncStatus: 'synced',
@@ -46,16 +51,19 @@ async function upload(workspaceId: string): Promise<void> {
       lastSyncError: null,
     },
   });
-  await log(workspaceId, record.content.name, 'cloud-sync', 'success', 'Cloud sync success');
+  await log(workspaceId, record.content.name, 'cloud-sync', 'success', 'Cloud sync success', record.accountStorageKey);
 }
 
 export const syncEngine = {
-  async syncWorkspace(workspaceId: string): Promise<void> {
-    const local = await workspaceRepository.get(workspaceId);
-    if (!local || !(await workspaceRemoteRepository.isAuthenticated())) return;
+  async syncWorkspace(workspaceId: string, requestedKey?: string): Promise<void> {
+    if (!(await workspaceRemoteRepository.isAuthenticated())) return;
+    const storageKey = requestedKey ?? await accountStorageKey(STORAGE_KEYS.workspaces);
+    const local = await workspaceRepository.get(workspaceId, storageKey);
+    if (!local) return;
     try {
-      const cloud = await workspaceRemoteRepository.get(workspaceId);
-      if (!cloud) return await upload(workspaceId);
+      const cloud = await workspaceRemoteRepository.get(workspaceId, storageKey);
+      if (!cloud) return await upload(local);
+      if (local.accountStorageKey !== cloud.accountStorageKey) return;
       const localHash = await contentHash(local.content);
       const decision = decideSync(local, localHash, cloud.content_hash, cloud.updated_at);
       if (decision === 'conflict') {
@@ -63,27 +71,29 @@ export const syncEngine = {
           ...local,
           sync: { ...local.sync, syncStatus: 'conflict', lastSyncError: '本机与云端均有更新' },
         });
-        await log(workspaceId, local.content.name, 'cloud-sync', 'failed', 'Conflict detected');
+        await log(workspaceId, local.content.name, 'cloud-sync', 'failed', 'Conflict detected', storageKey);
       } else if (decision === 'upload') {
-        await upload(workspaceId);
+        await upload(local);
       } else if (decision === 'download') {
         await workspaceRepository.put(cloudRowToLocal(cloud));
-        await log(workspaceId, cloud.name, 'cloud-sync', 'success', 'Cloud changes downloaded');
+        await log(workspaceId, cloud.name, 'cloud-sync', 'success', 'Cloud changes downloaded', storageKey);
       } else if (local.sync.syncStatus !== 'synced') {
         await workspaceRepository.put(cloudRowToLocal(cloud));
       }
     } catch (error) {
-      await markFailed(workspaceId, error);
+      await markFailed(workspaceId, error, storageKey);
     }
   },
 
-  async syncAll(): Promise<void> {
+  async syncAll(requestedKey?: string): Promise<void> {
     if (!(await workspaceRemoteRepository.isAuthenticated())) return;
-    for (const tombstone of await tombstoneRepository.list()) {
+    const storageKey = requestedKey ?? await accountStorageKey(STORAGE_KEYS.workspaces);
+    const tombstoneKey = storageKey.replace(/^workspaces/, STORAGE_KEYS.tombstones);
+    for (const tombstone of await tombstoneRepository.list(tombstoneKey)) {
       try {
-        await workspaceRemoteRepository.remove(tombstone.workspaceId);
-        await tombstoneRepository.remove(tombstone.workspaceId);
-        await log(tombstone.workspaceId, tombstone.workspaceName, 'cloud-delete', 'success', 'Cloud delete success');
+        await workspaceRemoteRepository.remove(tombstone.workspaceId, ...(tombstone.accountStorageKey ? [tombstone.accountStorageKey] : []));
+        await tombstoneRepository.remove(tombstone.workspaceId, ...(tombstone.accountStorageKey ? [tombstone.accountStorageKey] : []));
+        await log(tombstone.workspaceId, tombstone.workspaceName, 'cloud-delete', 'success', 'Cloud delete success', storageKey);
       } catch (error) {
         await log(
           tombstone.workspaceId,
@@ -91,34 +101,36 @@ export const syncEngine = {
           'cloud-delete',
           'failed',
           error instanceof Error ? error.message : 'Cloud delete failed',
+          storageKey,
         );
       }
     }
 
-    const localRecords = await workspaceRepository.list();
-    for (const record of localRecords) await this.syncWorkspace(record.content.id);
+    const localRecords = await workspaceRepository.list(storageKey);
+    for (const record of localRecords) await this.syncWorkspace(record.content.id, storageKey);
 
     try {
-      const remoteRows = await workspaceRemoteRepository.list();
+      const remoteRows = await workspaceRemoteRepository.list(storageKey);
       for (const row of remoteRows) {
-        if (!(await workspaceRepository.get(row.id)) && !(await tombstoneRepository.has(row.id))) {
+        if (!(await workspaceRepository.get(row.id, storageKey)) && !(await tombstoneRepository.has(row.id, tombstoneKey))) {
           await workspaceRepository.put(cloudRowToLocal(row));
         }
       }
     } catch (error) {
-      await log(null, 'WindowStash', 'cloud-download', 'failed', error instanceof Error ? error.message : '下载失败');
+      await log(null, 'WindowStash', 'cloud-download', 'failed', error instanceof Error ? error.message : '下载失败', storageKey);
     }
   },
 
   async resolveConflict(workspaceId: string, choice: 'local' | 'cloud'): Promise<void> {
-    const local = await workspaceRepository.get(workspaceId);
+    const storageKey = await accountStorageKey(STORAGE_KEYS.workspaces);
+    const local = await workspaceRepository.get(workspaceId, storageKey);
     if (!local) return;
     if (choice === 'local') {
       await workspaceRepository.put({ ...local, sync: { ...local.sync, syncStatus: 'pending' } });
-      await upload(workspaceId);
+      await upload(local);
       return;
     }
-    const cloud = await workspaceRemoteRepository.get(workspaceId);
+    const cloud = await workspaceRemoteRepository.get(workspaceId, storageKey);
     if (!cloud) throw new Error('云端工作区不存在');
     await workspaceRepository.put(cloudRowToLocal(cloud));
   },
@@ -131,7 +143,8 @@ export const syncEngine = {
       : [bindingRepository.get(window.id)]))).filter((id): id is string => id != null));
     for (const record of await workspaceRepository.list()) {
       if (!activeWorkspaceIds.has(record.content.id) && canCleanLocalCopy(record.sync.syncStatus, record.sync.localExpiresAt, now)) {
-        await workspaceRepository.remove(record.content.id);
+        if (record.accountStorageKey && record.accountStorageKey !== await accountStorageKey(STORAGE_KEYS.workspaces)) break;
+        await workspaceRepository.remove(record.content.id, record.accountStorageKey);
         removed += 1;
       }
     }

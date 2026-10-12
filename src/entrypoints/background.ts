@@ -1,3 +1,5 @@
+import { requireDataAccount } from '@/lib/storage/accountScope';
+import { authService } from '@/lib/supabase/authService';
 import { browser } from 'wxt/browser';
 import { CLEANUP_ALARM, LAZY_RECONCILIATION_ALARM, SYNC_ALARM, WINDOW_ASSOCIATION_ALARM } from '@/lib/constants';
 import { syncEngine } from '@/lib/sync/syncEngine';
@@ -45,7 +47,7 @@ export default defineBackground(() => {
   browser.runtime.onStartup.addListener(() => {
     void ensureAlarms();
     void syncEngine.syncAll();
-    void beginStartupLazyReconciliation().then(hydrateStartupLazyTabs);
+    void beginStartupLazyReconciliation().then(hydrateStartupLazyTabs).catch(() => undefined);
     void scheduleAssociationMaintenance(5_000);
   });
   browser.alarms.onAlarm.addListener((alarm) => {
@@ -89,10 +91,15 @@ export default defineBackground(() => {
   browser.tabs.onDetached.addListener((_tabId, info) => { persistWindowChange(info.oldWindowId); });
   browser.runtime.onMessage.addListener((rawMessage, sender) => {
     const message = rawMessage as BackgroundMessage;
-    if (message.type === 'OPEN_OR_FOCUS_WORKSPACE') return openOrFocusWorkspace(message.workspaceId);
-    if (message.type === 'REOPEN_WORKSPACE') return reopenWorkspace(message.workspaceId, message.sourceWindowId);
-    if (message.type === 'RECOVER_WORKSPACE') return recoverWorkspace(message.workspaceId, message.sourceWindowId);
-    if (message.type === 'RESTORE_SAVED_WORKSPACE') return restoreSavedWorkspace(message.workspaceId);
+    const managerAction = async <T>(task: () => Promise<T>) => {
+      await authService.requireSession();
+      if ('accountStorageKey' in message && message.accountStorageKey) await requireDataAccount(message.accountStorageKey);
+      return task();
+    };
+    if (message.type === 'OPEN_OR_FOCUS_WORKSPACE') return managerAction(() => openOrFocusWorkspace(message.workspaceId));
+    if (message.type === 'REOPEN_WORKSPACE') return managerAction(() => reopenWorkspace(message.workspaceId, message.sourceWindowId));
+    if (message.type === 'RECOVER_WORKSPACE') return managerAction(() => recoverWorkspace(message.workspaceId, message.sourceWindowId));
+    if (message.type === 'RESTORE_SAVED_WORKSPACE') return managerAction(() => restoreSavedWorkspace(message.workspaceId));
     if (message.type === 'LAZY_TAB_READY' && sender.tab?.id != null) {
       void noteStartupLazyActivity();
       return handleLazyTabReady(sender.tab.id, sender.tab.windowId, Boolean(sender.tab.active), message.lazyId);
@@ -101,8 +108,8 @@ export default defineBackground(() => {
       return resolveLazyTab(sender.tab.id, message.lazyId, sender.tab.windowId);
     }
     if (message.type === 'CLOSE_LAZY_TAB' && sender.tab?.id != null) return browser.tabs.remove(sender.tab.id);
-    if (message.type === 'SYNC_ALL') void syncEngine.syncAll();
-    if (message.type === 'SYNC_WORKSPACE') void syncEngine.syncWorkspace(message.workspaceId);
+    if (message.type === 'SYNC_ALL') return managerAction(() => syncEngine.syncAll(message.accountStorageKey));
+    if (message.type === 'SYNC_WORKSPACE') return managerAction(() => syncEngine.syncWorkspace(message.workspaceId, message.accountStorageKey));
     if (message.type === 'CLEANUP_LOCAL') void syncEngine.cleanupExpiredLocalCopies();
   });
 

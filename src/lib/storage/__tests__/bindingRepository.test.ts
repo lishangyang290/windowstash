@@ -1,3 +1,4 @@
+vi.mock('@/lib/storage/accountScope', () => ({ accountStorageKey: async (key: string) => key }));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const values = vi.hoisted(() => new Map<string, unknown>());

@@ -1,3 +1,5 @@
+import { authService } from '@/lib/supabase/authService';
+import { accountOwner, accountStorageKey } from '@/lib/storage/accountScope';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { browser } from 'wxt/browser';
@@ -116,7 +118,7 @@ function UpdatedItem({ change, onOpen }: { change: UpdatedTabChange; onOpen: (ch
   );
 }
 
-function Popup() {
+function Popup({ accountKey }: { accountKey: string }) {
   const [windowId, setWindowId] = React.useState<number | null>(null);
   const [tabs, setTabs] = React.useState<CurrentTabSnapshot[]>([]);
   const [record, setRecord] = React.useState<WorkspaceLocalRecord | null>(null);
@@ -141,8 +143,11 @@ function Popup() {
   const windowIdRef = React.useRef<number | null>(null);
   const renameInputRef = React.useRef<HTMLInputElement>(null);
   const renameSubmittingRef = React.useRef(false);
+  const refreshRevision = React.useRef(0);
 
   const refresh = React.useCallback(async (knownWindowId?: number) => {
+    const revision = ++refreshRevision.current;
+    const scope = await accountStorageKey('workspaces');
     const current = knownWindowId == null
       ? await browser.windows.getCurrent({ populate: true })
       : await browser.windows.get(knownWindowId, { populate: true });
@@ -157,6 +162,7 @@ function Popup() {
         setStatus(value.record.content.status);
       }
     };
+    if (revision !== refreshRevision.current || scope !== await accountStorageKey('workspaces')) return;
     windowIdRef.current = current.id;
     setWindowId(current.id);
     applyResolution(nextResolution);
@@ -164,12 +170,15 @@ function Popup() {
       const nextTabs = await resolveLogicalTabs(rawTabs);
       if (nextResolution.status === 'unresolved') {
         nextResolution = await resolveWorkspaceStateForWindow(current.id, nextTabs);
+        if (revision !== refreshRevision.current || scope !== await accountStorageKey('workspaces')) return;
         applyResolution(nextResolution);
       }
+      if (revision !== refreshRevision.current || scope !== await accountStorageKey('workspaces')) return;
       setTabs(nextTabs);
       setLogicalTabsReady(true);
       setError('');
     } catch (reason) {
+      if (revision !== refreshRevision.current || scope !== await accountStorageKey('workspaces')) return;
       setTabs(rawTabs);
       setLogicalTabsReady(false);
       setError(reason instanceof LazyTabResolutionError ? reason.message : '暂时无法读取当前窗口');
@@ -190,17 +199,28 @@ function Popup() {
     const onRemoved = (_tabId: number, info: { windowId: number }) => refreshBoundWindow(info.windowId);
     const onUpdated = (_tabId: number, _changeInfo: unknown, tab: { windowId: number }) => refreshBoundWindow(tab.windowId);
     const onMoved = (_tabId: number, info: { windowId: number }) => refreshBoundWindow(info.windowId);
+    const accountChanged = () => {
+      setRecord(null); setResolution(null); setAssociationOptions([]); setName('');
+      void refresh().catch(handleRefreshError);
+    };
+    const storageChanged = (changes: Record<string, unknown>) => {
+      if (Object.keys(changes).some((key) => key === 'supabaseConfig' || key === 'windowstash-data-owner:v1' || key.startsWith('windowstash-auth:') || key.startsWith('windowstash-companion'))) accountChanged();
+    };
+    browser.storage.onChanged.addListener(storageChanged);
     browser.tabs.onCreated.addListener(onCreated);
     browser.tabs.onRemoved.addListener(onRemoved);
     browser.tabs.onUpdated.addListener(onUpdated);
     browser.tabs.onMoved.addListener(onMoved);
     return () => {
+      browser.storage.onChanged.removeListener(storageChanged);
       browser.tabs.onCreated.removeListener(onCreated);
       browser.tabs.onRemoved.removeListener(onRemoved);
       browser.tabs.onUpdated.removeListener(onUpdated);
       browser.tabs.onMoved.removeListener(onMoved);
     };
   }, [handleRefreshError, refresh]);
+
+  React.useEffect(() => () => { refreshRevision.current++; }, []);
 
   React.useEffect(() => {
     if (editingName) renameInputRef.current?.select();
@@ -223,10 +243,10 @@ function Popup() {
     try {
       if (change.kind === 'removed') {
         setReopening(`${change.url}-${change.position}`);
-        await reopenSavedTab(windowId, change);
+        await reopenSavedTab(windowId, change, accountKey);
         await refresh(windowId);
       } else if (change.tabId != null) {
-        await focusWindowTab(windowId, change.tabId);
+        await focusWindowTab(windowId, change.tabId, accountKey);
       }
     } catch {
       setError(change.kind === 'removed' ? '无法重新打开该标签页，请重试' : '无法切换到该标签页');
@@ -246,7 +266,7 @@ function Popup() {
     setSavePhase('saving');
     setError('');
     try {
-      await saveCurrentWindow({ windowId, name, status, closeAfterSave });
+      await saveCurrentWindow({ windowId, name, status, closeAfterSave, accountStorageKey: accountKey });
       if (!closeAfterSave) {
         await refresh(windowId);
         setPage('main');
@@ -277,6 +297,7 @@ function Popup() {
         type: logicalTabsReady ? 'REOPEN_WORKSPACE' : 'RECOVER_WORKSPACE',
         workspaceId: resolution.workspaceId,
         sourceWindowId: windowId,
+        accountStorageKey: accountKey,
       });
       setReopeningWorkspace(false);
     } catch {
@@ -300,7 +321,7 @@ function Popup() {
     setAssociating(workspaceId);
     setError('');
     try {
-      await associateExistingWorkspace(windowId, workspaceId, tabs);
+      await associateExistingWorkspace(windowId, workspaceId, tabs, accountKey);
       await refresh(windowId);
       setPage('main');
       setSuccess('已关联工作区');
@@ -338,7 +359,7 @@ function Popup() {
     setRenaming(true);
     setRenameError('');
     try {
-      await updateWorkspace(record.content.id, { name: validation.name });
+      await updateWorkspace(record.content.id, { name: validation.name }, accountKey);
       setName(validation.name);
       setRecord((current) => current ? { ...current, content: { ...current.content, name: validation.name } } : current);
       setEditingName(false);
@@ -358,7 +379,7 @@ function Popup() {
   const buttons = <WorkspaceActions
     action={saveAction}
     phase={savePhase}
-    saveBlocked={!logicalTabsReady || isUnavailable}
+    saveBlocked={resolution == null || !logicalTabsReady || isUnavailable}
     reopenBlocked={isUnavailable}
     reopenLabel={recovering ? '从已保存工作区恢复' : '重新打开工作区'}
     reopeningWorkspace={reopeningWorkspace}
@@ -512,11 +533,33 @@ function Popup() {
 }
 
 export function PopupRoot() {
-  const [config, setConfig] = React.useState<SupabaseConfig | null | undefined>(undefined);
+  const [identity, setIdentity] = React.useState<{ config: SupabaseConfig | null; userId: string | null }>();
   const [setupError, setSetupError] = React.useState('');
-  React.useEffect(() => { void getSupabaseConfig().then(setConfig); }, []);
-  if (config === undefined) return <main className="popup-loading">WindowStash</main>;
-  if (!config) return <main className="popup-shell">
+  React.useEffect(() => {
+    let active = true, revision = 0;
+    let unsubscribe = () => {};
+    async function refresh() {
+      const request = ++revision;
+      if (active) { setIdentity(undefined); setSetupError(''); }
+      try {
+        const config = await getSupabaseConfig();
+        const session = config ? await authService.session() : null;
+        if (active && request === revision) setIdentity({ config, userId: session?.user.id ?? null });
+      } catch {
+        if (active && request === revision) setSetupError('暂时无法确认登录状态，请重试');
+      }
+    }
+    const changed = (changes: Record<string, unknown>) => {
+      if (Object.keys(changes).some((key) => key === 'supabaseConfig' || key.startsWith('windowstash-data-') || key.startsWith('windowstash-auth:') || key.startsWith('windowstash-companion'))) void refresh();
+    };
+    void refresh();
+    browser.storage.onChanged.addListener(changed);
+    void authService.subscribe(() => void refresh()).then((stop) => { if (active) unsubscribe = stop; else stop(); }).catch(() => {});
+    return () => { active = false; revision++; unsubscribe(); browser.storage.onChanged.removeListener(changed); };
+  }, []);
+  if (!identity) return <main className="popup-loading">{setupError || '正在确认登录状态…'}</main>;
+  const { config, userId } = identity;
+  if (!config || !userId) return <main className="popup-shell">
     <header className="popup-header"><Logo /></header>
     <section className="popup-content popup-setup">
       <h1>连接你的数据存储</h1>
@@ -526,7 +569,7 @@ export function PopupRoot() {
       <button className="config-tutorial" onClick={() => window.open('/开始使用.html', '_blank', 'noopener,noreferrer')}>查看开始使用教程 <span>↗</span></button>
     </section>
   </main>;
-  return <Popup />;
+  return <Popup key={`${config.url}:${userId}`} accountKey={`workspaces:${accountOwner(config.url, userId)}`} />;
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><PopupRoot /></React.StrictMode>);

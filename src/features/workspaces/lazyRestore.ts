@@ -1,10 +1,11 @@
+import { accountStorageKey } from '@/lib/storage/accountScope';
 import { browser } from 'wxt/browser';
 import { LAZY_RECONCILIATION_ALARM, STORAGE_KEYS } from '@/lib/constants';
 import { lazyRestoreRepository, type LazyRestoreEntry } from '@/lib/storage/lazyRestoreRepository';
 import type { StoredTab } from '@/types/workspace';
 import type { MatchableTab } from './workspaceMatcher';
 
-const resolvingTabs = new Map<number, Promise<boolean>>();
+const resolvingTabs = new Map<string, Promise<boolean>>();
 const hydratedStartupTabs = new Set<number>();
 const ORPHAN_GRACE_MS = 5 * 60 * 1000;
 let startupReconciliationStarting = false;
@@ -18,22 +19,22 @@ interface StartupReconciliationState {
   revision: number;
 }
 
-function claimedLazyTabKey(tabId: number): string {
-  return `claimedLazyTab:${tabId}`;
+function claimedLazyTabKey(tabId: number): Promise<string> {
+  return accountStorageKey(`claimedLazyTab:${tabId}`);
 }
 
-async function rememberClaim(tabId: number, lazyId: string): Promise<void> {
-  await browser.storage.session.set({ [claimedLazyTabKey(tabId)]: lazyId });
+async function rememberClaim(tabId: number, lazyId: string, storageKey?: string): Promise<void> {
+  await browser.storage.session.set({ [storageKey?.replace(/^lazyRestoreEntries/, `claimedLazyTab:${tabId}`) ?? await claimedLazyTabKey(tabId)]: lazyId });
 }
 
 async function claimedLazyId(tabId: number): Promise<string | null> {
-  const key = claimedLazyTabKey(tabId);
+  const key = await claimedLazyTabKey(tabId);
   const result = await browser.storage.session.get(key);
   return (result[key] as string | undefined) ?? null;
 }
 
 async function forgetClaim(tabId: number): Promise<void> {
-  await browser.storage.session.remove(claimedLazyTabKey(tabId));
+  await browser.storage.session.remove(await claimedLazyTabKey(tabId));
 }
 
 async function liveLazyIds(): Promise<Set<string>> {
@@ -137,21 +138,23 @@ export async function resolveLazyStoredTab(
   };
 }
 
-export function resolveLazyTab(tabId: number, lazyId?: string, windowId?: number): Promise<boolean> {
-  const existing = resolvingTabs.get(tabId);
+export async function resolveLazyTab(tabId: number, lazyId?: string, windowId?: number): Promise<boolean> {
+  const scope = await accountStorageKey(STORAGE_KEYS.workspaces);
+  const taskKey = `${scope}:${tabId}`;
+  const existing = resolvingTabs.get(taskKey);
   if (existing) return existing;
   const task = (async () => {
     const tab = lazyId && windowId !== undefined ? undefined : await browser.tabs.get(tabId);
     const id = lazyId ?? lazyIdFromTab(tab!);
     if (!id) return false;
     const entry = await claimLazyTab(id, tabId, windowId ?? tab?.windowId);
-    if (!entry) return false;
+    if (!entry || scope !== await accountStorageKey(STORAGE_KEYS.workspaces)) return false;
     await browser.tabs.update(tabId, { url: entry.originalUrl });
     return true;
   })().finally(() => {
-    if (resolvingTabs.get(tabId) === task) resolvingTabs.delete(tabId);
+    if (resolvingTabs.get(taskKey) === task) resolvingTabs.delete(taskKey);
   });
-  resolvingTabs.set(tabId, task);
+  resolvingTabs.set(taskKey, task);
   return task;
 }
 
@@ -170,10 +173,10 @@ export async function claimLazyTab(lazyId: string, tabId: number, windowId?: num
   if (entry.tabId !== tabId || entry.windowId !== windowId) {
     const claimed = { ...entry, tabId, windowId };
     await lazyRestoreRepository.put(claimed);
-    await rememberClaim(tabId, lazyId);
+    await rememberClaim(tabId, lazyId, entry.accountStorageKey);
     return claimed;
   }
-  await rememberClaim(tabId, lazyId);
+  await rememberClaim(tabId, lazyId, entry.accountStorageKey);
   return entry;
 }
 

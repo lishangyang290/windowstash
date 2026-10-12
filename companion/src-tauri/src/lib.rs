@@ -9,112 +9,245 @@ use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_positioner::{Position, WindowExt};
 
 const WINDOW_LABEL: &str = "main";
+static CONNECTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn valid_extension_id(value: &str) -> bool {
-    value.len() == 32 && value.bytes().all(|byte| (b'a'..=b'p').contains(&byte))
-}
+mod chrome;
+mod connection;
+use chrome::valid_extension_id;
 
 fn chrome_profiles() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
-    return env::var_os("HOME").map(PathBuf::from).map(|path| {
-        path.join("Library/Application Support/Google/Chrome")
-    });
+    return env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|path| path.join("Library/Application Support/Google/Chrome"));
 
     #[cfg(target_os = "windows")]
-    return env::var_os("LOCALAPPDATA").map(PathBuf::from).map(|path| {
-        path.join("Google/Chrome/User Data")
-    });
+    return env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .map(|path| path.join("Google/Chrome/User Data"));
 
     #[cfg(target_os = "linux")]
-    return env::var_os("HOME").map(PathBuf::from).map(|path| {
-        path.join(".config/google-chrome")
-    });
+    return env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|path| path.join(".config/google-chrome"));
+}
+
+fn inspect_connection() -> Result<connection::Connection, String> {
+    connection::inspect(
+        &chrome_profiles().ok_or("无法找到 Chrome Profile 目录")?,
+        &windowstash_native_host::bridge::directory().map_err(str::to_string)?,
+        &connection::helper()?,
+    )
+}
+
+fn chrome_connection() -> Result<connection::Connection, String> {
+    let _guard = CONNECTION_LOCK
+        .lock()
+        .map_err(|_| "Chrome 关联暂时不可用")?;
+    inspect_connection()
 }
 
 #[tauri::command]
-fn discover_extension_id() -> Option<String> {
-    let profiles = fs::read_dir(chrome_profiles()?).ok()?;
-    for profile in profiles.flatten() {
-        let name = profile.file_name();
-        let name = name.to_string_lossy();
-        if name != "Default" && !name.starts_with("Profile ") {
-            continue;
-        }
-        for preferences in ["Preferences", "Secure Preferences"] {
-            let value: serde_json::Value = fs::read_to_string(profile.path().join(preferences))
-                .ok()
-                .and_then(|value| serde_json::from_str(&value).ok())
-                .unwrap_or_default();
-            if let Some(settings) = value.pointer("/extensions/settings").and_then(|value| value.as_object()) {
-                for (id, setting) in settings {
-                    let path = setting.get("path").and_then(|value| value.as_str());
-                    if valid_extension_id(id) && path.is_some_and(|path| is_windowstash_manifest(PathBuf::from(path).join("manifest.json"))) {
-                        return Some(id.clone());
-                    }
-                }
-            }
-        }
-        let extensions = match fs::read_dir(profile.path().join("Extensions")) {
-            Ok(entries) => entries,
-            Err(_) => continue,
-        };
-        for extension in extensions.flatten() {
-            let id = extension.file_name().to_string_lossy().into_owned();
-            if !valid_extension_id(&id) {
-                continue;
-            }
-            let versions = match fs::read_dir(extension.path()) {
-                Ok(entries) => entries,
-                Err(_) => continue,
-            };
-            for version in versions.flatten() {
-                if is_windowstash_manifest(version.path().join("manifest.json")) {
-                    return Some(id);
-                }
-            }
-        }
-    }
-    None
+fn discover_chrome_targets() -> Result<connection::Connection, String> {
+    chrome_connection()
 }
 
-fn is_windowstash_manifest(path: PathBuf) -> bool {
-    let manifest: serde_json::Value = fs::read_to_string(path)
-        .ok()
-        .and_then(|value| serde_json::from_str(&value).ok())
-        .unwrap_or_default();
-    manifest.get("name").and_then(|value| value.as_str()) == Some("WindowStash")
-        || manifest.pointer("/action/default_title").and_then(|value| value.as_str()) == Some("WindowStash")
+#[tauri::command]
+fn select_chrome_target(
+    profile: String,
+    extension_id: String,
+) -> Result<connection::Connection, String> {
+    let _guard = CONNECTION_LOCK
+        .lock()
+        .map_err(|_| "Chrome 关联暂时不可用")?;
+    let targets = chrome::discover(&chrome_profiles().ok_or("无法找到 Chrome Profile 目录")?)?;
+    connection::choose(
+        &windowstash_native_host::bridge::directory().map_err(str::to_string)?,
+        &targets,
+        chrome::Target {
+            profile,
+            extension_id,
+        },
+    )?;
+    inspect_connection()
+}
+
+#[tauri::command]
+async fn desktop_auth() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let root = windowstash_native_host::bridge::directory().map_err(str::to_string)?;
+        let bytes = match fs::read(root.join("selection.json")) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(serde_json::Value::Null)
+            }
+            Err(_) => return Err("无法读取浏览器关联，请重试".into()),
+        };
+        let selected: connection::Selection =
+            serde_json::from_slice(&bytes).map_err(|_| "浏览器关联损坏，请重新选择")?;
+        windowstash_native_host::auth::desktop(&root, &selected.route_id).map_err(|code| match code
+        {
+            "network_unavailable" => "暂时无法连接云端，请检查网络后重试".into(),
+            "session_refresh_failed" => "登录已失效，请在浏览器中重新登录".into(),
+            _ => "无法读取登录状态，请重试".into(),
+        })
+    })
+    .await
+    .map_err(|_| "登录查询失败，请重试".to_string())?
+}
+
+#[tauri::command]
+async fn confirm_browser_login(
+    app: tauri::AppHandle,
+    instance_id: String,
+    revision: u64,
+    request: String,
+    completed: bool,
+) -> Result<(), String> {
+    let current = desktop_auth().await?;
+    if current["instance_id"] != instance_id
+        || current["revision"] != revision
+        || current["login_request"] != request
+    {
+        return Err("账号已变化，请重新确认登录".into());
+    }
+    let root = windowstash_native_host::bridge::directory().map_err(str::to_string)?;
+    windowstash_native_host::bridge::write_json(
+        &root.join("login-completion.json"),
+        &serde_json::json!({
+            "instance_id":instance_id,"revision":revision,"request":request,"completed":completed,
+            "failure":if completed { None } else { Some("workspace_unavailable") }
+        }),
+    )
+    .map_err(str::to_string)?;
+    if completed {
+        display_popover(&app);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn begin_browser_login() -> Result<(), String> {
+    let status = chrome_connection()?;
+    if let Some(error) = status.host_error {
+        return Err(error);
+    }
+    let selected = status.selected.ok_or("请选择用于登录的 Chrome 用户")?;
+    let root = windowstash_native_host::bridge::directory().map_err(str::to_string)?;
+    let request = windowstash_native_host::auth::LoginRequest {
+        id: windowstash_native_host::bridge::random_id(),
+        route_id: selected.route_id,
+        origin: format!("chrome-extension://{}/", selected.target.extension_id),
+        expires_at: windowstash_native_host::bridge::now() + 900,
+    };
+    windowstash_native_host::bridge::write_json(&root.join("login-request.json"), &request)
+        .map_err(str::to_string)?;
+    launch_options(
+        &selected.target,
+        &format!(
+            "?companionLogin={}&companionRoute={}",
+            request.id, request.route_id
+        ),
+    )
+}
+
+fn launch_options(target: &chrome::Target, query: &str) -> Result<(), String> {
+    let url = format!(
+        "chrome-extension://{}/{}{}",
+        target.extension_id,
+        if query.contains("companionLogin=") {
+            "authorize.html"
+        } else {
+            "options.html"
+        },
+        query
+    );
+    let profile = format!("--profile-directory={}", target.profile);
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open")
+        .args(["-na", "Google Chrome", "--args", &profile, &url])
+        .status();
+    #[cfg(target_os = "windows")]
+    let result = Command::new("cmd")
+        .args(["/C", "start", "", "chrome", &profile, &url])
+        .status();
+    #[cfg(target_os = "linux")]
+    let result = Command::new("google-chrome")
+        .args([&profile, &url])
+        .status();
+    result
+        .map_err(|_| "无法打开 Chrome，请确认已安装")?
+        .success()
+        .then_some(())
+        .ok_or_else(|| "无法打开 Chrome，请重试".into())
 }
 
 #[tauri::command]
 fn open_chrome_page(
     extension_id: String,
+    profile: String,
     page: String,
     workspace_id: Option<String>,
 ) -> Result<(), String> {
+    let _guard = CONNECTION_LOCK
+        .lock()
+        .map_err(|_| "Chrome 关联暂时不可用")?;
     if !valid_extension_id(&extension_id) {
         return Err("Invalid extension ID".into());
     }
     let path = match page.as_str() {
         "options" => "options.html".to_string(),
         "launcher" => {
-            let id = workspace_id.filter(|value| {
-                !value.is_empty()
-                    && value.len() <= 128
-                    && value.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-            }).ok_or("Invalid workspace ID")?;
+            let id = workspace_id
+                .filter(|value| {
+                    !value.is_empty()
+                        && value.len() <= 128
+                        && value
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                })
+                .ok_or("Invalid workspace ID")?;
             format!("launcher.html?workspaceId={id}")
         }
         _ => return Err("Unsupported Chrome page".into()),
     };
-    let url = format!("chrome-extension://{extension_id}/{path}");
+    let status = inspect_connection()?;
+    let selected = status.selected.ok_or_else(|| {
+        status
+            .error
+            .unwrap_or_else(|| "请选择 Chrome Profile".into())
+    })?;
+    let target = selected.target;
+    if target.extension_id != extension_id || target.profile != profile {
+        return Err("Chrome 关联已变化，请重新选择后重试".into());
+    }
+    let profile_argument = format!("--profile-directory={}", target.profile);
+    let route_query = if page == "options" {
+        format!("?companionRoute={}", selected.route_id)
+    } else {
+        String::new()
+    };
+    let url = format!("chrome-extension://{extension_id}/{path}{route_query}");
 
     #[cfg(target_os = "macos")]
-    let result = Command::new("/usr/bin/open").args(["-a", "Google Chrome", &url]).spawn();
+    let result = Command::new("/usr/bin/open")
+        .args([
+            "-n",
+            "-a",
+            "Google Chrome",
+            "--args",
+            &profile_argument,
+            &url,
+        ])
+        .spawn();
     #[cfg(target_os = "windows")]
-    let result = Command::new("cmd").args(["/C", "start", "", "chrome", &url]).spawn();
+    let result = Command::new("cmd")
+        .args(["/C", "start", "", "chrome", &profile_argument, &url])
+        .spawn();
     #[cfg(target_os = "linux")]
-    let result = Command::new("google-chrome").arg(&url).spawn();
+    let result = Command::new("google-chrome")
+        .args([&profile_argument, &url])
+        .spawn();
 
     result.map(|_| ()).map_err(|error| error.to_string())
 }
@@ -166,13 +299,19 @@ pub fn run() {
         .plugin(tauri_plugin_positioner::init())
         .plugin(tauri_plugin_autostart::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
-            discover_extension_id,
+            discover_chrome_targets,
+            select_chrome_target,
             open_chrome_page,
+            begin_browser_login,
+            confirm_browser_login,
+            desktop_auth,
             hide_popover,
             show_popover,
             quit_app
         ])
         .setup(|app| {
+            // Register the bundled helper at user level; credentials are never accepted.
+            let _ = chrome_connection();
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -225,7 +364,9 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
-            tauri::WindowEvent::Focused(false) => { let _ = window.hide(); }
+            tauri::WindowEvent::Focused(false) => {
+                let _ = window.hide();
+            }
             tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();

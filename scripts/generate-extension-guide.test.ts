@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { describe, expect, it, vi } from 'vitest';
-import { externalizeGuideScript } from './generate-extension-guide';
+import { applySetupResources, externalizeGuideScript } from './generate-extension-guide';
 
 describe('externalizeGuideScript', () => {
   it('moves the guide JavaScript into an external file', () => {
@@ -80,4 +80,12 @@ describe('externalizeGuideScript', () => {
     observerCallback([{ isIntersecting: true, target: extension } as IntersectionObserverEntry], {} as IntersectionObserver);
     expect(document.querySelector('.progress a[href="#extension"]')!.classList.contains('active')).toBe(true);
   });
+});
+
+it('keeps the standalone guide SQL and project settings aligned with shared setup resources', async () => {
+  const source = await readFile('public/开始使用.html', 'utf8');
+  const schema = await readFile('supabase/schema.sql', 'utf8');
+  expect(applySetupResources(source, schema)).toBe(source);
+  const stale = source.replace('create extension if not exists pgcrypto;', 'outdated SQL');
+  expect(applySetupResources(stale, schema)).toBe(source);
 });

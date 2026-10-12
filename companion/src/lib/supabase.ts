@@ -1,3 +1,4 @@
+import { currentBrowserGrant, browserAccessToken, grantIdentity } from './browserAuth';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { cache } from './cache';
 import type { SupabaseConfig } from '../types';
@@ -90,6 +91,7 @@ export async function saveSupabaseConfig(value: SupabaseConfig): Promise<Supabas
   if (!(await testSupabaseConnection(config))) throw new Error(CONNECTION_FAILED);
   const previous = getSupabaseConfig();
   if (!previous || configKey(previous) !== configKey(config)) {
+    cache.scope('signed-out');
     try {
       await client?.auth.signOut({ scope: 'local' });
     } finally {
@@ -103,6 +105,17 @@ export async function saveSupabaseConfig(value: SupabaseConfig): Promise<Supabas
 }
 
 export function getSupabaseClient(): SupabaseClient | null {
+  const grant = currentBrowserGrant();
+  if (grant) {
+    const identity = grantIdentity(grant);
+    if (client && clientConfig === identity) return client;
+    client = createClient(grant.config.url, grant.config.publishable_key, {
+      accessToken: () => browserAccessToken(identity),
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+    clientConfig = identity;
+    return client;
+  }
   const config = getSupabaseConfig();
   if (!config) {
     client = null;
@@ -116,6 +129,13 @@ export function getSupabaseClient(): SupabaseClient | null {
   });
   clientConfig = key;
   return client;
+}
+
+export function getAccountClient(config: SupabaseConfig, accessToken: string): SupabaseClient {
+  return createClient(config.url, config.publishableKey, {
+    accessToken: async () => accessToken,
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
 }
 
 export function isSchemaMissingError(error: unknown): boolean {

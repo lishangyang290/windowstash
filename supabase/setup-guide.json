@@ -1,0 +1,38 @@
+[
+  [
+    "Organization",
+    "保持页面已经选择的默认 Organization"
+  ],
+  [
+    "GitHub (optional)",
+    "先不选，保持 Choose GitHub repository"
+  ],
+  [
+    "Project name",
+    "WindowStash"
+  ],
+  [
+    "Database password",
+    "点击 Generate a password 生成强密码并保存好"
+  ],
+  [
+    "Region",
+    "选择离主要使用地点最近的区域"
+  ],
+  [
+    "Enable Data API",
+    "✓ 开启"
+  ],
+  [
+    "Automatically expose new tables",
+    "□ 关闭"
+  ],
+  [
+    "Enable automatic RLS",
+    "✓ 开启"
+  ],
+  [
+    "Advanced Configuration",
+    "不用打开"
+  ]
+]

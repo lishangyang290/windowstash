@@ -1,9 +1,10 @@
+import { confirmBrowserLogin, acceptBrowserGrant, beginBrowserLogin, grantIdentity, readBrowserGrant, type BrowserGrant } from './lib/browserAuth';
 import React from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { disable, enable, isEnabled } from '@tauri-apps/plugin-autostart';
-import { cache, sortByRecent } from './lib/cache';
+import { accountOwner, cache, sortByRecent } from './lib/cache';
 import { chromeBridge } from './lib/chromeBridge';
 import { ChevronIcon, LogoMark, SearchIcon, WorkspaceIcon } from './lib/icons';
 import {
@@ -20,6 +21,7 @@ import { workspaceService } from './features/workspaces';
 import type { SupabaseConfig, View, WorkspaceSummary } from './types';
 import { SuccessToast } from './SuccessToast';
 import { VisibilityToggleInput } from './VisibilityToggleInput';
+import { ChromeConnectionPanel, ChromeConnectionPage } from './ChromeConnectionPanel';
 
 const REFRESH_INTERVAL = 7 * 60 * 1000;
 
@@ -130,41 +132,22 @@ function Login({ onSignedIn }: { onSignedIn: (session: Session) => void }) {
   );
 }
 
-function ExtensionConnect({ onConnected }: { onConnected: (id: string) => void }) {
-  const [value, setValue] = React.useState('');
-  const [error, setError] = React.useState('');
-
-  function connect(event: React.FormEvent) {
-    event.preventDefault();
-    try {
-      chromeBridge.connect(value);
-      onConnected(value.trim());
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '无法连接 Chrome 扩展');
-    }
-  }
-
-  return (
-    <form className="connection-panel" onSubmit={connect}>
-      <strong>连接 Chrome 扩展</strong>
-      <p>自动识别失败，请粘贴 WindowStash 的扩展 ID。</p>
-      <div><input value={value} onChange={(event) => setValue(event.target.value)} placeholder="Chrome 扩展 ID" /><button>连接</button></div>
-      {error ? <small role="alert">{error}</small> : null}
-    </form>
-  );
-}
-
-function Settings({ config, extensionId, onBack, onConfigChange, onExtensionChange, onSignOut }: {
+function Settings({ config, onBack, onConfigChange, onSignOut, browserLogin }: {
   config: SupabaseConfig;
-  extensionId: string | null;
   onBack: () => void;
   onConfigChange: (config: SupabaseConfig) => void;
-  onExtensionChange: (id: string | null) => void;
   onSignOut: () => void;
+  browserLogin?: boolean;
 }) {
   const [autostart, setAutostart] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  const [chromeOpen, setChromeOpen] = React.useState(false);
+  const [canSwitchChrome, setCanSwitchChrome] = React.useState(false);
   const [connectionOpen, setConnectionOpen] = React.useState(false);
+
+  React.useEffect(() => {
+    void chromeBridge.connection().then((connection) => setCanSwitchChrome(connection.targets.length > 1 || !connection.selected)).catch(() => setCanSwitchChrome(true));
+  }, []);
 
   React.useEffect(() => { void isEnabled().then(setAutostart).catch(() => setAutostart(false)); }, []);
 
@@ -178,6 +161,7 @@ function Settings({ config, extensionId, onBack, onConfigChange, onExtensionChan
     }
   }
 
+  if (chromeOpen) return <ChromeConnectionPage onBack={() => setChromeOpen(false)} />;
   if (connectionOpen) return <SupabaseConfigPanel config={config} onCancel={() => setConnectionOpen(false)} onSaved={onConfigChange} />;
 
   return (
@@ -185,16 +169,17 @@ function Settings({ config, extensionId, onBack, onConfigChange, onExtensionChan
       <header className="page-header"><button className="back-button" onClick={onBack} aria-label="返回">‹</button><h1>设置</h1><span /></header>
       <section className="settings-list">
         <button className="setting-row" disabled={busy} onClick={() => void toggleAutostart()}><span><b>开机启动 WindowStash</b><small>登录电脑后自动显示菜单栏图标</small></span><i className={autostart ? 'switch on' : 'switch'} aria-hidden="true" /></button>
-        <button className="setting-row" onClick={() => setConnectionOpen(true)}><span><b>Supabase</b><small>连接设置</small></span><span className="row-chevron">›</span></button>
-        <div className="setting-row static"><span><b>Chrome 扩展</b><small>{extensionId ? '已连接' : '未连接'}</small></span>{extensionId ? <button className="text-button" onClick={() => { chromeBridge.disconnect(); onExtensionChange(null); }}>重新连接</button> : null}</div>
-        {!extensionId ? <ExtensionConnect onConnected={onExtensionChange} /> : null}
+        {!browserLogin && <button className="setting-row" onClick={() => void beginBrowserLogin()}><span><b>改用浏览器登录</b><small>使用 Chrome 中的 WindowStash 账号</small></span><span className="row-chevron">›</span></button>}
+        {!browserLogin && <button className="setting-row" onClick={() => setConnectionOpen(true)}><span><b>Supabase</b><small>连接设置</small></span><span className="row-chevron">›</span></button>}
+        {canSwitchChrome && <button className="setting-row" onClick={() => setChromeOpen(true)}><span><b>切换 Chrome 用户</b><small>选择打开工作区的浏览器</small></span><span className="row-chevron">›</span></button>}
       </section>
-      <footer className="settings-footer"><button onClick={onSignOut}>退出登录</button></footer>
+      <footer className="settings-footer">{browserLogin ? <button onClick={() => void chromeBridge.openManager()}>在浏览器中管理账号</button> : <button onClick={onSignOut}>退出登录</button>}</footer>
     </main>
   );
 }
 
-function Launcher({ config, session, onConfigChange, onSignOut }: { config: SupabaseConfig; session: Session; onConfigChange: (config: SupabaseConfig) => void; onSignOut: () => void }) {
+function Launcher({ config, session, onConfigChange, onSignOut, browserLogin = false }: { config: SupabaseConfig; session: Pick<Session, 'user'>; onConfigChange: (config: SupabaseConfig) => void; onSignOut: () => void; browserLogin?: boolean }) {
+  const [chromeOpen, setChromeOpen] = React.useState(false);
   const [view, setView] = React.useState<View>('launcher');
   const [items, setItems] = React.useState<WorkspaceSummary[]>(() => workspaceService.cached());
   const [query, setQuery] = React.useState('');
@@ -202,7 +187,6 @@ function Launcher({ config, session, onConfigChange, onSignOut }: { config: Supa
   const [opening, setOpening] = React.useState('');
   const [failedId, setFailedId] = React.useState('');
   const [error, setError] = React.useState('');
-  const [extensionId, setExtensionId] = React.useState<string | null>(() => cache.extensionId());
   const searchRef = React.useRef<HTMLInputElement>(null);
 
   const refresh = React.useCallback(async () => {
@@ -215,7 +199,6 @@ function Launcher({ config, session, onConfigChange, onSignOut }: { config: Supa
   }, []);
 
   React.useEffect(() => {
-    void chromeBridge.extensionId().then(setExtensionId).catch(() => setExtensionId(null));
     void refresh();
     const timer = window.setInterval(() => void refresh(), REFRESH_INTERVAL);
     const unlisten = listen('popover-opened', () => {
@@ -248,8 +231,8 @@ function Launcher({ config, session, onConfigChange, onSignOut }: { config: Supa
       setItems((current) => sortByRecent(current));
       setOpening('');
       await invoke('hide_popover');
-    } catch {
-      setError('无法打开工作区');
+    } catch (caught) {
+      setError(typeof caught === 'string' ? caught : caught instanceof Error ? caught.message : '无法打开工作区');
       setFailedId(item.id);
       setOpening('');
     }
@@ -262,7 +245,8 @@ function Launcher({ config, session, onConfigChange, onSignOut }: { config: Supa
     if (event.key === 'Escape') void invoke('hide_popover');
   }
 
-  if (view === 'settings') return <Settings config={config} extensionId={extensionId} onBack={() => setView('launcher')} onConfigChange={onConfigChange} onExtensionChange={setExtensionId} onSignOut={onSignOut} />;
+  if (chromeOpen) return <ChromeConnectionPage onBack={() => setChromeOpen(false)} />;
+  if (view === 'settings') return <Settings config={config} onBack={() => setView('launcher')} onConfigChange={onConfigChange} onSignOut={onSignOut} browserLogin={browserLogin} />;
 
   return (
     <main className="popover-shell" onKeyDown={handleKeys}>
@@ -272,7 +256,7 @@ function Launcher({ config, session, onConfigChange, onSignOut }: { config: Supa
       </header>
       <section className="workspace-section">
         <div className="section-title"><h1>{query ? '搜索结果' : '最近使用'}</h1><span>{filtered.length}</span></div>
-        {!extensionId ? <ExtensionConnect onConnected={setExtensionId} /> : null}
+        <ChromeConnectionPanel compact onManage={() => setChromeOpen(true)} />
         {error ? <div className="inline-error" role="alert"><span>{error}</span><button onClick={() => { const failed = items.find((item) => item.id === failedId); if (failed) void openWorkspace(failed); else void refresh(); }}>{failedId ? '重试' : '刷新'}</button></div> : null}
         <div className="workspace-list" role="listbox" aria-label="工作区">
           {filtered.map((item, index) => (
@@ -286,7 +270,7 @@ function Launcher({ config, session, onConfigChange, onSignOut }: { config: Supa
         </div>
       </section>
       <footer className="utility-bar">
-        <button onClick={() => void chromeBridge.openManager().catch(() => setError('无法打开管理器'))}>打开管理器</button>
+        <button onClick={() => void chromeBridge.openManager().catch((caught: unknown) => setError(typeof caught === 'string' ? caught : caught instanceof Error ? caught.message : '无法打开管理器'))}>打开管理器</button>
         <button onClick={() => setView('settings')}>设置</button>
         <button onClick={() => void invoke('quit_app')}>退出</button>
       </footer>
@@ -294,7 +278,13 @@ function Launcher({ config, session, onConfigChange, onSignOut }: { config: Supa
   );
 }
 
-export default function App() {
+function LegacyApp() {
+  React.useEffect(() => {
+    const update = () => void chromeBridge.connection().catch(() => undefined);
+    update();
+    const timer = window.setInterval(update, 10_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const [config, setConfig] = React.useState<SupabaseConfig | null | undefined>(undefined);
   const [session, setSession] = React.useState<Session | null | undefined>(undefined);
 
@@ -308,17 +298,26 @@ export default function App() {
     if (!config) return;
     const supabase = getSupabaseClient();
     if (!supabase) return;
+    let active = true, revision = 0;
     setSession(undefined);
     void supabase.auth.getSession().then(({ data }) => {
+      if (!active || revision) return;
+      cache.scope(data.session ? accountOwner(config.url, data.session.user.id) : 'signed-out', Boolean(data.session));
       setSession(data.session);
       if (!data.session) void invoke('show_popover');
     });
-    const { data } = supabase.auth.onAuthStateChange((_event, next) => setSession(next));
-    return () => data.subscription.unsubscribe();
+    const { data } = supabase.auth.onAuthStateChange((event, next) => {
+      if (!active) return;
+      revision += 1;
+      cache.scope(next ? accountOwner(config.url, next.user.id) : 'signed-out', event === 'INITIAL_SESSION' && Boolean(next));
+      setSession(next);
+    });
+    return () => { active = false; data.subscription.unsubscribe(); };
   }, [config]);
 
   async function signOut() {
     const supabase = getSupabaseClient();
+    cache.scope('signed-out');
     await supabase?.auth.signOut();
     setSession(null);
   }
@@ -327,5 +326,76 @@ export default function App() {
   if (config === undefined) return <main className="loading-shell"><LogoMark /><span>WindowStash</span></main>;
   if (session === undefined) return <main className="loading-shell"><LogoMark /><span>WindowStash</span></main>;
   if (!session) return <Login onSignedIn={setSession} />;
-  return <Launcher config={config} session={session} onConfigChange={setConfig} onSignOut={() => void signOut()} />;
+  return <Launcher key={accountOwner(config.url, session.user.id)} config={config} session={session} onConfigChange={setConfig} onSignOut={() => void signOut()} />;
+}
+
+
+function BrowserLogin({ externalError = '' }: { externalError?: string }) {
+  const [busy, setBusy] = React.useState(false);
+  const [waiting, setWaiting] = React.useState(false);
+  const [choose, setChoose] = React.useState(false);
+  const [error, setError] = React.useState('');
+  async function login() {
+    if (busy) return;
+    setBusy(true); setError('');
+    try {
+      const connection = await chromeBridge.connection();
+      if (!connection.selected && connection.targets.length > 1) { setChoose(true); return; }
+      await beginBrowserLogin(); setWaiting(true);
+    } catch (caught) { setError(caught instanceof Error ? caught.message : String(caught)); }
+    finally { setBusy(false); }
+  }
+  if (choose) return <main className="popover-shell chrome-settings-shell"><header className="page-header"><button className="back-button" onClick={() => setChoose(false)}>‹</button><h1>选择浏览器</h1><span /></header><section className="settings-list"><ChromeConnectionPanel /><button className="primary-button" onClick={() => { setChoose(false); void login(); }}>继续登录</button></section></main>;
+  return <main className="auth-shell browser-login-shell"><div className="brand"><LogoMark /><span>WindowStash</span></div><section className="login-form"><h1>登录 WindowStash</h1><p>在浏览器中登录，即可在这里快速打开工作区。</p><button className="primary-button" disabled={busy} onClick={() => void login()}>{busy ? '正在打开浏览器…' : '在浏览器中登录'}</button>{waiting && <p role="status">请在 Chrome 中完成登录，授权后会自动进入。</p>}{(error || externalError) && <p className="form-error" role="alert">{error || externalError}</p>}</section></main>;
+}
+
+export default function App() {
+  const [grant, setGrant] = React.useState<BrowserGrant | null | undefined>(undefined);
+  const [error, setError] = React.useState('');
+  const [legacy, setLegacy] = React.useState(false);
+  React.useEffect(() => {
+    let stopped = false, running = false, confirmed = '';
+    async function refresh() {
+      if (running) return; running = true;
+      try {
+        const next = await readBrowserGrant();
+        if (stopped) return;
+        acceptBrowserGrant(next);
+        setGrant((current) => current && next && grantIdentity(current) === grantIdentity(next) ? current : null);
+        if (next?.login_request && confirmed !== `${next.login_request}:${next.revision}`) {
+          setLegacy(false);
+          setGrant((current) => current && grantIdentity(current) === grantIdentity(next) ? current : null);
+          try {
+            await workspaceService.refresh();
+            if (stopped) return;
+            await confirmBrowserLogin(next, true);
+            confirmed = `${next.login_request}:${next.revision}`;
+          } catch (failure) {
+            await confirmBrowserLogin(next, false);
+            throw failure;
+          }
+        }
+        setGrant(next); setError('');
+        if (next) localStorage.setItem('windowstash-browser-login-used', '1');
+        if (!next && !localStorage.getItem('windowstash-browser-login-used')) {
+          const client = getSupabaseClient();
+          const session = client ? (await client.auth.getSession()).data.session : null;
+          if (!stopped) setLegacy(Boolean(session));
+          if (session) {
+            const config = getSupabaseConfig();
+            if (config) cache.scope(accountOwner(config.url, session.user.id), true);
+          }
+        } else setLegacy(false);
+      } catch (caught) {
+        if (!stopped) { setError(caught instanceof Error ? caught.message : '暂时无法读取工作区，请检查网络后重试'); acceptBrowserGrant(null); setGrant(null); setLegacy(false); }
+      } finally { running = false; }
+    }
+    void refresh(); const timer = window.setInterval(() => void refresh(), 2000);
+    return () => { stopped = true; window.clearInterval(timer); };
+  }, []);
+  if (grant === undefined) return <main className="loading-shell"><LogoMark /><span>WindowStash</span></main>;
+  if (!grant) return legacy ? <LegacyApp /> : <BrowserLogin externalError={error} />;
+  const config = { url: grant.config.url, publishableKey: grant.config.publishable_key };
+  // Launcher uses only user identity; no refresh token ever reaches the WebView.
+  return <Launcher key={grantIdentity(grant)} browserLogin config={config} session={grant.session} onConfigChange={() => {}} onSignOut={() => {}} />;
 }

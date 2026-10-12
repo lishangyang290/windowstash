@@ -106,6 +106,6 @@ describe('lazyRestoreRepository', () => {
   it('reads v0.3.0 map entries without cleanup metadata', async () => {
     storage.values.lazyRestoreEntries = { legacy: entry('legacy', 7) };
 
-    await expect(lazyRestoreRepository.get('legacy')).resolves.toEqual(entry('legacy', 7));
+    await expect(lazyRestoreRepository.get('legacy')).resolves.toEqual({ ...entry('legacy', 7), accountStorageKey: 'lazyRestoreEntries' });
   });
 });

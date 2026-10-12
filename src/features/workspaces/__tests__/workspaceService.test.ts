@@ -1,3 +1,5 @@
+const accountKey = vi.hoisted(() => vi.fn(async (key: string) => key));
+vi.mock('@/lib/storage/accountScope', () => ({ accountStorageKey: accountKey, requireDataAccount: async () => ({ storageKey: await accountKey('workspaces') }), withDataAccount: async (account: { storageKey: string }, task: () => Promise<unknown>) => { if (account.storageKey !== await accountKey('workspaces')) throw new Error('账号已变化'); return task(); } }));
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const browserMock = vi.hoisted(() => ({
@@ -56,6 +58,7 @@ const localRecord: WorkspaceLocalRecord = {
 describe('workspaceService', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    accountKey.mockImplementation(async (key: string) => key);
     bindingMock.get.mockResolvedValue(null);
     bindingMock.set.mockResolvedValue(undefined);
     bindingMock.suppress.mockResolvedValue(undefined);
@@ -113,8 +116,8 @@ describe('workspaceService', () => {
     expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({
       id: 'workspace-1',
       name: '新的工作区名称',
-    }));
-    expect(browserMock.runtime.sendMessage).toHaveBeenCalledWith({ type: 'SYNC_WORKSPACE', workspaceId: 'workspace-1' });
+    }), 'workspaces');
+    expect(browserMock.runtime.sendMessage).toHaveBeenCalledWith({ type: 'SYNC_WORKSPACE', workspaceId: 'workspace-1', accountStorageKey: 'workspaces' });
   });
 
   it('keeps an offline rename successful after local persistence', async () => {
@@ -123,7 +126,7 @@ describe('workspaceService', () => {
 
     await expect(updateWorkspace('workspace-1', { name: '离线新名称' })).resolves.toBeUndefined();
 
-    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ name: '离线新名称' }));
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ name: '离线新名称' }), 'workspaces');
   });
 
   it('restores ordered tabs, pinned state and active tab into a new window', async () => {
@@ -424,7 +427,7 @@ describe('workspaceService', () => {
 
     expect(result.id).toBe('workspace-1');
     expect(syncMock.syncAll).toHaveBeenCalledOnce();
-    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: 'workspace-1' }));
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: 'workspace-1' }), 'workspaces');
   });
 
   it('exposes the binding while a large lazy restore is still in progress', async () => {
@@ -673,7 +676,7 @@ describe('workspaceService', () => {
 
     expect(saved.id).not.toBe('workspace-1');
     expect(bindingMock.set).toHaveBeenCalledWith(22, saved.id);
-    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: saved.id }));
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: saved.id }), 'workspaces');
   });
 
   it('continues updating the original workspace when the reopened window is saved', async () => {
@@ -687,7 +690,7 @@ describe('workspaceService', () => {
     const saved = await saveCurrentWindow({ windowId: 99, name: 'PetLifeHub', status: 'active', closeAfterSave: false });
 
     expect(saved.id).toBe('workspace-1');
-    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: 'workspace-1' }));
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: 'workspace-1' }), 'workspaces');
   });
 
   it('focuses an already bound workspace instead of restoring a duplicate', async () => {
@@ -827,6 +830,44 @@ describe('workspaceService', () => {
     expect(browserMock.windows.create).toHaveBeenCalledOnce();
   });
 
+  it('isolates concurrent launches with the same workspace id after an account switch', async () => {
+    let scope = 'A';
+    accountKey.mockImplementation(async (key: string) => `${key}:${scope}`);
+    workspaceMock.get.mockImplementation(async () => ({ ...localRecord, accountStorageKey: `workspaces:${scope}` }));
+    let release!: (windows: { id: number; tabs: never[] }[]) => void;
+    browserMock.windows.getAll.mockReturnValueOnce(new Promise((resolve) => { release = resolve; })).mockResolvedValue([]);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+    bindingMock.get.mockResolvedValue('workspace-1');
+    const previous = openOrFocusWorkspace('workspace-1').catch((error: unknown) => error);
+    await vi.waitFor(() => expect(browserMock.windows.getAll).toHaveBeenCalledOnce());
+    scope = 'B';
+    const current = openOrFocusWorkspace('workspace-1');
+    release([{ id: 22, tabs: [] }]);
+    expect(await previous).toEqual(expect.objectContaining({ message: expect.stringContaining('账号已变化') }));
+    expect(await current).toBe(99);
+    expect(browserMock.windows.update).not.toHaveBeenCalledWith(22, { focused: true });
+  });
+
+  it.each([reopenWorkspace, recoverWorkspace])('rejects an old account restore without sharing it with the new account', async (open) => {
+    let scope = 'A';
+    accountKey.mockImplementation(async (key: string) => `${key}:${scope}`);
+    workspaceMock.get.mockImplementation(async () => ({ ...localRecord, accountStorageKey: `workspaces:${scope}` }));
+    bindingMock.get.mockResolvedValue('workspace-1');
+    browserMock.windows.create.mockResolvedValueOnce({ id: 98, tabs: [{ id: 900 }] }).mockResolvedValue({ id: 99, tabs: [{ id: 910 }] });
+    let release!: (tab: { id: number }) => void;
+    browserMock.tabs.create.mockReturnValueOnce(new Promise((resolve) => { release = resolve; })).mockResolvedValue({ id: 911 });
+    const previous = open('workspace-1', 22).catch((error: unknown) => error);
+    await vi.waitFor(() => expect(browserMock.tabs.create).toHaveBeenCalledOnce());
+    scope = 'B';
+    const current = open('workspace-1', 22);
+    release({ id: 901 });
+    expect(await previous).toEqual(expect.objectContaining({ message: expect.stringContaining('账号已变化') }));
+    expect(await current).toBe(99);
+    expect(bindingMock.set).not.toHaveBeenCalledWith(98, 'workspace-1', 'workspaces:B');
+    expect(bindingMock.suppress).toHaveBeenCalledWith(22, 'workspaces:B');
+  });
+
   it('restores only when no existing window matches', async () => {
     workspaceMock.get.mockResolvedValue(localRecord);
     browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
@@ -836,6 +877,8 @@ describe('workspaceService', () => {
 
     expect(browserMock.windows.create).toHaveBeenCalledOnce();
   });
+
+
 });
 
 function savedTab(title: string, url: string, position: number, pinned: boolean) {

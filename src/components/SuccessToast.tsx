@@ -9,5 +9,5 @@ export function SuccessToast({ message, onDismiss }: { message: string; onDismis
     return () => window.clearTimeout(timer);
   }, [message]);
 
-  return <div className="success-toast" role="status" aria-live="polite"><span aria-hidden="true">✓</span>{message}</div>;
+  return <div className="success-toast" role="status" aria-live="polite">{message}</div>;
 }

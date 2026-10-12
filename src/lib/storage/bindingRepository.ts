@@ -1,33 +1,38 @@
+import { accountStorageKey } from './accountScope';
 import { browser } from 'wxt/browser';
 
-function key(windowId: number): string {
-  return `windowBinding:${windowId}`;
+function key(windowId: number, requestedKey?: string): Promise<string> {
+  if (requestedKey) return Promise.resolve(requestedKey.replace(/^workspaces/, `windowBinding:${windowId}`));
+  return accountStorageKey(`windowBinding:${windowId}`);
 }
 
-function suppressionKey(windowId: number): string {
-  return `windowBindingSuppressed:${windowId}`;
+function suppressionKey(windowId: number): Promise<string> {
+  return accountStorageKey(`windowBindingSuppressed:${windowId}`);
 }
 
 export const bindingRepository = {
-  async get(windowId: number): Promise<string | null> {
-    const storageKey = key(windowId);
+  async get(windowId: number, requestedKey?: string): Promise<string | null> {
+    const storageKey = await key(windowId, requestedKey);
     const result = await browser.storage.session.get(storageKey);
     return (result[storageKey] as string | undefined) ?? null;
   },
-  async set(windowId: number, workspaceId: string): Promise<void> {
-    await browser.storage.session.set({ [key(windowId)]: workspaceId });
-    await browser.storage.session.remove(suppressionKey(windowId));
+  async set(windowId: number, workspaceId: string, requestedKey?: string): Promise<void> {
+    const storageKey = await key(windowId, requestedKey);
+    await browser.storage.session.set({ [storageKey]: workspaceId });
+    await browser.storage.session.remove(storageKey.replace(/^windowBinding:/, 'windowBindingSuppressed:'));
   },
-  async suppress(windowId: number): Promise<void> {
-    await browser.storage.session.set({ [suppressionKey(windowId)]: true });
-    await browser.storage.session.remove(key(windowId));
+  async suppress(windowId: number, requestedKey?: string): Promise<void> {
+    const storageKey = await key(windowId, requestedKey);
+    await browser.storage.session.set({ [storageKey.replace(/^windowBinding:/, 'windowBindingSuppressed:')]: true });
+    await browser.storage.session.remove(storageKey);
   },
   async isSuppressed(windowId: number): Promise<boolean> {
-    const storageKey = suppressionKey(windowId);
+    const storageKey = await suppressionKey(windowId);
     const result = await browser.storage.session.get(storageKey);
     return result[storageKey] === true;
   },
-  async remove(windowId: number): Promise<void> {
-    await browser.storage.session.remove([key(windowId), suppressionKey(windowId)]);
+  async remove(windowId: number, requestedKey?: string): Promise<void> {
+    const storageKey = await key(windowId, requestedKey);
+    await browser.storage.session.remove([storageKey, storageKey.replace(/^windowBinding:/, 'windowBindingSuppressed:')]);
   },
 };

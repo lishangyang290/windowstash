@@ -4,9 +4,9 @@
   "version": "0.4.0",
   "identifier": "app.windowstash.companion",
   "build": {
-    "beforeDevCommand": "npm run dev",
+    "beforeDevCommand": "node ../scripts/build-native-host.mjs && npm run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run build",
+    "beforeBuildCommand": "node ../scripts/build-native-host.mjs && npm run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -46,6 +46,9 @@
     "macOS": {
       "minimumSystemVersion": "12.0",
       "signingIdentity": "-"
-    }
+    },
+    "externalBin": [
+      "binaries/windowstash-native-host"
+    ]
   }
 }

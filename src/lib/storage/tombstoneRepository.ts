@@ -1,29 +1,34 @@
+import { accountStorageKey } from './accountScope';
 import { browser } from 'wxt/browser';
 import { STORAGE_KEYS } from '@/lib/constants';
 import type { DeleteTombstone } from '@/types/workspace';
 
 type TombstoneMap = Record<string, DeleteTombstone>;
 
-async function read(): Promise<TombstoneMap> {
-  const result = await browser.storage.local.get(STORAGE_KEYS.tombstones);
-  return (result[STORAGE_KEYS.tombstones] as TombstoneMap | undefined) ?? {};
+async function read(storageKey: string): Promise<TombstoneMap> {
+  const result = await browser.storage.local.get(storageKey);
+  const items = (result[storageKey] as TombstoneMap | undefined) ?? {};
+  for (const item of Object.values(items)) item.accountStorageKey = storageKey;
+  return items;
 }
 
 export const tombstoneRepository = {
-  async list(): Promise<DeleteTombstone[]> {
-    return Object.values(await read());
+  async list(requestedKey?: string): Promise<DeleteTombstone[]> {
+    return Object.values(await read(requestedKey ?? await accountStorageKey(STORAGE_KEYS.tombstones)));
   },
-  async has(id: string): Promise<boolean> {
-    return Boolean((await read())[id]);
+  async has(id: string, requestedKey?: string): Promise<boolean> {
+    return Boolean((await read(requestedKey ?? await accountStorageKey(STORAGE_KEYS.tombstones)))[id]);
   },
   async add(tombstone: DeleteTombstone): Promise<void> {
-    const items = await read();
+    const storageKey = tombstone.accountStorageKey ?? await accountStorageKey(STORAGE_KEYS.tombstones);
+    const items = await read(storageKey);
     items[tombstone.workspaceId] = tombstone;
-    await browser.storage.local.set({ [STORAGE_KEYS.tombstones]: items });
+    await browser.storage.local.set({ [storageKey]: items });
   },
-  async remove(id: string): Promise<void> {
-    const items = await read();
+  async remove(id: string, requestedKey?: string): Promise<void> {
+    const storageKey = requestedKey ?? await accountStorageKey(STORAGE_KEYS.tombstones);
+    const items = await read(storageKey);
     delete items[id];
-    await browser.storage.local.set({ [STORAGE_KEYS.tombstones]: items });
+    await browser.storage.local.set({ [storageKey]: items });
   },
 };

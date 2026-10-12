@@ -1,10 +1,15 @@
+import { accountStorageKey, legacyDataSummary, selectDataAccount } from '@/lib/storage/accountScope';
+import { SupabaseConfigForm } from '@/components/SupabaseConfigForm';
+import { SetupFlow, useSetupNavigation } from '@/components/SetupFlow';
+import { FlowFooter } from '@/components/FlowFooter';
+import { PageShell } from '@/components/PageShell';
+import { EmailInput } from '@/components/EmailInput';
+import { CompanionLogin } from '@/components/CompanionLogin';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import type { Session } from '@supabase/supabase-js';
 import { browser } from 'wxt/browser';
-import { Logo } from '@/components/Logo';
 import { SuccessToast } from '@/components/SuccessToast';
-import { SupabaseConfigForm } from '@/components/SupabaseConfigForm';
 import { VisibilityToggleInput } from '@/components/VisibilityToggleInput';
 import { deleteWorkspace, openWorkspaceTab, updateWorkspace } from '@/features/workspaces/workspaceService';
 import { syncEngine } from '@/lib/sync/syncEngine';
@@ -20,6 +25,11 @@ import './style.css';
 type Filter = 'all' | 'archived';
 type ManualSyncState = 'idle' | 'syncing' | 'success' | 'failed';
 type PasswordState = 'idle' | 'saving';
+
+async function requireManagerAccess(record?: WorkspaceLocalRecord) {
+  await authService.requireSession();
+  if (record?.accountStorageKey && record.accountStorageKey !== await accountStorageKey('workspaces')) throw new Error('账号已变化，请重新加载');
+}
 
 function formatSavedAt(value: string) {
   const date = new Date(value);
@@ -80,6 +90,7 @@ function TabOverview({ record, onClose }: { record: WorkspaceLocalRecord; onClos
   async function openTab(url: string) {
     setError('');
     try {
+      await requireManagerAccess(record);
       await openWorkspaceTab(url);
     } catch {
       setError('这个标签页无法打开');
@@ -124,19 +135,33 @@ function PasswordField({ label, value, onChange, autoComplete, disabled }: {
 }
 
 function AccountDialog({
+  companion = false,
+  flow = false,
+  showTitle = true,
+  onPrevious,
+  onBusyChange,
   session,
   onClose,
   onChanged,
+  onSignedIn,
 }: {
+  companion?: boolean;
+  flow?: boolean;
+  showTitle?: boolean;
+  onPrevious?: () => void;
+  onBusyChange?: (busy: boolean) => void;
   session: Session | null;
   onClose: () => void;
   onChanged: () => Promise<void>;
+  onSignedIn?: () => void;
 }) {
   const [email, setEmail] = React.useState('');
   const [password, setPassword] = React.useState('');
   const [registrationConfirmPassword, setRegistrationConfirmPassword] = React.useState('');
   const [authMode, setAuthMode] = React.useState<'login' | 'register'>('login');
   const [busy, setBusy] = React.useState(false);
+  const formId = React.useId();
+  React.useEffect(() => { onBusyChange?.(busy); }, [busy, onBusyChange]);
   const [message, setMessage] = React.useState('');
   const [success, setSuccess] = React.useState('');
   const [currentPassword, setCurrentPassword] = React.useState('');
@@ -157,6 +182,7 @@ function AccountDialog({
     try {
       const next = authMode === 'login' ? await authService.signIn(email, password) : await authService.signUp(email, password);
       if (next) {
+        if (authMode === 'login') onSignedIn?.();
         onClose();
         await onChanged();
         return;
@@ -193,13 +219,15 @@ function AccountDialog({
   }
 
   return (
-    <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      {success ? <SuccessToast message={success} onDismiss={() => setSuccess('')} /> : null}
-      <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="account-title">
-        <div className="dialog-head">
-          <div><h2 id="account-title">{session ? '修改密码' : authMode === 'login' ? '登录' : '注册'}</h2><p>{session ? '修改当前 WindowStash 账号的登录密码。' : authMode === 'login' ? '登录后可在其他设备使用已保存的窗口。' : '创建用于 WindowStash 同步的账号。'}</p></div>
+    <div className={flow ? "flow-account" : "dialog-backdrop"} onMouseDown={(event) => !flow && event.target === event.currentTarget && onClose()}>
+      {success && !flow ? companion ? <p className="authorization-feedback" role="status">{success}</p> : <SuccessToast message={success} onDismiss={() => setSuccess('')} /> : null}
+      <section className={flow ? "flow-account-content" : "dialog"} role={companion ? undefined : 'dialog'} aria-modal={companion ? undefined : true} aria-labelledby={flow && !showTitle ? undefined : "account-title"} aria-label={flow && !showTitle ? (authMode === 'login' ? '登录' : '注册') : undefined}>
+        {flow && showTitle && <div className="config-guide"><h3 id="account-title">{authMode === 'login' ? '登录' : '注册'}</h3></div>}
+        {/* Companion 的详细说明暂时隐藏，管理器原有弹窗保持显示。 */}
+        {!companion && <div className="dialog-head">
+          <div><h2 id="account-title">{session ? '修改密码' : companion ? authMode === 'login' ? '登录到 Companion' : '创建账号' : authMode === 'login' ? '登录' : '注册'}</h2><p>{session ? '修改当前 WindowStash 账号的登录密码。' : companion ? authMode === 'login' ? '使用 WindowStash 账号登录，继续桌面端授权。' : '创建账号后，继续登录 Companion。' : authMode === 'login' ? '登录后可在其他设备使用已保存的窗口。' : '创建用于 WindowStash 同步的账号。'}</p></div>
           <button className="close-button" onClick={onClose} aria-label="关闭">×</button>
-        </div>
+        </div>}
         {session ? (
           <div className="account-settings">
             <div className="account-email"><span>邮箱</span><strong>{session.user.email}</strong></div>
@@ -215,18 +243,26 @@ function AccountDialog({
             </form>
           </div>
         ) : (
-          <form className="auth-form" noValidate onSubmit={(event) => { event.preventDefault(); void auth(); }}>
-            <label className="field"><span>邮箱</span><input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" /></label>
-            <label className="field"><span>密码</span><VisibilityToggleInput value={password} onChange={setPassword} autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} /></label>
+          <form id={formId} className="auth-form" noValidate onSubmit={(event) => { event.preventDefault(); void auth(); }}>
+            <label className="field"><span className={companion && !flow ? 'sr-only' : undefined}>邮箱</span>{companion ? <EmailInput value={email} onChange={setEmail} /> : <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" />}</label>
+            <label className="field"><span className={companion && !flow ? 'sr-only' : undefined}>密码</span><VisibilityToggleInput placeholder={companion ? '输入密码' : undefined} value={password} onChange={setPassword} autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} /></label>
             {authMode === 'register' ? <>
-              <label className="field"><span>确认密码</span><VisibilityToggleInput value={registrationConfirmPassword} onChange={setRegistrationConfirmPassword} autoComplete="new-password" /></label>
+              <label className="field"><span className={companion && !flow ? 'sr-only' : undefined}>确认密码</span><VisibilityToggleInput placeholder={companion ? '再次输入密码' : undefined} value={registrationConfirmPassword} onChange={setRegistrationConfirmPassword} autoComplete="new-password" /></label>
               <div className="password-requirements"><strong>密码需要：</strong><ul>{PASSWORD_REQUIREMENTS.map(({ label, test }) => { const met = test(password); return <li className={met ? 'met' : ''} key={label}><span>{met ? '✓' : '○'}</span>{label}</li>; })}</ul></div>
             </> : null}
-            <button className="button button-primary" disabled={busy || !email || !password || (authMode === 'register' && !registrationConfirmPassword)}>{busy ? authMode === 'login' ? '正在登录…' : '正在注册…' : authMode === 'login' ? '登录' : '注册'}</button>
+            {!flow ? <button className="button button-primary" aria-busy={companion ? busy : undefined} disabled={busy || !email || !password || (authMode === 'register' && !registrationConfirmPassword)}>{busy ? authMode === 'login' ? '正在登录…' : '正在注册…' : authMode === 'login' ? '登录' : '注册'}</button> : null}
             <p className="auth-switch">{authMode === 'login' ? '还没有账号？' : '已有账号？'}<button type="button" onClick={() => { setAuthMode((mode) => mode === 'login' ? 'register' : 'login'); setPassword(''); setRegistrationConfirmPassword(''); setMessage(''); }}>{authMode === 'login' ? '注册' : '登录'}</button></p>
           </form>
         )}
-        {message ? <p className="dialog-message" role="alert">{message}</p> : null}
+        {!flow && message ? <p className="dialog-message" role="alert">{message}</p> : null}
+        {flow ? <FlowFooter>
+          {message ? <p className="config-message" role="alert">{message}</p> : null}
+          {success ? <p className="config-feedback" role="status">{success}</p> : null}
+          <div className="config-footer-actions">
+            <button className="button" disabled={busy} onClick={onPrevious}>上一步</button>
+            <button className="button button-primary" type="submit" form={formId} aria-busy={busy} disabled={busy || !email || !password || (authMode === 'register' && !registrationConfirmPassword)}>{busy ? authMode === 'login' ? '正在登录…' : '正在注册…' : authMode === 'login' ? '登录' : '注册'}</button>
+          </div>
+        </FlowFooter> : null}
       </section>
     </div>
   );
@@ -263,6 +299,7 @@ function WorkspaceRow({ record, recoveryMode, onRefresh }: { record: WorkspaceLo
     setMenuOpen(false);
     setError('');
     try {
+      await requireManagerAccess(record);
       await task();
       await onRefresh();
     } catch (cause) {
@@ -276,20 +313,20 @@ function WorkspaceRow({ record, recoveryMode, onRefresh }: { record: WorkspaceLo
     const name = draftName.trim();
     if (!name || name === content.name) return setEditing(false);
     void run(async () => {
-      await updateWorkspace(content.id, { name });
+      await updateWorkspace(content.id, { name }, record.accountStorageKey);
       setEditing(false);
     });
   }
 
   function remove() {
     setMenuOpen(false);
-    if (window.confirm(`确定删除“${content.name}”？`)) void run(() => deleteWorkspace(content.id));
+    if (window.confirm(`确定删除“${content.name}”？`)) void run(() => deleteWorkspace(content.id, record.accountStorageKey));
   }
 
   const archived = content.status === 'archived';
   const openMessage = recoveryMode
-    ? { type: 'RESTORE_SAVED_WORKSPACE' as const, workspaceId: content.id }
-    : { type: 'OPEN_OR_FOCUS_WORKSPACE' as const, workspaceId: content.id };
+    ? { type: 'RESTORE_SAVED_WORKSPACE' as const, workspaceId: content.id, accountStorageKey: record.accountStorageKey }
+    : { type: 'OPEN_OR_FOCUS_WORKSPACE' as const, workspaceId: content.id, accountStorageKey: record.accountStorageKey };
   return (
     <article className="workspace-row">
       <div className="workspace-row-main">
@@ -320,7 +357,7 @@ function WorkspaceRow({ record, recoveryMode, onRefresh }: { record: WorkspaceLo
           <div className="more-wrap">
             <button className="more-button" aria-label={`更多操作：${content.name}`} aria-expanded={menuOpen} onClick={() => setMenuOpen((value) => !value)}>•••</button>
             {menuOpen && <div className="more-menu">
-              <button onClick={() => void run(() => updateWorkspace(content.id, { status: archived ? 'active' : 'archived' }))}>{archived ? '取消归档' : '归档'}</button>
+              <button onClick={() => void run(() => updateWorkspace(content.id, { status: archived ? 'active' : 'archived' }, record.accountStorageKey))}>{archived ? '取消归档' : '归档'}</button>
               <span />
               <button className="delete-action" onClick={remove}>删除</button>
             </div>}
@@ -338,6 +375,7 @@ function SyncIssues({ records, onRefresh, onClose }: { records: WorkspaceLocalRe
   async function resolve(id: string, choice: 'local' | 'cloud') {
     setBusyId(id);
     try {
+      await requireManagerAccess(records.find(({ content }) => content.id === id));
       await syncEngine.resolveConflict(id, choice);
       await onRefresh();
       if (records.length === 1) onClose();
@@ -354,28 +392,33 @@ function SyncIssues({ records, onRefresh, onClose }: { records: WorkspaceLocalRe
   );
 }
 
-function Dashboard({ config, initialAccountOpen, recoveryMode, onConfigChanged }: { config: SupabaseConfig; initialAccountOpen: boolean; recoveryMode: boolean; onConfigChanged: (config: SupabaseConfig) => void }) {
+function Dashboard({ session, config, recoveryMode, onAuthChanged, onSignedOut }: { session: Session; config: SupabaseConfig; recoveryMode: boolean; onAuthChanged: () => Promise<void>; onSignedOut: () => void }) {
   const [records, setRecords] = React.useState<WorkspaceLocalRecord[]>([]);
   const [logs, setLogs] = React.useState<SyncLogEntry[]>([]);
-  const [session, setSession] = React.useState<Session | null>(null);
   const [filter, setFilter] = React.useState<Filter>('all');
   const [query, setQuery] = React.useState('');
-  const [accountOpen, setAccountOpen] = React.useState(initialAccountOpen);
+  const [accountOpen, setAccountOpen] = React.useState(false);
+  const [configOpen, setConfigOpen] = React.useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = React.useState(false);
-  const [connectionOpen, setConnectionOpen] = React.useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = React.useState(false);
   const [issuesOpen, setIssuesOpen] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
+  const [legacy, setLegacy] = React.useState({ workspaces: 0, tombstones: 0 });
+  const [legacyError, setLegacyError] = React.useState('');
   const [manualSyncState, setManualSyncState] = React.useState<ManualSyncState>('idle');
 
   const refresh = React.useCallback(async () => {
-    const [nextRecords, nextLogs, nextSession] = await Promise.all([workspaceRepository.list(), syncLogRepository.list(), authService.session()]);
+    if ((await authService.session())?.user.id !== session.user.id) {
+      await onAuthChanged();
+      return { records: [], session: null };
+    }
+    const [nextRecords, nextLogs, nextLegacy] = await Promise.all([workspaceRepository.list(), syncLogRepository.list(), legacyDataSummary()]);
+    setLegacy(nextLegacy);
     setRecords(nextRecords);
     setLogs(nextLogs);
-    setSession(nextSession);
     setLoading(false);
-    return { records: nextRecords, session: nextSession };
-  }, []);
+    return { records: nextRecords, session };
+  }, [session, onAuthChanged]);
 
   React.useEffect(() => {
     void refresh();
@@ -393,6 +436,16 @@ function Dashboard({ config, initialAccountOpen, recoveryMode, onConfigChanged }
   const unsyncedRecords = records.filter(({ sync }) => sync.syncStatus === 'pending' || sync.syncStatus === 'failed');
   const baseRecords = filter === 'archived' ? archivedRecords : normalRecords;
   const filtered = baseRecords.filter(({ content }) => content.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+
+  async function restoreLegacy() {
+    if (!window.confirm(`请确认这份旧版数据属于当前 Supabase 项目 ${config.url} 的当前账号 ${session.user.email ?? session.user.id}。恢复后，未同步内容和删除记录将按正常规则同步；已有记录与旧副本都会保留。若不是原账号，请取消并切回原账号。`)) return;
+    try {
+      await requireManagerAccess();
+      await selectDataAccount(config.url, session.user.id, true);
+      setLegacyError('');
+      await refresh();
+    } catch (error) { setLegacyError(error instanceof Error ? error.message : '暂时无法恢复旧版数据'); }
+  }
 
   async function authChanged() {
     const next = await refresh();
@@ -426,8 +479,7 @@ function Dashboard({ config, initialAccountOpen, recoveryMode, onConfigChanged }
 
   async function logout() {
     setAccountMenuOpen(false);
-    await authService.signOut();
-    await refresh();
+    try { await authService.signOut(); onSignedOut(); } finally { await onAuthChanged(); }
   }
 
   const unsyncedMessage = unsyncedRecords.length > 1 || manualSyncState === 'failed'
@@ -435,19 +487,17 @@ function Dashboard({ config, initialAccountOpen, recoveryMode, onConfigChanged }
     : '云端暂未同步，数据已保存在本机。';
 
   return (
-    <div className="app-shell">
+    <PageShell manager>
       <main className="dashboard">
         <header className="dashboard-heading">
-          <div className="title-block"><Logo /><p>保存窗口，需要时继续。</p></div>
+          <label className="search-wrap"><span aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4.5 4.5" /></svg></span><span className="sr-only">搜索工作区</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索工作区" /></label>
           <div className="header-actions">
-            <label className="search-wrap"><span aria-hidden="true">⌕</span><span className="sr-only">搜索工作区</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索工作区" /></label>
-            <button className="header-sync-button" onClick={() => window.open('/开始使用.html', '_blank', 'noopener,noreferrer')}>使用教程</button>
             <button className="header-sync-button" disabled={manualSyncState === 'syncing'} onClick={() => void syncNow()}>
               {manualSyncState === 'syncing' ? '正在同步…' : manualSyncState === 'failed' ? '重试同步' : '立即同步'}
             </button>
-            <button className="header-sync-button" onClick={() => setConnectionOpen(true)}>数据存储</button>
+            <button className="header-sync-button" onClick={() => setConfigOpen(true)}>数据存储</button>
             <div className="account-wrap" onBlur={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setAccountMenuOpen(false); }}>
-              <button className="account-button" aria-haspopup={session ? 'menu' : undefined} aria-expanded={session ? accountMenuOpen : undefined} onClick={() => session ? setAccountMenuOpen((open) => !open) : setAccountOpen(true)}><span className="avatar">{session?.user.email?.[0]?.toUpperCase() ?? '?'}</span><span>{session?.user.email ?? '登录'}</span></button>
+              <button className="account-button" aria-haspopup={session ? 'menu' : undefined} aria-expanded={session ? accountMenuOpen : undefined} onClick={() => session ? setAccountMenuOpen((open) => !open) : setAccountOpen(true)}><span className="avatar">{session?.user.email?.[0]?.toUpperCase() ?? '?'}</span><span>{session?.user.email ?? '登录'}</span><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m6 9 6 6 6-6" /></svg></button>
               {session && accountMenuOpen && <div className="account-menu" role="menu">
                 <button role="menuitem" onClick={() => { setAccountMenuOpen(false); setAccountOpen(true); }}>修改密码</button>
                 <button role="menuitem" onClick={() => { setAccountMenuOpen(false); setDiagnosticsOpen(true); }}>诊断日志</button>
@@ -458,6 +508,8 @@ function Dashboard({ config, initialAccountOpen, recoveryMode, onConfigChanged }
         </header>
 
         {recoveryMode && <div className="notices"><div className="quiet-notice"><span aria-hidden="true">↗</span><p>选择一个已保存工作区恢复到新窗口；当前异常窗口会保留。</p></div></div>}
+
+        {(legacy.workspaces > 0 || legacy.tombstones > 0) && <div className="notices"><div className="quiet-notice"><p>旧版数据仍保留：{legacy.workspaces} 个工作区、{legacy.tombstones} 条待同步删除记录。无法自动确认归属，请先登录原项目的原账号，再恢复。</p><button className="notice-button" onClick={() => void restoreLegacy()}>恢复旧版数据</button></div>{legacyError && <p role="alert">{legacyError}</p>}</div>}
 
         {(unsyncedRecords.length > 0 || conflicts.length > 0) && <div className="notices" aria-live="polite">
           {unsyncedRecords.length > 0 && <div className="quiet-notice sync-notice">
@@ -480,21 +532,74 @@ function Dashboard({ config, initialAccountOpen, recoveryMode, onConfigChanged }
         </section>
       </main>
       {manualSyncState === 'success' ? <SuccessToast message="已同步到云端" onDismiss={() => setManualSyncState('idle')} /> : null}
+      {configOpen ? <div className="dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setConfigOpen(false); }}>
+        <div role="dialog" aria-modal="true" aria-label="数据存储">
+          <SupabaseConfigForm settings initialConfig={config} onCancel={() => setConfigOpen(false)} onSaved={() => { setConfigOpen(false); void onAuthChanged(); }} />
+        </div>
+      </div> : null}
       {accountOpen && <AccountDialog session={session} onClose={() => setAccountOpen(false)} onChanged={authChanged} />}
       {diagnosticsOpen && <DiagnosticsDialog logs={logs} onClose={() => setDiagnosticsOpen(false)} onClear={async () => { await syncLogRepository.clear(); await refresh(); }} />}
-      {connectionOpen && <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && setConnectionOpen(false)}><SupabaseConfigForm initialConfig={config} onCancel={() => setConnectionOpen(false)} onSaved={onConfigChanged} /></div>}
-    </div>
+    </PageShell>
   );
 }
 
 export function OptionsRoot() {
-  const [config, setConfig] = React.useState<SupabaseConfig | null | undefined>(undefined);
-  const [openLogin, setOpenLogin] = React.useState(() => new URLSearchParams(window.location.search).get('login') === '1');
+  const navigation = useSetupNavigation();
+  const [access, setAccess] = React.useState<{ config: SupabaseConfig | null; session: Session | null }>();
+  const [message, setMessage] = React.useState('');
+  const [authNotice, setAuthNotice] = React.useState('');
+  const [connection, setConnection] = React.useState('');
+  const revision = React.useRef(0);
   const recoveryMode = new URLSearchParams(window.location.search).get('recover') === '1';
-  React.useEffect(() => { void getSupabaseConfig().then(setConfig); }, []);
-  if (config === undefined) return <main className="config-page">WindowStash</main>;
-  if (!config) return <main className="config-page"><SupabaseConfigForm setup onSaved={(next) => { setOpenLogin(true); setConfig(next); }} /></main>;
-  return <Dashboard key={`${config.url}\n${config.publishableKey}`} config={config} initialAccountOpen={openLogin} recoveryMode={recoveryMode} onConfigChanged={(next) => { setOpenLogin(true); setConfig(next); }} />;
+  const refresh = React.useCallback(async (clear = true) => {
+    const current = ++revision.current;
+    if (clear) setAccess(undefined);
+    setMessage('');
+    try {
+      const config = await getSupabaseConfig();
+      setConnection(config ? `${config.url}\n${config.publishableKey}` : '');
+      const session = config ? await authService.session() : null;
+      if (current === revision.current) setAccess({ config, session });
+    } catch (error) {
+      const config = await getSupabaseConfig();
+      if (current === revision.current) {
+        setAccess({ config, session: null });
+        setMessage(error instanceof Error ? error.message : '无法读取登录状态，请重试');
+      }
+    }
+  }, []);
+  React.useEffect(() => {
+    void refresh();
+    const changed = (changes: Record<string, unknown>) => {
+      if (Object.keys(changes).some((key) => key === 'supabaseConfig' || key.startsWith('windowstash-auth:') || key === 'windowstash-data-owner:v1' || key.startsWith('windowstash-companion'))) void refresh();
+    };
+    const recheck = () => void refresh(false);
+    const authChanged = () => void refresh();
+    browser.storage.onChanged.addListener(changed);
+    window.addEventListener('pageshow', authChanged);
+    window.addEventListener('focus', recheck);
+    let unsubscribe: (() => void) | undefined;
+    let active = true;
+    void authService.subscribe(authChanged).then((stop) => { if (active) unsubscribe = stop; else stop(); }).catch(() => { if (active) void refresh(); });
+    return () => {
+      active = false;
+      revision.current++;
+      unsubscribe?.();
+      browser.storage.onChanged.removeListener(changed);
+      window.removeEventListener('pageshow', authChanged);
+      window.removeEventListener('focus', recheck);
+    };
+  }, [refresh, connection]);
+  const notice = authNotice ? <SuccessToast key={authNotice} message={authNotice} onDismiss={() => setAuthNotice('')} /> : null;
+  if (!access) return <><PageShell><p role="status">正在检查登录状态…</p></PageShell>{notice}</>;
+  const { config, session } = access;
+  if (!config || !session || navigation.editing) return <><SetupFlow config={config} navigation={navigation}
+    login={(previous, onBusyChange, showTitle) => <AccountDialog companion flow showTitle={showTitle} onPrevious={previous} onBusyChange={onBusyChange} session={null} onClose={() => {}} onChanged={refresh} onSignedIn={() => setAuthNotice('登录成功')} />} onSaved={refresh} message={message} />{notice}</>;
+  return <><Dashboard key={`${config.url}\n${session.user.id}`} session={session} config={config} recoveryMode={recoveryMode} onAuthChanged={refresh} onSignedOut={() => setAuthNotice('已退出登录')} />{notice}</>;
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><OptionsRoot /></React.StrictMode>);
+const authorizationPage = new URLSearchParams(window.location.search).has('companionLogin') || window.location.pathname?.endsWith('/authorize.html');
+if (authorizationPage) document.body.classList.add('authorization-page');
+ReactDOM.createRoot(document.getElementById('root')!).render(authorizationPage
+  ? <CompanionLogin login={(refresh, previous, onBusyChange, showTitle) => <AccountDialog companion flow showTitle={showTitle} onPrevious={previous} onBusyChange={onBusyChange} session={null} onClose={() => void refresh()} onChanged={refresh} />} />
+  : <React.StrictMode><OptionsRoot /></React.StrictMode>);

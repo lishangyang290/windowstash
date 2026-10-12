@@ -1,6 +1,8 @@
+import { hideDataAccount, selectDataAccount } from '@/lib/storage/accountScope';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { browser } from 'wxt/browser';
 import { STORAGE_KEYS } from '@/lib/constants';
+import { authLink, authLock, nativeAuth } from '@/lib/companion/auth';
 
 export interface SupabaseConfig {
   url: string;
@@ -14,6 +16,11 @@ const SESSION_PREFIX = 'windowstash-auth:';
 
 const extensionStorage = {
   async getItem(key: string): Promise<string | null> {
+    if (key.endsWith('-auth-token') && await authLink()) {
+      const reply = await nativeAuth('read');
+      const projectKey = `sb-${new URL(reply.config.url).hostname.split('.')[0]}-auth-token`;
+      return key === projectKey && reply.session ? JSON.stringify(reply.session) : null;
+    }
     const result = await browser.storage.local.get(`${SESSION_PREFIX}${key}`);
     return (result[`${SESSION_PREFIX}${key}`] as string | undefined) ?? null;
   },
@@ -113,11 +120,22 @@ async function clearAuthStorage(): Promise<void> {
   if (keys.length) await browser.storage.local.remove(keys);
 }
 
-export async function saveSupabaseConfig(value: SupabaseConfig): Promise<SupabaseConfig> {
+export async function saveSupabaseConfig(value: SupabaseConfig, verifiedConfig?: SupabaseConfig): Promise<SupabaseConfig> {
   const config = normalizeSupabaseConfig(value);
-  if (!(await testSupabaseConnection(config))) throw new Error(CONNECTION_FAILED);
+  if ((!verifiedConfig || configKey(normalizeSupabaseConfig(verifiedConfig)) !== configKey(config))
+    && !(await testSupabaseConnection(config))) throw new Error(CONNECTION_FAILED);
   const previous = await getSupabaseConfig();
   if (!previous || configKey(previous) !== configKey(config)) {
+    // Bind legacy pending data to the previous account before changing projects.
+    if (previous) {
+      const key = `windowstash-auth:sb-${new URL(previous.url).hostname.split('.')[0]}-auth-token`;
+      const stored = await authLink() ? await nativeAuth('read').then((reply) => reply.config.url === previous.url && reply.session ? JSON.stringify(reply.session) : null) : (await browser.storage.local.get(key))[key];
+      let userId: string | undefined;
+      try { userId = typeof stored === 'string' ? JSON.parse(stored).user?.id as string | undefined : undefined; } catch { /* No usable legacy session. */ }
+      if (userId) await selectDataAccount(previous.url, userId, true);
+    }
+    await hideDataAccount();
+    if (await authLink()) await nativeAuth('clear');
     try {
       await client?.auth.signOut({ scope: 'local' });
     } finally {
@@ -146,6 +164,26 @@ export async function getSupabaseClient(): Promise<SupabaseClient | null> {
       autoRefreshToken: true,
       detectSessionInUrl: false,
     },
+    global: { fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/auth/v1/token?grant_type=refresh_token')) {
+        return authLock(async () => {
+          if (!(await authLink())) {
+            const response = await fetch(input, init);
+            if (response.ok) {
+              const session = await response.clone().json();
+              const key = `windowstash-auth:sb-${new URL(config.url).hostname.split('.')[0]}-auth-token`;
+              await browser.storage.local.set({ [key]: JSON.stringify(session) });
+            }
+            return response;
+          }
+          const reply = await nativeAuth('refresh');
+          if (!reply.session) return new Response(JSON.stringify({ error: 'invalid_grant', error_description: '请在 Chrome 中重新登录' }), { status: 401 });
+          return new Response(JSON.stringify(reply.session), { headers: { 'Content-Type': 'application/json' } });
+        });
+      }
+      return fetch(input, init);
+    }) as typeof fetch },
   });
   clientConfig = key;
   return client;

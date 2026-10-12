@@ -12,6 +12,7 @@ export function cloudRowToLocal(row: CloudWorkspaceRow, now = new Date()): Works
     updatedAt: row.updated_at,
   };
   return {
+    ...(row.accountStorageKey ? { accountStorageKey: row.accountStorageKey } : {}),
     content,
     sync: {
       syncStatus: 'synced',
