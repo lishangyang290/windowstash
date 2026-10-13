@@ -93,6 +93,8 @@ describe('workspaceService', () => {
     expect(browserMock.windows.get).toHaveBeenCalledWith(22, { populate: true });
     expect(result.tabs.map((tab) => tab.title)).toEqual(['B1', 'B2']);
     expect(result.activeTabIndex).toBe(1);
+    expect(result.id).not.toBe(localRecord.content.id);
+    expect(bindingMock.set).toHaveBeenCalledWith(22, result.id);
     expect(browserMock.windows.remove).toHaveBeenCalledWith(22);
     expect(workspaceMock.saveContent.mock.invocationCallOrder[0]).toBeLessThan(browserMock.windows.remove.mock.invocationCallOrder[0]!);
   });
@@ -105,6 +107,19 @@ describe('workspaceService', () => {
     workspaceMock.saveContent.mockRejectedValueOnce(new Error('Quota exceeded'));
 
     await expect(saveCurrentWindow({ windowId: 22, name: '窗口 B', status: 'active', closeAfterSave: true })).rejects.toThrow('Quota exceeded');
+    expect(browserMock.windows.remove).not.toHaveBeenCalled();
+  });
+
+  it('updates the bound workspace instead of creating a new identity on a normal save', async () => {
+    bindingMock.get.mockResolvedValue(localRecord.content.id);
+    workspaceMock.get.mockResolvedValue(localRecord);
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs: [{ id: 1, title: 'Current', url: 'https://current.example', index: 0, active: true, pinned: true }] });
+
+    const result = await saveCurrentWindow({ windowId: 22, name: localRecord.content.name, status: 'active', closeAfterSave: false });
+
+    expect(result.id).toBe(localRecord.content.id);
+    expect(result.createdAt).toBe(localRecord.content.createdAt);
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: localRecord.content.id, tabs: [expect.objectContaining({ url: 'https://current.example', pinned: true })], activeTabIndex: 0 }), 'workspaces');
     expect(browserMock.windows.remove).not.toHaveBeenCalled();
   });
 

@@ -7,7 +7,8 @@ import { workspaceRepository } from '@/lib/storage/workspaceRepository';
 import schema from '../../../supabase/schema.sql?raw';
 import popupHtml from '../popup/index.html?raw';
 import { browser } from 'wxt/browser';
-import { resolveWorkspaceStateForWindow } from '@/features/workspaces/workspaceService';
+import { resolveWorkspaceStateForWindow, saveCurrentWindow } from '@/features/workspaces/workspaceService';
+import popupStyle from '../popup/style.css?raw';
 
 const storage = vi.hoisted(() => new Map<string, unknown>());
 const authEvents = vi.hoisted(() => ({ changed: (() => {}) as (event?: import('@supabase/supabase-js').AuthChangeEvent, session?: import('@supabase/supabase-js').Session | null) => void }));
@@ -31,12 +32,13 @@ vi.mock('wxt/browser', () => {
       },
       onChanged: event(),
     },
-    windows: { getCurrent: vi.fn(async () => ({ id: 1, tabs: [] })) },
+    windows: { getCurrent: vi.fn(async () => ({ id: 1, tabs: [] })), get: vi.fn(async (id: number) => ({ id, tabs: [] })) },
     tabs: { onCreated: event(), onRemoved: event(), onUpdated: event(), onMoved: event() },
   } };
 });
 vi.mock('@/features/workspaces/workspaceService', () => ({
   resolveWorkspaceStateForWindow: vi.fn(async () => ({ status: 'unbound', record: null })),
+  saveCurrentWindow: vi.fn(),
 }));
 vi.mock('@/features/workspaces/lazyRestore', () => ({
   resolveLogicalTabs: vi.fn(async () => []), LazyTabResolutionError: class extends Error {},
@@ -787,6 +789,8 @@ it('includes a neutral shell before JavaScript and keeps every operation disable
   expect(dom.document.querySelector('.manager-link')).not.toBeNull();
   expect([...dom.document.querySelectorAll('button')].every((item) => item.hasAttribute('disabled'))).toBe(true);
   expect(dom.document.querySelector('[aria-busy="true"]')).not.toBeNull();
+  expect(dom.document.body.textContent).not.toContain('关联已有工作区');
+  expect(popupStyle).not.toMatch(/associate-link|association-(?:shell|content|list)/);
 });
 
 it('keeps the full neutral popup shell while workspace identification is pending', async () => {
@@ -796,11 +800,13 @@ it('keeps the full neutral popup shell while workspace identification is pending
   await renderPopup();
   expect(container.querySelector('.popup-header')?.textContent).toContain('WindowStash');
   expect(container.querySelector('.popup-actions')).not.toBeNull();
-  for (const text of ['保存当前状态', '保存并关闭窗口', '重新打开工作区', '关联已有工作区']) expect(button(text).disabled).toBe(true);
+  for (const text of ['保存当前状态', '保存并关闭窗口', '重新打开工作区']) expect(button(text).disabled).toBe(true);
+  expect(container.textContent).not.toContain('关联已有工作区');
   expect(container.querySelector('[data-popup-state="ready"]')).toBeNull();
   await act(async () => finish({ status: 'unbound', record: null, workspaceId: null, source: null }));
   expect(container.querySelector('[data-popup-state="ready"]')).not.toBeNull();
   expect(button('保存当前状态').disabled).toBe(false);
+  expect(container.textContent).not.toContain('关联已有工作区');
 });
 
 it('coalesces overlapping focus/pageshow and same-account auth checks', async () => {
@@ -819,4 +825,35 @@ it('coalesces overlapping focus/pageshow and same-account auth checks', async ()
   await act(async () => finish(session));
   expect(container.querySelector('[inert]')).toBeNull();
   expect(button('保存当前状态').disabled).toBe(false);
+});
+
+it.each(['resolved', 'unbound'] as const)('keeps normal popup actions without manual association for %s windows', async (status) => {
+  loggedIn();
+  const record: Awaited<ReturnType<typeof workspaceRepository.list>>[number] = {
+    content: { id: 'workspace-1', name: 'Existing workspace', status: 'active', tabs: [{ title: 'Saved page', url: 'https://saved.example/', position: 0, pinned: false }], activeTabIndex: 0, createdAt: '', updatedAt: '' },
+    sync: { syncStatus: 'synced', lastSyncedAt: null, lastSyncedHash: null, lastSyncedCloudUpdatedAt: null, localExpiresAt: '', lastSyncError: null },
+  };
+  vi.mocked(resolveWorkspaceStateForWindow).mockResolvedValue(status === 'resolved'
+    ? { status, workspaceId: record.content.id, record, source: 'binding' }
+    : { status, workspaceId: null, record: null, source: null });
+  await renderPopup();
+  expect(container.textContent).not.toContain('关联已有工作区');
+  expect(container.querySelector('.associate-link, .association-shell')).toBeNull();
+  expect(container.querySelector('.reopen-workspace') !== null).toBe(status === 'resolved');
+  if (status === 'resolved') {
+    expect(button('Existing workspace').getAttribute('aria-label')).toContain('重命名');
+    await click('查看本次变更 ›');
+    expect(container.textContent).toContain('本次保存的变更');
+    await click('← 返回');
+    await click('重新打开工作区');
+    expect(browser.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'REOPEN_WORKSPACE', workspaceId: record.content.id, sourceWindowId: 1 }));
+  } else await enter(0, 'New workspace');
+  const name = status === 'resolved' ? record.content.name : 'New workspace';
+  await click('保存当前状态');
+  expect(saveCurrentWindow).toHaveBeenCalledWith(expect.objectContaining({ windowId: 1, name, closeAfterSave: false }));
+  await click('保存并关闭窗口');
+  expect(saveCurrentWindow).toHaveBeenLastCalledWith(expect.objectContaining({ windowId: 1, name, closeAfterSave: true }));
+  await click('管理工作区 →');
+  expect(browser.runtime.openOptionsPage).toHaveBeenCalledOnce();
+  vi.mocked(resolveWorkspaceStateForWindow).mockResolvedValue({ status: 'unbound', workspaceId: null, record: null, source: null });
 });

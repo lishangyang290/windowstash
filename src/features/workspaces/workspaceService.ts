@@ -19,7 +19,6 @@ import {
 import { lazyRestoreRepository } from '@/lib/storage/lazyRestoreRepository';
 import { windowAssociationRepository } from '@/lib/storage/windowAssociationRepository';
 import {
-  associateExistingWorkspace as associateWindow,
   bindWindow,
   restorePersistentWindowAssociations,
 } from './windowAssociation';
@@ -482,14 +481,4 @@ export async function deleteWorkspace(workspaceId: string, expectedKey?: string)
     await windowAssociationRepository.removeForWorkspace(workspaceId, account.storageKey).catch(() => undefined);
     requestSync({ type: 'SYNC_ALL', accountStorageKey: account.storageKey });
   });
-}
-
-export async function listWorkspacesForAssociation(): Promise<WorkspaceLocalRecord[]> {
-  await requireDataAccount();
-  return workspaceRepository.list();
-}
-
-export async function associateExistingWorkspace(windowId: number, workspaceId: string, tabs?: MatchableTab[], expectedKey?: string) {
-  const account = await requireDataAccount(expectedKey);
-  await withDataAccount(account, () => associateWindow(windowId, workspaceId, tabs));
 }
