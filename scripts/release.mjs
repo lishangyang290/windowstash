@@ -106,7 +106,7 @@ export async function showResult(run, version, commit, {
     while (true) {
       active();
       const queriedAt = now();
-      const runs = JSON.parse(await query(['run', 'list', '--repo', repository, '--workflow', 'release.yml', '--commit', commit, '--limit', '10', '--json', 'databaseId,status,conclusion,url,headBranch,headSha']));
+      const runs = JSON.parse(await query(['run', 'list', '--repo', repository, '--workflow', 'release.yml', '--event', 'push', '--commit', commit, '--limit', '10', '--json', 'databaseId,status,conclusion,url,headBranch,headSha']));
       const match = runs.find((item) => item.headBranch === `v${version}` && item.headSha === commit);
       if (match) {
         workflow = workflow?.databaseId === match.databaseId ? { ...workflow, ...match } : match;
@@ -132,13 +132,17 @@ export async function showResult(run, version, commit, {
       return;
     }
     const release = JSON.parse(await query(['release', 'view', `v${version}`, '--repo', repository, '--json', 'assets,url,isDraft,isPrerelease']));
-    const zip = release.assets.find((asset) => asset.name === `WindowStash-v${version}-macOS.zip` && asset.size > 0);
+    const names = [`WindowStash-v${version}-macOS-arm64.zip`, `WindowStash-v${version}-Windows-x64.zip`, `WindowStash-v${version}-Windows-x64-setup.exe`];
+    const assets = names.map((name) => release.assets.find((asset) => asset.name === name && asset.size > 0));
     ui.field('Workflow', workflow.url);
-    if (!release.isDraft && !release.isPrerelease && zip) {
-      ui.success(`发布成功，正式 ZIP 附件已生成：${release.url}`);
-      ui.field('ZIP 下载', zip.url || `https://github.com/${repository}/releases/download/v${version}/${zip.name}`);
+    if (!release.isDraft && !release.isPrerelease && assets.every(Boolean)) {
+      ui.success(`发布成功，macOS 与 Windows 正式附件已生成：${release.url}`);
+      for (const [index, label] of ['macOS ZIP 下载', 'Windows ZIP 下载', 'Windows 安装程序'].entries()) {
+        const asset = assets[index];
+        ui.field(label, asset.url || `https://github.com/${repository}/releases/download/v${version}/${asset.name}`);
+      }
     }
-    else ui.warning('构建已结束，但正式 Release 或 ZIP 附件尚未确认，请查看页面。');
+    else ui.warning('构建已结束，但正式 Release 或双平台完整附件尚未确认，请查看页面。');
   } catch {
     let cancelled = false;
     try { active(); } catch { cancelled = true; }
@@ -159,7 +163,7 @@ export async function main(args = process.argv.slice(2)) {
   if (args.some((arg) => !['--dry-run', '--restore', '--help', '--verbose'].includes(arg)) || (dry && args.includes('--restore'))) throw new Error('参数无效。用法：npm run release -- [--dry-run | --restore | --help] [--verbose]');
   if (args.includes('--help')) {
     ui.section('WindowStash Release');
-    ui.list(['双击 WindowStash Release.command 或 npm run release', '', '--dry-run   只读预演', '--restore   恢复未提交的发布准备', '--verbose   显示底层命令及完整检查输出']);
+    ui.list(['双击 WindowStash Release.command（macOS）或 WindowStash Release.cmd（Windows），也可 npm run release', '', '--dry-run   只读预演', '--restore   恢复未提交的发布准备', '--verbose   显示底层命令及完整检查输出']);
     ui.hint('粘贴以 :end 结束，:cancel 取消。');
     return;
   }

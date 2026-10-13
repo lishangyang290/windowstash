@@ -53,6 +53,10 @@ export function workflowProgress(workflow) {
     'Assemble macOS package': 'ZIP 打包',
     'Scan and validate final ZIP': 'ZIP 检查',
     'Create GitHub Release and upload macOS asset': '上传 Release 和 ZIP 附件',
+    'Build Windows Companion': 'Windows x64 安装程序构建',
+    'Assemble platform package': '安装包、扩展与教程打包',
+    'Scan and validate final package': '正式产物与隐私检查',
+    'Publish complete Release': '核对双平台附件并正式发布',
   })[name] ?? name;
   const jobs = workflow?.jobs ?? [];
   const steps = jobs.flatMap((job) => job.steps ?? []);
@@ -61,14 +65,15 @@ export function workflowProgress(workflow) {
   const current = jobs.flatMap((job) => {
     const running = (job.steps ?? []).filter((step) => step.status === 'in_progress');
     return running.length ? running.map((step) => `${job.name} · ${taskName(step.name)}`)
-      : job.status === 'in_progress' ? [`${job.name} · 等待步骤状态`] : [];
+      : job.status === 'in_progress' ? [`${job.name} · 等待步骤状态`]
+        : job.name ? [`${job.name} · ${job.conclusion ?? job.status ?? '未知'}`] : [];
   });
   const status = workflow?.status ?? 'waiting';
   const labels = { waiting: '等待 Workflow', queued: '排队中', pending: '等待中', waiting_for_review: '等待审核', in_progress: '构建中', completed: '已结束' };
   return [
     `Actions  ${labels[status] ?? status}${workflow?.conclusion ? ` · ${workflow.conclusion}` : ''}`,
     steps.length ? `步骤  已结束 ${completed.length}/${steps.length}（成功 ${completed.filter((step) => step.conclusion === 'success').length}，跳过 ${completed.filter((step) => step.conclusion === 'skipped').length}，未成功 ${failed.length}）` : '步骤  尚未获取，进度未知',
-    `任务  ${current.join('；') || (failed.length ? failed.map((step) => `${taskName(step.name)} · ${step.conclusion ?? '未知'}`).join('；') : status === 'completed' ? workflow.conclusion === 'success' ? '检查 Release 和 ZIP 附件' : '查看 Workflow 及 Job 日志' : '等待 GitHub 更新任务状态')}`,
+    `任务  ${current.join('；') || (failed.length ? failed.map((step) => `${taskName(step.name)} · ${step.conclusion ?? '未知'}`).join('；') : status === 'completed' ? workflow.conclusion === 'success' ? '检查双平台 Release 附件' : '查看 Workflow 及 Job 日志' : jobs.length ? jobs.map((job) => `${job.name} · ${labels[job.status] ?? job.status ?? '未知'}${job.conclusion ? ` / ${job.conclusion}` : ''}`).join('；') : '等待 GitHub 更新任务状态')}`,
   ];
 }
 

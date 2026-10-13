@@ -3,14 +3,180 @@ import assert from 'node:assert/strict';
 import { mkdtemp, cp, mkdir, readFile, writeFile, rm, stat, symlink, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Readable, Writable } from 'node:stream';
-import { command, parseRelease, validateInput, planFiles, applyFiles, restoreFiles, saveJournal, recoverPrepared, preflight, runChecks, publish } from './release-core.mjs';
+import { command, npmInvocation, parseRelease, validateInput, planFiles, applyFiles, restoreFiles, saveJournal, recoverPrepared, preflight, runChecks, publish } from './release-core.mjs';
 import { terminalUI, presentedCommand, workflowProgress, liveProgress } from './release-ui.mjs';
 import { inputLines, editRelease, showResult } from './release.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const standard = '当前版本：v0.3.0\n目标版本：0.4.0\n\n更新内容：\n- 修复重启后关联丢失\n- 新增教程入口\n\nmain HEAD：\n56b8e2fe30517972e54cfe9a5ba4befd822f924c\n测试：\n224 项通过';
 const silent = new Writable({ write(chunk, encoding, done) { done(); } });
+const releaseAssets = () => ['macOS-arm64.zip', 'Windows-x64.zip', 'Windows-x64-setup.exe'].map((suffix) => ({ name: `WindowStash-v0.4.0-${suffix}`, size: 100, url: 'https://example.test/download.zip' }));
+
+async function processMock(directory, hash, scenario = '') {
+  // Mock only child processes in the isolated fixture, identically on both OSes.
+  await writeFile(resolve(directory, 'fetch-mock.mjs'), `
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { writeFileSync, appendFileSync } from 'node:fs';
+globalThis.fetch = async () => ({status:404});
+const original = childProcess.spawn, scenario = ${JSON.stringify(scenario)}, hash = ${JSON.stringify(hash)};
+let statuses = 0;
+childProcess.spawn = (program, args, options) => {
+ let code, output = '';
+ if (program === 'git') {
+  if (args[0] === 'ls-remote') { code = 0; if(args.includes('--exit-code')) output = hash + '\\trefs/heads/main\\n'; }
+  if (args[0] === 'push') { appendFileSync('push.log', args.join(' ') + '\\n'); code = ['tagPushFailure','tagCreationFailure'].includes(scenario) && args.at(-1).endsWith(':refs/heads/main') ? 0 : 1; }
+  if (scenario === 'commitFailure' && args[0] === 'commit') code = 1;
+  if (scenario === 'tagCreationFailure' && args[0] === 'tag' && args[1] !== '--list') code = 1;
+  if (scenario === 'journalRace' && args[0] === 'status' && ++statuses === 3) writeFileSync('.windowstash-release.json', '{"owner":"other"}\\n', 'utf8');
+ }
+ if (program === 'npm' || args[0]?.endsWith('npm-cli.js')) code = scenario === 'testFailure' && args.includes('test') ? 1 : 0;
+ if (code === undefined) return original(program, args, options);
+ const child = new EventEmitter(); child.stdout = new PassThrough(); child.stderr = new PassThrough();
+ process.nextTick(() => { child.stdout.end(output); child.stderr.end(); child.emit('close', code); });
+ return child;
+};
+syncBuiltinESMExports();
+`, 'utf8');
+}
+
+test('npm Windows 调用保留参数边界，其他平台继续直接调用 npm', async (t) => {
+  const directory = await mkdtemp(resolve(tmpdir(), 'windowstash npm 中文 '));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const cli = resolve(directory, 'npm-cli.js');
+  await writeFile(cli, 'console.log(JSON.stringify(process.argv.slice(2)))', 'utf8');
+  const args = ['空 格', '中文', '& echo injected', '%PATH%', '"quoted"', '$(bad)', ''];
+  const [program, parameters] = npmInvocation(args, 'win32', { npm_execpath: cli });
+  assert.equal(program, process.execPath);
+  assert.deepEqual(JSON.parse(await command(root)(program, parameters)), args);
+  assert.deepEqual(npmInvocation(args, 'darwin'), ['npm', args]);
+  assert.throws(() => npmInvocation([], 'win32', {}, resolve(directory, 'node.exe')), /无法定位 npm-cli/);
+});
+
+test('当前平台 npm、Git、Node 直接调用可用，并保留失败状态', async () => {
+  const run = command(root);
+  assert.match(await run('npm', ['--version']), /^\d+\.\d+\.\d+$/);
+  assert.match(await run('git', ['--version']), /git version/);
+  assert.match(await run(process.execPath, ['--version']), /^v\d+/);
+  await assert.rejects(run('npm', ['run', '__windowstash_missing_script__']), /失败/);
+});
+
+test('ESM --import 使用 file URL，兼容中文、空格、# 和 % 文件名', async (t) => {
+  const directory = await mkdtemp(resolve(tmpdir(), 'windowstash ESM 中文 '));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const module = resolve(directory, 'mock #%.mjs');
+  await writeFile(module, 'process.env.WINDOWSTASH_IMPORT_TEST="已加载";', 'utf8');
+  assert.equal(await command(root)(process.execPath, ['--import', pathToFileURL(module).href, '-e', 'console.log(process.env.WINDOWSTASH_IMPORT_TEST)']), '已加载');
+});
+
+test('Windows 双击入口定位带空格中文路径，传参并保留退出码', { skip: process.platform !== 'win32' }, async (t) => {
+  const directory = await mkdtemp(resolve(tmpdir(), 'WindowStash 启动 (&) ! '));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await cp(resolve(root, 'WindowStash Release.cmd'), resolve(directory, 'WindowStash Release.cmd'));
+  for (const path of ['scripts', 'node_modules/marked', 'companion/node_modules/@tauri-apps/cli']) await mkdir(resolve(directory, path), { recursive: true });
+  for (const path of ['node_modules/marked/package.json', 'companion/node_modules/@tauri-apps/cli/package.json']) await writeFile(resolve(directory, path), '{}', 'utf8');
+  await writeFile(resolve(directory, 'scripts/release.mjs'), 'console.log(JSON.stringify({cwd:process.cwd(),args:process.argv.slice(2)}));process.exitCode=7;', 'utf8');
+  const { spawnSync } = await import('node:child_process');
+  const launcher = await readFile(resolve(directory, 'WindowStash Release.cmd'), 'utf8');
+  assert.doesNotMatch(launcher, /(?<!\r)\n/);
+  assert.match(await readFile(resolve(root, '.gitattributes'), 'utf8'), /"WindowStash Release.cmd" text eol=crlf/);
+  for (const args of ['', '--help', '--dry-run --verbose', '--restore']) {
+    const result = spawnSync('cmd.exe', ['/d', '/c', `""${resolve(directory, 'WindowStash Release.cmd')}" ${args}"`], { cwd: root, input: '\n', encoding: 'utf8', windowsVerbatimArguments: true });
+    assert.ifError(result.error);
+    assert.equal(result.status, 7, result.stdout + result.stderr);
+    assert.ok(result.stdout.includes(JSON.stringify({ cwd: directory, args: args ? args.split(' ') : [] })), result.stdout);
+    assert.match(result.stdout, /运行已结束/);
+  }
+  await rm(resolve(directory, 'node_modules/marked/package.json'));
+  const missing = spawnSync('cmd.exe', ['/d', '/c', `""${resolve(directory, 'WindowStash Release.cmd')}""`], { input: '\n', encoding: 'utf8', windowsVerbatimArguments: true });
+  assert.equal(missing.status, 1);
+  assert.match(missing.stdout, /缺少项目依赖/);
+});
+
+for (const scenario of ['macOnly', 'windowsOnly', 'missingInstaller', 'emptyWindows', 'draft', 'prerelease', 'failed', 'complete']) test(`双平台正式发布完整性：${scenario}`, async () => {
+  const harness = resultHarness();
+  await showResult(async (program, args) => {
+    if (args[0] === 'auth') return '';
+    if (args[0] === 'run') {
+      const workflow = actionRun('completed', scenario === 'failed' ? 'failure' : 'success');
+      return JSON.stringify(args[1] === 'list' ? [workflow] : workflow);
+    }
+    let assets = releaseAssets();
+    if (scenario === 'macOnly') assets = assets.slice(0, 1);
+    if (scenario === 'windowsOnly') assets = assets.slice(1);
+    if (scenario === 'missingInstaller') assets = assets.slice(0, 2);
+    if (scenario === 'emptyWindows') assets[1].size = 0;
+    return JSON.stringify({ isDraft: scenario === 'draft', isPrerelease: scenario === 'prerelease', assets });
+  }, '0.4.0', 'abc', harness.options);
+  assert.equal(harness.messages.some((text) => text.includes('发布成功')), scenario === 'complete');
+});
+
+test('手动 Actions 验证没有写权限或发布路径，只有统一 Tag 发布任务可写', async () => {
+  const source = await readFile(resolve(root, '.github/workflows/release.yml'), 'utf8');
+  assert.match(source, /workflow_dispatch:/);
+  assert.match(source, /permissions:\s+contents: read/);
+  const [build, publish] = source.split('\n  publish:');
+  assert.doesNotMatch(build, /contents: write|gh release|publish-release\.mjs/);
+  assert.match(publish, /needs: build/);
+  assert.match(publish, /if: github.event_name == 'push' && startsWith\(github.ref, 'refs\/tags\/v'\)/);
+  assert.match(publish, /contents: write/);
+  assert.equal((source.match(/run: node scripts\/publish-release.mjs/g) ?? []).length, 1);
+});
+
+for (const scenario of ['success', 'existing', 'uploadFailure', 'missingAsset', 'corruptDownload', 'wrongTag', 'manual']) test(`统一发布任务安全流程（完全模拟 gh）：${scenario}`, async (t) => {
+  const directory = await mkdtemp(resolve(tmpdir(), 'windowstash-publish-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const names = releaseAssets().map((asset) => asset.name).sort();
+  await mkdir(resolve(directory, 'release-assets'));
+  await mkdir(resolve(directory, '.github/release-notes'), { recursive: true });
+  for (const name of names) await writeFile(resolve(directory, 'release-assets', name), 'fixture artifact', 'utf8');
+  await writeFile(resolve(directory, '.github/release-notes/v0.4.0.md'), '- 模拟更新说明\n', 'utf8');
+  const mock = resolve(directory, 'gh-mock.mjs');
+  await writeFile(mock, `
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const scenario = ${JSON.stringify(scenario)}, names = ${JSON.stringify(names)};
+childProcess.spawnSync = (program, args) => {
+ if (program !== 'gh') throw new Error('禁止未模拟的进程');
+ appendFileSync('calls.jsonl', JSON.stringify(args) + '\\n', 'utf8');
+ const ok = (value = '') => ({ status: 0, stdout: typeof value === 'string' ? value : JSON.stringify(value), stderr: '' });
+ const fail = (stderr) => ({ status: 1, stdout: '', stderr });
+ if (args[0] === 'api') {
+  if (args[1].includes('/git/ref/')) return ok({object:{type:'commit',sha:(scenario === 'wrongTag' ? 'b' : 'a').repeat(40)}});
+  return scenario === 'existing' ? ok({id:1}) : fail('gh: Not Found (HTTP 404)');
+ }
+ if (args[1] === 'upload' && scenario === 'uploadFailure') return fail('upload failed');
+ if (args[1] === 'view') return ok({isDraft:true,isPrerelease:false,assets:(scenario === 'missingAsset' ? names.slice(1) : names).map(name => ({name,size:16}))});
+ if (args[1] === 'download') {
+  const destination = args[args.indexOf('--dir')+1]; mkdirSync(destination);
+  for (const name of names) writeFileSync(join(destination,name), scenario === 'corruptDownload' ? 'corrupt artifact' : 'fixture artifact', 'utf8');
+ }
+ return ok();
+};
+syncBuiltinESMExports();
+`, 'utf8');
+  const { spawnSync } = await import('node:child_process');
+  const result = spawnSync(process.execPath, ['--import', pathToFileURL(mock).href, resolve(root, 'scripts/publish-release.mjs')], {
+    cwd: directory, encoding: 'utf8', env: { ...process.env, GITHUB_EVENT_NAME: scenario === 'manual' ? 'workflow_dispatch' : 'push', GITHUB_REF: 'refs/tags/v0.4.0', GITHUB_REF_NAME: 'v0.4.0', GITHUB_SHA: 'a'.repeat(40), GITHUB_REPOSITORY: 'lishangyang290/windowstash' },
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, scenario === 'success' ? 0 : 1, result.stderr);
+  const calls = scenario === 'manual' ? [] : (await readFile(resolve(directory, 'calls.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  assert.equal(calls.some((args) => args[1] === 'edit'), scenario === 'success');
+  assert.ok(calls.every((args) => !args.includes('--clobber')));
+  if (['existing', 'wrongTag', 'manual'].includes(scenario)) assert.ok(!calls.some((args) => args[1] === 'create'));
+  else assert.ok(calls.find((args) => args[1] === 'create')?.includes('--draft'));
+  if (scenario === 'success') {
+    assert.deepEqual(calls.filter((args) => args[0] === 'release').map((args) => args[1]), ['create', 'upload', 'view', 'download', 'edit']);
+    assert.ok(calls.at(-1).includes('--draft=false'));
+  }
+});
 
 test('Actions 进度只统计真实步骤，区分成功、跳过和失败，支持并行 Job', () => {
   const lines = workflowProgress({ status: 'in_progress', jobs: [
@@ -66,9 +232,10 @@ test('Actions 每 12 秒查询 Job/Step，完成后校验 ZIP 并显示下载链
     if (args[0] === 'auth') return '';
     if (args[1] === 'list') { polls++; return JSON.stringify([actionRun()]); }
     if (args[0] === 'run') return JSON.stringify(actionRun(polls === 2 ? 'completed' : 'in_progress', polls === 2 ? 'success' : null));
-    return JSON.stringify({ url: 'https://example.test/release', isDraft: false, isPrerelease: false, assets: [{ name: 'WindowStash-v0.4.0-macOS.zip', size: 123, url: 'https://example.test/download.zip' }] });
+    return JSON.stringify({ url: 'https://example.test/release', isDraft: false, isPrerelease: false, assets: releaseAssets() });
   }, '0.4.0', 'abc', harness.options);
   assert.equal(polls, 2);
+  assert.ok(calls.filter((args) => args[1] === 'list').every((args) => args[args.indexOf('--event') + 1] === 'push'));
   assert.ok(calls.some((args) => args[1] === 'view' && args[2] === '123' && args.includes('status,conclusion,url,headBranch,headSha,jobs')));
   assert.ok(harness.snapshots.some(({ lines, elapsed }) => elapsed === 12000 && lines[1].includes('已结束 1/1')));
   assert.match(harness.messages.join('\n'), /发布成功[\s\S]*ZIP 下载.*download.zip/);
@@ -297,7 +464,7 @@ test('不覆盖既有 Notes', async (t) => {
 test('严格 dry-run 成功，无文件、Commit、Tag、推送或构建副作用', async (t) => {
   const directory = await fixture(t), run = command(directory);
   for (const path of ['release.mjs', 'release-core.mjs', 'release-ui.mjs']) await cp(resolve(root, 'scripts', path), resolve(directory, 'scripts', path));
-  await symlink(resolve(root, 'node_modules'), resolve(directory, 'node_modules'));
+  await symlink(resolve(root, 'node_modules'), resolve(directory, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
   await writeFile(resolve(directory, '.gitignore'), 'node_modules\n', 'utf8');
   await run('git', ['init', '-b', 'main']);
   await run('git', ['config', 'user.email', 'test@example.com']); await run('git', ['config', 'user.name', 'Release Test']);
@@ -305,16 +472,13 @@ test('严格 dry-run 成功，无文件、Commit、Tag、推送或构建副作�
   const hash = await run('git', ['rev-parse', 'HEAD']);
   await run('git', ['update-ref', 'refs/remotes/origin/main', hash]);
   await run('git', ['remote', 'add', 'origin', 'https://github.com/lishangyang290/windowstash.git']);
-  const bin = resolve(directory, 'mock-bin'); await mkdir(bin);
-  const git = await command(root)('which', ['git']);
-  await writeFile(resolve(bin, 'git'), `#!/bin/sh\nif [ "$1" = ls-remote ]; then\n if [ "$2" = --exit-code ]; then printf '${hash}\\trefs/heads/main\\n'; fi\n exit 0\nfi\nexec '${git}' "$@"\n`, { encoding: 'utf8', mode: 0o755 });
-  await writeFile(resolve(directory, '.git/info/exclude'), 'mock-bin\nfetch-mock.mjs\n', 'utf8');
-  await writeFile(resolve(directory, 'fetch-mock.mjs'), 'globalThis.fetch = async () => ({status:404});\n', 'utf8');
+  await writeFile(resolve(directory, '.git/info/exclude'), 'fetch-mock.mjs\n', 'utf8');
+  await processMock(directory, hash);
   // Only the temporary repository uses a Git wrapper and HTTP mock. No production remote is touched.
   const { spawn } = await import('node:child_process');
   const preview = async (verbose = false) => new Promise((done, fail) => {
-    const childEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}` }; delete childEnv.NODE_TEST_CONTEXT;
-    const child = spawn(process.execPath, ['--import', resolve(directory, 'fetch-mock.mjs'), 'scripts/release.mjs', '--dry-run', ...(verbose ? ['--verbose'] : [])], { cwd: directory, env: childEnv });
+    const childEnv = { ...process.env }; delete childEnv.NODE_TEST_CONTEXT;
+    const child = spawn(process.execPath, ['--import', pathToFileURL(resolve(directory, 'fetch-mock.mjs')).href, 'scripts/release.mjs', '--dry-run', ...(verbose ? ['--verbose'] : [])], { cwd: directory, env: childEnv });
     let text = ''; child.stdout.on('data', (data) => { text += data; }); child.stderr.on('data', (data) => { text += data; }); child.on('error', fail); child.on('close', (code) => code === 0 ? done(text) : fail(new Error(text)));
     child.stdin.end(standard + '\n:end\n1\n');
   });
@@ -361,13 +525,9 @@ test('结果不会把进行中的构建误报成功', async () => {
   } finally { console.log = original; }
 });
 test('同一行的当前和目标版本按上下文识别', () => assert.equal(parseRelease('当前版本：v0.3.0，目标版本：v0.4.0').version, '0.4.0'));
-test('启动文件权限被 Git 记录为 100755', async (t) => {
-  const directory = await mkdtemp(resolve(tmpdir(), 'windowstash-launcher-test-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  await cp(resolve(root, 'WindowStash Release.command'), resolve(directory, 'WindowStash Release.command'));
-  const run = command(directory);
-  await run('git', ['init']); await run('git', ['add', '--', 'WindowStash Release.command']);
-  assert.match(await run('git', ['ls-files', '--stage']), /^100755 /);
+test('启动文件权限被 Git 记录为 100755', async () => {
+  // Read the real index mode, which remains meaningful even on Windows filesystems.
+  assert.match(await command(root)('git', ['ls-files', '--stage', '--', 'WindowStash Release.command']), /^100755 /);
 });
 
 for (const scenario of ['cancel', 'testFailure', 'mainPushFailure', 'tagPushFailure', 'tagCreationFailure', 'commitFailure', 'journalRace']) {
@@ -375,7 +535,7 @@ for (const scenario of ['cancel', 'testFailure', 'mainPushFailure', 'tagPushFail
     const directory = await fixture(t), run = command(directory);
     for (const path of ['release.mjs', 'release-core.mjs', 'release-ui.mjs']) await cp(resolve(root, 'scripts', path), resolve(directory, 'scripts', path));
     await writeFile(resolve(directory, 'scripts/release-tests.mjs'), "import { test } from 'node:test'; test('fixture check', () => {});\n", 'utf8');
-    await symlink(resolve(root, 'node_modules'), resolve(directory, 'node_modules'));
+    await symlink(resolve(root, 'node_modules'), resolve(directory, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
     await mkdir(resolve(directory, 'companion/node_modules'));
     await writeFile(resolve(directory, '.gitignore'), 'node_modules\n.windowstash-release.json\n.windowstash-release.json.*.tmp\nmock-bin\nfetch-mock.mjs\npush.log\n.status-count\n', 'utf8');
     await run('git', ['init', '-b', 'main']);
@@ -384,15 +544,11 @@ for (const scenario of ['cancel', 'testFailure', 'mainPushFailure', 'tagPushFail
     const hash = await run('git', ['rev-parse', 'HEAD']);
     await run('git', ['update-ref', 'refs/remotes/origin/main', hash]);
     await run('git', ['remote', 'add', 'origin', 'https://github.com/lishangyang290/windowstash.git']);
-    const bin = resolve(directory, 'mock-bin'); await mkdir(bin);
-    const git = await command(root)('which', ['git']);
-    await writeFile(resolve(bin, 'git'), `#!/bin/sh\nif [ "$1" = ls-remote ]; then\n if [ "$2" = --exit-code ]; then printf '${hash}\\trefs/heads/main\\n'; fi\n exit 0\nfi\nif [ "$1" = push ]; then\n echo "$*" >> push.log\n if [ '${scenario}' = tagPushFailure ] && [ "$4" = '${hash}:refs/heads/main' ]; then exit 0; fi\n if [ '${scenario}' = tagPushFailure ] || [ '${scenario}' = tagCreationFailure ]; then case "$4" in *:refs/heads/main) exit 0;; esac; fi\n exit 1\nfi\nif [ '${scenario}' = commitFailure ] && [ "$1" = commit ]; then exit 1; fi\nif [ '${scenario}' = tagCreationFailure ] && [ "$1" = tag ] && [ "$2" != --list ]; then exit 1; fi\nif [ '${scenario}' = journalRace ] && [ "$1" = status ]; then\n n=0; if [ -f .status-count ]; then read n < .status-count; fi\n n=$((n+1)); echo "$n" > .status-count\n if [ "$n" = 3 ]; then printf '{"owner":"other"}\\n' > .windowstash-release.json; fi\nfi\nexec '${git}' "$@"\n`, { encoding: 'utf8', mode: 0o755 });
-    await writeFile(resolve(bin, 'npm'), `#!/bin/sh\nif [ '${scenario}' = testFailure ] && [ "$2" = test ]; then exit 1; fi\nexit 0\n`, { encoding: 'utf8', mode: 0o755 });
-    await writeFile(resolve(directory, 'fetch-mock.mjs'), 'globalThis.fetch = async () => ({status:404});\n', 'utf8');
+    await processMock(directory, hash, scenario);
     const { spawn } = await import('node:child_process');
     const result = await new Promise((done, fail) => {
-      const childEnv = { ...process.env, PATH: `${bin}:${process.env.PATH}` }; delete childEnv.NODE_TEST_CONTEXT;
-    const child = spawn(process.execPath, ['--import', resolve(directory, 'fetch-mock.mjs'), 'scripts/release.mjs'], { cwd: directory, env: childEnv });
+      const childEnv = { ...process.env }; delete childEnv.NODE_TEST_CONTEXT;
+    const child = spawn(process.execPath, ['--import', pathToFileURL(resolve(directory, 'fetch-mock.mjs')).href, 'scripts/release.mjs'], { cwd: directory, env: childEnv });
       let text = ''; child.stdout.on('data', (data) => { text += data; }); child.stderr.on('data', (data) => { text += data; }); child.on('error', fail); child.on('close', (code) => done({ code, text }));
       child.stdin.end(standard + '\n:end\n1\n' + (scenario === 'cancel' ? '取消' : '发布 v0.4.0') + '\n');
     });
@@ -451,7 +607,7 @@ for (const scenario of ['missingGh', 'failed', 'success', 'missingAsset', 'draft
           const workflow = { databaseId: 123, headSha: head, headBranch: 'v0.4.0', status: 'completed', conclusion: scenario === 'failed' ? 'failure' : 'success', url: 'https://example.test', jobs: [] };
           return JSON.stringify(args[1] === 'list' ? [workflow] : workflow);
         }
-        return JSON.stringify({ isDraft: scenario === 'draft', isPrerelease: false, url: 'https://example.test/release', assets: scenario === 'missingAsset' ? [] : [{ name: 'WindowStash-v0.4.0-macOS.zip', size: 100 }] });
+        return JSON.stringify({ isDraft: scenario === 'draft', isPrerelease: false, url: 'https://example.test/release', assets: scenario === 'missingAsset' ? [] : releaseAssets() });
       }, '0.4.0', head);
       assert.equal(messages.some((text) => text.includes('发布成功')), scenario === 'success');
       if (scenario === 'missingGh') assert.ok(messages.some((text) => text.includes('无法自动确认')));
@@ -557,7 +713,7 @@ test('验收：恢复记录原子创建、原子更新、权限与失败保留',
   const journal = { head, version: '0.4.0', files: await planFiles(directory, '0.4.0', ['修复']), progress: {} };
   await saveJournal(path, journal, true);
   assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), journal);
-  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  if (process.platform !== 'win32') assert.equal((await stat(path)).mode & 0o777, 0o600);
   await assert.rejects(saveJournal(path, { other: true }, true), /EEXIST/);
   assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), journal);
   journal.progress = { commit: head, main: true, tag: false, tagPush: false };

@@ -6,6 +6,7 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
+  statSync,
 } from 'node:fs';
 import { basename, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,7 +17,9 @@ if (!packageRootArgument || !zipArgument || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1
 }
 
 const packageName = `WindowStash-v${version}`;
-const expectedTopLevel = ['Chrome Extension', 'README.txt', 'WindowStash Companion.app', '开始使用.html'];
+const windows = process.platform === 'win32';
+const installerName = `${packageName}-Windows-x64-setup.exe`;
+const expectedTopLevel = ['Chrome Extension', 'README.txt', windows ? installerName : 'WindowStash Companion.app', '开始使用.html'].sort();
 const errors = [];
 
 function walk(root) {
@@ -102,16 +105,37 @@ function validateStructure(root, label) {
     errors.push(`${label} 缺少有效的 Chrome Extension/manifest.json`);
   }
 
-  const app = join(root, 'WindowStash Companion.app', 'Contents');
-  try {
-    readFileSync(join(app, 'Info.plist'));
-    for (const executable of ['windowstash-companion', 'windowstash-native-host']) {
-      const stat = lstatSync(join(app, 'MacOS', executable));
-      if (!stat.isFile() || !(stat.mode & 0o111)) throw new Error();
+  if (windows) {
+    try {
+      const installer = join(root, installerName);
+      if (statSync(installer).size < 1024 || readFileSync(installer).subarray(0, 2).toString() !== 'MZ') throw new Error();
+      const extracted = mkdtempSync(join(tmpdir(), 'windowstash-nsis-audit-'));
+      try {
+        execFileSync('7z', ['x', installer, `-o${extracted}`, '-y'], { stdio: 'pipe' });
+        for (const name of ['windowstash-companion.exe', 'windowstash-native-host.exe']) {
+          const binary = walk(extracted).find((path) => basename(path) === name);
+          if (!binary) throw new Error(`安装程序缺少 ${name}`);
+          const bytes = readFileSync(binary);
+          const offset = bytes.readUInt32LE(0x3c);
+          if (bytes.toString('ascii', 0, 2) !== 'MZ' || bytes.readUInt32LE(offset) !== 0x4550 || bytes.readUInt16LE(offset + 4) !== 0x8664) throw new Error(`${name} 必须为 x64 PE`);
+        }
+        validatePaths(extracted, 'NSIS 安装内容');
+        validateContents(extracted, 'NSIS 安装内容');
+      } finally { rmSync(extracted, { recursive: true, force: true }); }
+    } catch (error) { errors.push(`${label} Windows NSIS 验证失败：${error.message}`); }
+  } else {
+    const app = join(root, 'WindowStash Companion.app', 'Contents');
+    try {
+      readFileSync(join(app, 'Info.plist'));
+      for (const executable of ['windowstash-companion', 'windowstash-native-host']) {
+        const stat = lstatSync(join(app, 'MacOS', executable));
+        if (!stat.isFile() || !(stat.mode & 0o111)) throw new Error();
+        if (execFileSync('lipo', ['-archs', join(app, 'MacOS', executable)], { encoding: 'utf8' }).trim() !== 'arm64') throw new Error('必须为 Apple Silicon arm64');
+      }
+      execFileSync('codesign', ['--verify', '--deep', '--strict', join(root, 'WindowStash Companion.app')], { stdio: 'pipe' });
+    } catch {
+      errors.push(`${label} 的 WindowStash Companion.app 不完整或签名无效`);
     }
-    execFileSync('codesign', ['--verify', '--deep', '--strict', join(root, 'WindowStash Companion.app')], { stdio: 'pipe' });
-  } catch {
-    errors.push(`${label} 的 WindowStash Companion.app 不完整或签名无效`);
   }
 
   try {
@@ -175,7 +199,8 @@ validateZipMembers(zipPath);
 
 const extractionRoot = mkdtempSync(join(tmpdir(), 'windowstash-release-audit-'));
 try {
-  execFileSync('ditto', ['-x', '-k', zipPath, extractionRoot]);
+  if (windows) execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Expand-Archive -LiteralPath $env:AUDIT_ZIP -DestinationPath $env:AUDIT_DIR'], { env: { ...process.env, AUDIT_ZIP: zipPath, AUDIT_DIR: extractionRoot } });
+  else execFileSync('ditto', ['-x', '-k', zipPath, extractionRoot]);
   const extractedPackage = realpathSync(join(extractionRoot, packageName));
   validateStructure(extractedPackage, 'ZIP 解压内容');
   validatePaths(extractedPackage, 'ZIP 解压内容');

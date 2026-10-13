@@ -2,7 +2,8 @@ let marked;
 try { ({ marked } = await import('marked')); }
 catch { throw new Error('缺少发布工具的 Marked 依赖。请在项目根目录运行 npm ci，本工具不会自动安装依赖。'); }
 import { readFile, writeFile, unlink, access, open, link, rename } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { resolve, dirname, delimiter } from 'node:path';
+import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 
@@ -73,10 +74,22 @@ export function validateInput(version, current, notes) {
   if (!notes.length || notes.some((note) => !note.trim())) throw new Error('更新说明不能为空，请补充。');
 }
 
+export function npmInvocation(args, platform = process.platform, env = process.env, executable = process.execPath) {
+  if (platform !== 'win32') return ['npm', args];
+  // Execute npm's JS entry point directly: no cmd.exe parsing of paths or arguments.
+  const candidates = [env.npm_execpath,
+    ...[dirname(executable), ...(env.PATH ?? env.Path ?? '').split(delimiter)]
+      .filter(Boolean).map((directory) => resolve(directory, 'node_modules/npm/bin/npm-cli.js'))];
+  const cli = candidates.find((path) => path && /npm-cli\.js$/i.test(path) && existsSync(path));
+  if (!cli) throw new Error('无法定位 npm-cli.js。请使用包含 npm 的 Node.js 安装，并确认 node 与 npm 可用；本工具不会修改 PATH。');
+  return [executable, [cli, ...args]];
+}
+
 export function command(root, onProgress = () => {}) {
   return (program, args, live = false, timeout) => new Promise((resolveResult, reject) => {
     onProgress(`${program} ${args.join(' ')}`);
-    const child = spawn(program, args, { cwd: root, shell: false, timeout,
+    const [executable, parameters] = program === 'npm' ? npmInvocation(args) : [program, args];
+    const child = spawn(executable, parameters, { cwd: root, shell: false, timeout,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' }, stdio: ['ignore', live ? 'inherit' : 'pipe', live ? 'inherit' : 'pipe'] });
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
@@ -244,7 +257,7 @@ export async function publish(run, files, version, checkpoint = async () => {}) 
     const committed = await localState(run);
     if (committed.status || committed.branch !== 'main' || committed.head !== progress.commit) throw new Error('提交后 Git 状态改变，请人工检查，未推送。');
     for (const file of files) {
-      if (file.after !== undefined && await run('git', ['show', `${progress.commit}:${file.path}`]) !== file.after.trim()) throw new Error(`${file.path} 的提交内容与发布计划不一致，未推送。`);
+      if (file.after !== undefined && (await run('git', ['show', `${progress.commit}:${file.path}`])).replace(/\r\n/g, '\n') !== file.after.replace(/\r\n/g, '\n').trim()) throw new Error(`${file.path} 的提交内容与发布计划不一致，未推送。`);
     }
     await run('git', ['push', '--no-follow-tags', 'origin', `${progress.commit}:refs/heads/main`]);
     progress.main = true;
