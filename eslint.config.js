@@ -2,7 +2,7 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['.output/**', '.wxt/**', 'node_modules/**'] },
+  { ignores: ['.output/**', '.wxt/**', 'node_modules/**', 'companion/**/target/**', 'companion/src-tauri/binaries/**', 'companion/src-tauri/gen/**', 'companion/dist/**'] },
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {

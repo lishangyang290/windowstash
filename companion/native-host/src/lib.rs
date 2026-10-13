@@ -140,7 +140,15 @@ impl<B: StateStorage> Store<B> {
             fs::set_permissions(&self.directory, fs::Permissions::from_mode(0o700))
                 .map_err(|_| "storage_unavailable")?;
         }
-        #[cfg(not(unix))]
+        #[cfg(windows)]
+        if fs::symlink_metadata(&self.directory)
+            .map_err(|_| "storage_unavailable")?
+            .file_type()
+            .is_symlink()
+        {
+            return Err("unsafe_storage");
+        }
+        #[cfg(not(any(unix, windows)))]
         return Err("platform_storage_not_configured");
 
         let lock_path = self.directory.join("state.lock");

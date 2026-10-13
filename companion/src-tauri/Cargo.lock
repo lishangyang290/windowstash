@@ -4546,6 +4546,7 @@ dependencies = [
  "tauri-plugin-positioner",
  "tempfile",
  "windowstash-native-host",
+ "winreg 0.55.0",
 ]
 
 [[package]]

@@ -9,17 +9,29 @@ use std::{
 
 pub const HOST_NAME: &str = "app.windowstash.companion";
 
+#[cfg(target_os = "windows")]
+fn windows_directory(local_app_data: Option<std::ffi::OsString>) -> Result<PathBuf> {
+    local_app_data
+        .map(PathBuf::from)
+        .map(|path| path.join("app.windowstash.companion/bridge"))
+        .ok_or("home_unavailable")
+}
+
 pub fn directory() -> Result<PathBuf> {
     // Isolated test roots contain the entire bridge, including its private auth store.
     if let Some(path) = std::env::var_os("WINDOWSTASH_BRIDGE_DIR") {
         return Ok(path.into());
     }
+    #[cfg(target_os = "windows")]
+    return windows_directory(std::env::var_os("LOCALAPPDATA"));
+
+    #[cfg(not(target_os = "windows"))]
     let home = std::env::var_os("HOME").ok_or("home_unavailable")?;
     #[cfg(target_os = "macos")]
     return Ok(
         PathBuf::from(home).join("Library/Application Support/app.windowstash.companion/bridge")
     );
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     Ok(PathBuf::from(home).join(".config/app.windowstash.companion/bridge"))
 }
 
@@ -163,5 +175,18 @@ mod tests {
     fn status_never_accepts_credentials_or_paths() {
         assert!(serde_json::from_value::<StatusRequest>(serde_json::json!({"version":1,"type":"status","instance_id":"a".repeat(64),"request_id":"b".repeat(64),"refresh_token":"secret"})).is_err());
         assert!(!valid_id("../../outside"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn uses_windows_local_app_data_for_persistent_bridge_state() {
+        assert_eq!(
+            windows_directory(Some(std::ffi::OsString::from(
+                r"C:\Users\test\AppData\Local"
+            )))
+            .unwrap(),
+            PathBuf::from(r"C:\Users\test\AppData\Local\app.windowstash.companion\bridge")
+        );
+        assert_eq!(windows_directory(None), Err("home_unavailable"));
     }
 }

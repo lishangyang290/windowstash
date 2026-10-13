@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+use std::ffi::OsString;
 use std::{env, fs, path::PathBuf, process::Command};
 use tauri::{
     image::Image,
@@ -22,9 +24,7 @@ fn chrome_profiles() -> Option<PathBuf> {
         .map(|path| path.join("Library/Application Support/Google/Chrome"));
 
     #[cfg(target_os = "windows")]
-    return env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .map(|path| path.join("Google/Chrome/User Data"));
+    return windows_chrome_profiles(env::var_os("LOCALAPPDATA"));
 
     #[cfg(target_os = "linux")]
     return env::var_os("HOME")
@@ -168,9 +168,7 @@ fn launch_options(target: &chrome::Target, query: &str) -> Result<(), String> {
         .args(["-na", "Google Chrome", "--args", &profile, &url])
         .status();
     #[cfg(target_os = "windows")]
-    let result = Command::new("cmd")
-        .args(["/C", "start", "", "chrome", &profile, &url])
-        .status();
+    let result = windows_chrome(&[&profile, &url]).status();
     #[cfg(target_os = "linux")]
     let result = Command::new("google-chrome")
         .args([&profile, &url])
@@ -180,6 +178,44 @@ fn launch_options(target: &chrome::Target, query: &str) -> Result<(), String> {
         .success()
         .then_some(())
         .ok_or_else(|| "无法打开 Chrome，请重试".into())
+}
+
+#[cfg(target_os = "windows")]
+fn windows_chrome_profiles(local_app_data: Option<OsString>) -> Option<PathBuf> {
+    local_app_data
+        .map(PathBuf::from)
+        .map(|path| path.join("Google/Chrome/User Data"))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_chrome_install_paths(mut get_var: impl FnMut(&str) -> Option<OsString>) -> Vec<PathBuf> {
+    ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"]
+        .into_iter()
+        .filter_map(|name| get_var(name))
+        .map(PathBuf::from)
+        .map(|path| path.join("Google/Chrome/Application/chrome.exe"))
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+fn windows_chrome_command(arguments: &[&str], executable: Option<PathBuf>) -> Command {
+    if let Some(executable) = executable {
+        let mut command = Command::new(executable);
+        command.args(arguments);
+        command
+    } else {
+        let mut command = Command::new("chrome");
+        command.args(arguments);
+        command
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_chrome(arguments: &[&str]) -> Command {
+    let executable = windows_chrome_install_paths(|name| env::var_os(name))
+        .into_iter()
+        .find(|path| path.is_file());
+    windows_chrome_command(arguments, executable)
 }
 
 #[tauri::command]
@@ -241,9 +277,7 @@ fn open_chrome_page(
         ])
         .spawn();
     #[cfg(target_os = "windows")]
-    let result = Command::new("cmd")
-        .args(["/C", "start", "", "chrome", &profile_argument, &url])
-        .spawn();
+    let result = windows_chrome(&[&profile_argument, &url]).spawn();
     #[cfg(target_os = "linux")]
     let result = Command::new("google-chrome")
         .args([&profile_argument, &url])
@@ -332,10 +366,17 @@ pub fn run() {
             let open = MenuItem::with_id(app, "open", "打开 WindowStash", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&open, &quit])?;
-            TrayIconBuilder::with_id("windowstash")
-                .icon(tray_icon())
-                .icon_as_template(true)
-                .menu(&menu)
+            #[cfg(target_os = "windows")]
+            let icon: Image<'static> =
+                Image::from_app_icon_resource(32).unwrap_or_else(|_| tray_icon());
+            #[cfg(not(target_os = "windows"))]
+            let icon = tray_icon();
+
+            let tray = TrayIconBuilder::with_id("windowstash").icon(icon);
+            #[cfg(target_os = "macos")]
+            let tray = tray.icon_as_template(true);
+
+            tray.menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => display_popover(app),
@@ -383,5 +424,86 @@ fn display_popover(app: &tauri::AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
         let _ = window.emit("popover-opened", ());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn resolves_windows_chrome_profile_path() {
+        assert_eq!(
+            windows_chrome_profiles(Some(OsString::from(r"C:\Users\test\AppData\Local"))),
+            Some(PathBuf::from(
+                r"C:\Users\test\AppData\Local\Google\Chrome\User Data"
+            ))
+        );
+        assert_eq!(windows_chrome_profiles(None), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn checks_standard_windows_chrome_install_paths_in_order() {
+        let paths = windows_chrome_install_paths(|name| match name {
+            "PROGRAMFILES" => Some(OsString::from(r"C:\Program Files")),
+            "PROGRAMFILES(X86)" => Some(OsString::from(r"C:\Program Files (x86)")),
+            "LOCALAPPDATA" => Some(OsString::from(r"C:\Users\test\AppData\Local")),
+            _ => None,
+        });
+
+        assert_eq!(
+            paths,
+            [
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                r"C:\Users\test\AppData\Local\Google\Chrome\Application\chrome.exe",
+            ]
+            .map(PathBuf::from)
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn launches_chrome_directly_when_found() {
+        let executable = PathBuf::from(r"C:\Program Files\Google\Chrome\Application\chrome.exe");
+        let command = windows_chrome_command(
+            &[
+                "--profile-directory=Profile 1",
+                "chrome-extension://example/options.html",
+            ],
+            Some(executable.clone()),
+        );
+
+        assert_eq!(command.get_program(), executable.as_os_str());
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "--profile-directory=Profile 1",
+                "chrome-extension://example/options.html"
+            ]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn falls_back_to_chrome_on_path_when_standard_install_is_not_found() {
+        let command = windows_chrome_command(
+            &[
+                "--profile-directory=Default",
+                "chrome-extension://example/options.html",
+            ],
+            None,
+        );
+
+        assert_eq!(command.get_program(), "chrome");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [
+                "--profile-directory=Default",
+                "chrome-extension://example/options.html"
+            ]
+        );
     }
 }

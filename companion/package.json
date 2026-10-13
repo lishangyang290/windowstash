@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "tauri": "tauri",
-    "tauri:build": "tauri build --bundles app"
+    "tauri:build": "npm run tauri:build:mac",
+    "tauri:build:mac": "tauri build --bundles app",
+    "tauri:build:windows": "node ../scripts/build-windows-companion.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.2",

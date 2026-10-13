@@ -55,6 +55,7 @@ impl StateStorage for InsecureTestStorage {
     }
 
     fn save(&self, state: &State) -> Result<()> {
+        #[cfg(not(target_os = "windows"))]
         use std::fs;
         let mut temporary =
             tempfile::NamedTempFile::new_in(&self.0).map_err(|_| "storage_unavailable")?;
@@ -66,6 +67,9 @@ impl StateStorage for InsecureTestStorage {
         temporary
             .persist(self.0.join("state.json"))
             .map_err(|_| "storage_unavailable")?;
+        #[cfg(target_os = "windows")]
+        return Ok(());
+        #[cfg(not(target_os = "windows"))]
         fs::File::open(&self.0)
             .and_then(|dir| dir.sync_all())
             .map_err(|_| "storage_unavailable")

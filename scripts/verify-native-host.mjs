@@ -10,7 +10,8 @@ import { resolve } from 'node:path';
 import { clearTimeout, setTimeout } from 'node:timers';
 import { fileURLToPath, URL } from 'node:url';
 
-const binary = fileURLToPath(new URL('../companion/native-host/target/insecure-fixture/debug/windowstash-native-host', import.meta.url));
+const suffix = process.platform === 'win32' ? '.exe' : '';
+const binary = fileURLToPath(new URL(`../companion/native-host/target/insecure-fixture/debug/windowstash-native-host${suffix}`, import.meta.url));
 const directory = await mkdtemp(resolve(tmpdir(), 'windowstash-host-test-'));
 const origin = 'chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/';
 const hex = (bytes) => Buffer.from(bytes).toString('hex');

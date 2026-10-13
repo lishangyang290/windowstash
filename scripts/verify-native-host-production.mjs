@@ -7,7 +7,9 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 
-const binary = fileURLToPath(new URL('../companion/native-host/target/release/windowstash-native-host', import.meta.url));
+const suffix = process.platform === 'win32' ? '.exe' : '';
+const target = process.env.TAURI_ENV_TARGET_TRIPLE;
+const binary = fileURLToPath(new URL(`../companion/native-host/target/${target ? `${target}/` : ''}release/windowstash-native-host${suffix}`, import.meta.url));
 const directory = await mkdtemp(resolve(tmpdir(), 'windowstash-untrusted-host-'));
 try {
   const ledger = resolve(directory, 'state.json');

@@ -6,6 +6,8 @@ use std::{
     path::{Path, PathBuf},
 };
 use windowstash_native_host::bridge::{self, DesktopStatus, Receipt};
+#[cfg(target_os = "windows")]
+use winreg::{enums::HKEY_CURRENT_USER, RegKey};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Selection {
@@ -22,7 +24,7 @@ pub struct Connection {
     pub host_error: Option<String>,
 }
 
-pub fn register(chrome_root: &Path, executable: &Path, targets: &[Target]) -> Result<(), String> {
+fn write_manifest(path: &Path, executable: &Path, targets: &[Target]) -> Result<(), String> {
     if !executable.is_file() {
         return Err("本机通信组件缺失，请重新安装 Companion".into());
     }
@@ -32,9 +34,7 @@ pub fn register(chrome_root: &Path, executable: &Path, targets: &[Target]) -> Re
         .collect();
     // No wildcard origins. An unpacked extension's ID is discovered after installation.
     bridge::write_json(
-        &chrome_root
-            .join("NativeMessagingHosts")
-            .join(format!("{}.json", bridge::HOST_NAME)),
+        path,
         &serde_json::json!({
             "name": bridge::HOST_NAME, "description": "WindowStash Companion status bridge",
             "path": executable, "type": "stdio", "allowed_origins": origins,
@@ -43,11 +43,50 @@ pub fn register(chrome_root: &Path, executable: &Path, targets: &[Target]) -> Re
     .map_err(|_| "无法注册本机组件，请检查 Chrome 目录权限".into())
 }
 
+#[cfg(not(target_os = "windows"))]
+pub fn register(chrome_root: &Path, executable: &Path, targets: &[Target]) -> Result<(), String> {
+    write_manifest(
+        &chrome_root
+            .join("NativeMessagingHosts")
+            .join(format!("{}.json", bridge::HOST_NAME)),
+        executable,
+        targets,
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn windows_registry_key() -> String {
+    format!(
+        r"Software\Google\Chrome\NativeMessagingHosts\{}",
+        bridge::HOST_NAME
+    )
+}
+
+#[cfg(target_os = "windows")]
+pub fn register(_chrome_root: &Path, executable: &Path, targets: &[Target]) -> Result<(), String> {
+    let manifest = bridge::directory()
+        .map_err(str::to_string)?
+        .join("native-messaging")
+        .join(format!("{}.json", bridge::HOST_NAME));
+    write_manifest(&manifest, executable, targets)?;
+    let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+        .create_subkey(windows_registry_key())
+        .map_err(|_| "无法注册本机组件，请检查当前用户注册表权限".to_string())?;
+    key.set_value("", &manifest.to_string_lossy().into_owned())
+        .map_err(|_| "无法注册本机组件，请检查当前用户注册表权限".to_string())
+}
+
 pub fn helper() -> Result<PathBuf, String> {
     std::env::current_exe()
         .map_err(|error| error.to_string())?
         .parent()
-        .map(|parent| parent.join("windowstash-native-host"))
+        .map(|parent| {
+            parent.join(if cfg!(target_os = "windows") {
+                "windowstash-native-host.exe"
+            } else {
+                "windowstash-native-host"
+            })
+        })
         .ok_or_else(|| "无法定位本机通信组件".into())
 }
 
@@ -147,6 +186,7 @@ mod tests {
         }
     }
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn fresh_install_update_and_app_move_reregister_without_resetting_saved_data() {
         let temp = tempfile::tempdir().unwrap();
         let chrome = temp.path().join("Chrome");
@@ -156,7 +196,10 @@ mod tests {
         bridge::write_json(&preferences, &serde_json::json!({})).unwrap();
         let manifest = chrome.join("NativeMessagingHosts/app.windowstash.companion.json");
         let helper = |location: &str| {
-            let path = temp.path().join(location).join("Contents/MacOS/windowstash-native-host");
+            let path = temp
+                .path()
+                .join(location)
+                .join("Contents/MacOS/windowstash-native-host");
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(&path, "fixture").unwrap();
             path
@@ -165,28 +208,53 @@ mod tests {
         let initial = inspect(&chrome, &root, &downloaded).unwrap();
         assert!(initial.selected.is_none());
         assert!(initial.host_error.is_none());
-        bridge::write_json(&extension.join("manifest.json"), &serde_json::json!({"name":"WindowStash"})).unwrap();
+        bridge::write_json(
+            &extension.join("manifest.json"),
+            &serde_json::json!({"name":"WindowStash"}),
+        )
+        .unwrap();
         bridge::write_json(&preferences, &serde_json::json!({"extensions":{"settings":{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa":{"path":extension,"state":1}}}})).unwrap();
-        let selected = inspect(&chrome, &root, &downloaded).unwrap().selected.unwrap();
+        let selected = inspect(&chrome, &root, &downloaded)
+            .unwrap()
+            .selected
+            .unwrap();
         let account = root.join("accounts/fixture.json");
-        bridge::write_json(&account, &serde_json::json!({"fixture":"preserved-session"})).unwrap();
+        bridge::write_json(
+            &account,
+            &serde_json::json!({"fixture":"preserved-session"}),
+        )
+        .unwrap();
         let preserved = fs::read(&account).unwrap();
-        for location in ["Applications/WindowStash Companion.app", "Updated/WindowStash Companion.app"] {
+        for location in [
+            "Applications/WindowStash Companion.app",
+            "Updated/WindowStash Companion.app",
+        ] {
             let executable = helper(location);
             let connection = inspect(&chrome, &root, &executable).unwrap();
             assert!(connection.host_error.is_none());
             assert_eq!(connection.selected.unwrap().route_id, selected.route_id);
-            let registered: serde_json::Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+            let registered: serde_json::Value =
+                serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
             assert_eq!(registered["path"], executable.to_string_lossy().as_ref());
-            assert_eq!(registered["allowed_origins"], serde_json::json!(["chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"]));
+            assert_eq!(
+                registered["allowed_origins"],
+                serde_json::json!(["chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"])
+            );
             assert_eq!(fs::read(&account).unwrap(), preserved);
             fs::remove_file(&executable).unwrap();
-            assert!(inspect(&chrome, &root, &executable).unwrap().host_error.is_some());
+            assert!(inspect(&chrome, &root, &executable)
+                .unwrap()
+                .host_error
+                .is_some());
             fs::write(&executable, "replacement").unwrap();
-            assert!(inspect(&chrome, &root, &executable).unwrap().host_error.is_none());
+            assert!(inspect(&chrome, &root, &executable)
+                .unwrap()
+                .host_error
+                .is_none());
         }
     }
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn registration_and_profile_selection_use_only_isolated_files() {
         let root = tempfile::tempdir().unwrap();
         let executable = root.path().join("host");
@@ -210,6 +278,7 @@ mod tests {
         assert!(choose(root.path(), &targets, target("Profile 2")).is_err());
     }
     #[test]
+    #[cfg(not(target_os = "windows"))]
     fn two_profiles_link_only_the_explicitly_selected_instance_and_keep_it_after_restart() {
         let temp = tempfile::tempdir().unwrap();
         let chrome = temp.path().join("Chrome");
@@ -286,6 +355,27 @@ mod tests {
                 .target
                 .profile,
             "Default"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_manifest_and_registry_are_current_user_scoped() {
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("windowstash-native-host.exe");
+        fs::write(&executable, "fixture").unwrap();
+        let manifest = temp.path().join("host.json");
+        write_manifest(&manifest, &executable, &[target("Default")]).unwrap();
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap();
+        assert_eq!(value["path"], executable.to_string_lossy().as_ref());
+        assert_eq!(
+            value["allowed_origins"],
+            serde_json::json!(["chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"])
+        );
+        assert_eq!(
+            windows_registry_key(),
+            r"Software\Google\Chrome\NativeMessagingHosts\app.windowstash.companion"
         );
     }
 }
