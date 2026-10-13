@@ -8,6 +8,7 @@ const storageArea = (values: Map<string, unknown>) => ({
   remove: vi.fn(async (keys: string | string[]) => { (Array.isArray(keys) ? keys : [keys]).forEach((key) => values.delete(key)); }),
 });
 vi.mock('wxt/browser', () => ({ browser: {
+  alarms: { create: vi.fn(async () => {}), get: vi.fn(async () => undefined) },
   storage: { local: storageArea(fixture.local), session: storageArea(fixture.session), onChanged: events },
   runtime: { sendNativeMessage: vi.fn(async () => structuredClone(fixture.nativeReply)), sendMessage: vi.fn(async () => undefined), getURL: (path: string) => `chrome-extension://fixture${path}` },
   windows: { getCurrent: vi.fn(async () => structuredClone(fixture.current)), getAll: vi.fn(async () => []) },

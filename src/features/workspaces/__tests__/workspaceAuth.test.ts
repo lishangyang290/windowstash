@@ -6,6 +6,7 @@ function storage(values: Map<string, unknown>) { return {
   remove: async (keys: string | string[]) => { for (const key of Array.isArray(keys) ? keys : [keys]) values.delete(key); },
 }; }
 vi.mock('wxt/browser', () => ({ browser: {
+  alarms: { create: vi.fn(async () => {}), get: vi.fn(async () => undefined) },
   storage: { local: storage(state.local), session: storage(state.session) },
   windows: { get: state.getWindow, getAll: async () => [], remove: vi.fn() },
   runtime: { sendMessage: state.sendMessage, getURL: (path: string) => `chrome-extension://fixture${path}` },

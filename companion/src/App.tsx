@@ -178,7 +178,7 @@ function Settings({ config, onBack, onConfigChange, onSignOut, browserLogin }: {
   );
 }
 
-function Launcher({ config, session, onConfigChange, onSignOut, browserLogin = false }: { config: SupabaseConfig; session: Pick<Session, 'user'>; onConfigChange: (config: SupabaseConfig) => void; onSignOut: () => void; browserLogin?: boolean }) {
+export function Launcher({ config, session, onConfigChange, onSignOut, browserLogin = false }: { config: SupabaseConfig; session: Pick<Session, 'user'>; onConfigChange: (config: SupabaseConfig) => void; onSignOut: () => void; browserLogin?: boolean }) {
   const [chromeOpen, setChromeOpen] = React.useState(false);
   const [view, setView] = React.useState<View>('launcher');
   const [items, setItems] = React.useState<WorkspaceSummary[]>(() => workspaceService.cached());
@@ -188,18 +188,25 @@ function Launcher({ config, session, onConfigChange, onSignOut, browserLogin = f
   const [failedId, setFailedId] = React.useState('');
   const [error, setError] = React.useState('');
   const searchRef = React.useRef<HTMLInputElement>(null);
+  const refreshRevision = React.useRef(0);
 
   const refresh = React.useCallback(async () => {
+    const revision = ++refreshRevision.current;
+    const scope = cache.currentScope();
     try {
-      setItems(await workspaceService.refresh());
+      const next = await workspaceService.refresh();
+      if (revision !== refreshRevision.current || scope !== cache.currentScope()) return;
+      setItems(next);
       setError('');
     } catch (caught) {
+      if (revision !== refreshRevision.current || scope !== cache.currentScope()) return;
       if (!cache.workspaces().length) setError(caught instanceof Error ? caught.message : '暂时无法刷新工作区');
     }
   }, []);
 
   React.useEffect(() => {
     void refresh();
+    let followup: number | undefined;
     const timer = window.setInterval(() => void refresh(), REFRESH_INTERVAL);
     const unlisten = listen('popover-opened', () => {
       setQuery('');
@@ -207,9 +214,11 @@ function Launcher({ config, session, onConfigChange, onSignOut, browserLogin = f
       setOpening('');
       searchRef.current?.focus();
       void refresh();
+      window.clearTimeout(followup);
+      followup = window.setTimeout(() => void refresh(), 2_000);
     });
     searchRef.current?.focus();
-    return () => { window.clearInterval(timer); void unlisten.then((stop) => stop()); };
+    return () => { refreshRevision.current++; window.clearTimeout(followup); window.clearInterval(timer); void unlisten.then((stop) => stop()); };
   }, [refresh, session.user.id]);
 
   const filtered = React.useMemo(() => {

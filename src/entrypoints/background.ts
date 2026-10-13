@@ -3,6 +3,7 @@ import { authService } from '@/lib/supabase/authService';
 import { browser } from 'wxt/browser';
 import { CLEANUP_ALARM, LAZY_RECONCILIATION_ALARM, SYNC_ALARM, WINDOW_ASSOCIATION_ALARM } from '@/lib/constants';
 import { syncEngine } from '@/lib/sync/syncEngine';
+import { PENDING_SYNC_ALARM, syncPendingWorkspaces } from '@/lib/sync/pendingSync';
 import { bindingRepository } from '@/lib/storage/bindingRepository';
 import type { BackgroundMessage } from '@/types/messages';
 import { openOrFocusWorkspace, recoverWorkspace, reopenWorkspace, restoreSavedWorkspace } from '@/features/workspaces/workspaceService';
@@ -51,6 +52,7 @@ export default defineBackground(() => {
     void scheduleAssociationMaintenance(5_000);
   });
   browser.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === PENDING_SYNC_ALARM) void syncPendingWorkspaces().catch(() => undefined);
     if (alarm.name === SYNC_ALARM) void syncEngine.syncAll();
     if (alarm.name === CLEANUP_ALARM) {
       void syncEngine.cleanupExpiredLocalCopies();
@@ -114,6 +116,7 @@ export default defineBackground(() => {
   });
 
   void ensureAlarms();
+  void syncPendingWorkspaces().catch(() => undefined);
   void maintainWindowAssociations();
   void scheduleAssociationMaintenance();
 });

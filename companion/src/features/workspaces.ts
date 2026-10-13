@@ -9,10 +9,12 @@ interface WorkspaceRow {
   tabs: unknown[] | null;
   updated_at: string;
 }
+let refreshRevision = 0;
 
 export const workspaceService = {
   cached: () => sortByRecent(cache.workspaces()),
   async refresh(): Promise<WorkspaceSummary[]> {
+    const revision = ++refreshRevision;
     const scope = cache.currentScope();
     const config = getSupabaseConfig();
     const supabase = getSupabaseClient();
@@ -36,6 +38,7 @@ export const workspaceService = {
       updatedAt: row.updated_at,
     }));
     if (scope !== cache.currentScope()) throw new Error('账号已变化，请重新加载工作区');
+    if (revision !== refreshRevision) throw new Error('工作区列表已更新');
     cache.saveWorkspaces(items);
     return sortByRecent(items);
   },

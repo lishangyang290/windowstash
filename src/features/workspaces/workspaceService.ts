@@ -8,6 +8,7 @@ import { workspaceRepository } from '@/lib/storage/workspaceRepository';
 import type { BackgroundMessage } from '@/types/messages';
 import type { StoredTab, WorkspaceContent, WorkspaceLocalRecord, WorkspaceStatus } from '@/types/workspace';
 import { syncEngine } from '@/lib/sync/syncEngine';
+import { schedulePendingSync } from '@/lib/sync/pendingSync';
 import { matchWorkspace, MIN_CANDIDATE_GAP, scoreWorkspaceMatch, type MatchableTab } from './workspaceMatcher';
 import {
   canLazyRestore,
@@ -160,9 +161,11 @@ export async function saveCurrentWindow(input: {
     await workspaceRepository.saveContent(content, storageKey);
     await bindWindow(input.windowId, content.id, tabs, storageKey);
     await recordLog(content.id, content.name, 'local-save', 'success', 'Local save success', storageKey);
-    requestSync({ type: 'SYNC_WORKSPACE', workspaceId: content.id, accountStorageKey: storageKey });
-    if (input.closeAfterSave) await browser.windows.remove(input.windowId);
+    try { await schedulePendingSync(); }
+    catch { await recordLog(content.id, content.name, 'sync-queue', 'failed', 'Background retry could not be scheduled; local save retained', storageKey); }
   });
+  requestSync({ type: 'SYNC_WORKSPACE', workspaceId: content.id, accountStorageKey: storageKey });
+  if (input.closeAfterSave) await withDataAccount(account, () => browser.windows.remove(input.windowId));
   return content;
 }
 
