@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const values = vi.hoisted(() => new Map<string, unknown>());
 const sessionMock = vi.hoisted(() => ({
-  get: vi.fn(async (key: string) => ({ [key]: values.get(key) })),
+  get: vi.fn(async (key: string | null) => key === null ? Object.fromEntries(values) : ({ [key]: values.get(key) })),
   set: vi.fn(async (items: Record<string, unknown>) => {
     for (const [key, value] of Object.entries(items)) values.set(key, value);
   }),
@@ -69,5 +69,16 @@ describe('bindingRepository', () => {
 
     await expect(bindingRepository.get(11)).resolves.toBeNull();
     await expect(bindingRepository.isSuppressed(11)).resolves.toBe(false);
+  });
+
+  it('suppresses only windows belonging to the deleted workspace and account', async () => {
+    await bindingRepository.set(11, 'deleted', 'workspaces:A');
+    await bindingRepository.set(22, 'other', 'workspaces:A');
+    await bindingRepository.set(33, 'deleted', 'workspaces:B');
+    await bindingRepository.suppressWorkspace('deleted', 'workspaces:A');
+    expect(await bindingRepository.get(11, 'workspaces:A')).toBeNull();
+    expect(await bindingRepository.isSuppressed(11, 'workspaces:A')).toBe(true);
+    expect(await bindingRepository.get(22, 'workspaces:A')).toBe('other');
+    expect(await bindingRepository.get(33, 'workspaces:B')).toBe('deleted');
   });
 });

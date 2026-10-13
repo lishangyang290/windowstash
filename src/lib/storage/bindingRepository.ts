@@ -35,4 +35,13 @@ export const bindingRepository = {
     const storageKey = await key(windowId, requestedKey);
     await browser.storage.session.remove([storageKey, storageKey.replace(/^windowBinding:/, 'windowBindingSuppressed:')]);
   },
+  async suppressWorkspace(workspaceId: string, requestedKey: string): Promise<void> {
+    const bindings = await browser.storage.session.get(null);
+    const suffix = requestedKey.slice('workspaces'.length);
+    for (const [storageKey, value] of Object.entries(bindings)) {
+      if (value !== workspaceId || !storageKey.startsWith('windowBinding:')) continue;
+      const windowId = Number(storageKey.slice('windowBinding:'.length).split(':')[0]);
+      if (Number.isInteger(windowId) && storageKey === `windowBinding:${windowId}${suffix}`) await this.suppress(windowId, requestedKey);
+    }
+  },
 };

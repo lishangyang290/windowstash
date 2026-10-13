@@ -72,8 +72,16 @@ async function resolveScopedWorkspaceState(windowId: number, tabs: MatchableTab[
   if (boundId) {
     let bound = await workspaceRepository.get(boundId, scope);
     if (!bound) {
-      await syncEngine.syncAll().catch(() => undefined);
+      if (await tombstoneRepository.has(boundId, scope.replace(/^workspaces/, STORAGE_KEYS.tombstones))) {
+        await bindingRepository.suppress(windowId, scope);
+        return { status: 'unbound', workspaceId: null, record: null, source: null };
+      }
+      await syncEngine.syncAll(scope).catch(() => undefined);
       bound = await workspaceRepository.get(boundId, scope);
+      if (await tombstoneRepository.has(boundId, scope.replace(/^workspaces/, STORAGE_KEYS.tombstones))) {
+        await bindingRepository.suppress(windowId, scope);
+        return { status: 'unbound', workspaceId: null, record: null, source: null };
+      }
     }
     return bound
       ? { status: 'resolved', workspaceId: boundId, record: bound, source: 'binding' }
@@ -125,6 +133,10 @@ export async function saveCurrentWindow(input: {
   if (!tabs.length) throw new Error('当前窗口没有可保存的标签页');
 
   const boundId = await bindingRepository.get(input.windowId, storageKey);
+  if (boundId && await tombstoneRepository.has(boundId, storageKey.replace(/^workspaces/, STORAGE_KEYS.tombstones))) {
+    await bindingRepository.suppress(input.windowId, storageKey);
+    throw new Error('工作区已删除，请重新打开弹窗后保存为新工作区');
+  }
   let previous = boundId ? await workspaceRepository.get(boundId, storageKey) : null;
   if (boundId && !previous) {
     await syncEngine.syncAll(storageKey).catch(() => undefined);
@@ -477,6 +489,7 @@ export async function deleteWorkspace(workspaceId: string, expectedKey?: string)
   await withDataAccount(account, async () => {
     await tombstoneRepository.add({ workspaceId, workspaceName: record.content.name,
       accountStorageKey: account.storageKey.replace(/^workspaces/, 'deleteTombstones'), deletedAt: new Date().toISOString() });
+    await bindingRepository.suppressWorkspace(workspaceId, account.storageKey);
     await workspaceRepository.remove(workspaceId, account.storageKey);
     await windowAssociationRepository.removeForWorkspace(workspaceId, account.storageKey).catch(() => undefined);
     requestSync({ type: 'SYNC_ALL', accountStorageKey: account.storageKey });

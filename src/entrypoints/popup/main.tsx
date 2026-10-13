@@ -408,7 +408,7 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
         {resolution == null ? (
           <div className="unchanged-state">正在识别当前工作区…</div>
         ) : isUnavailable ? (
-          <div className="unchanged-state">暂时无法读取此工作区，请稍后重试</div>
+          <div className="unchanged-state">暂时无法读取此工作区，请稍后重试<button className="button" disabled={refreshing} onClick={() => void refresh(windowId ?? undefined)}>重试</button></div>
         ) : isUnresolved ? (
           <div className="unchanged-state">无法可靠识别当前工作区，请从已保存工作区列表中选择恢复。</div>
         ) : isBound ? (
@@ -489,13 +489,16 @@ export function PopupRoot() {
   const [attempt, setAttempt] = React.useState(0);
   const windowRead = React.useRef<Promise<Browser.windows.Window> | null>(null);
   const windowRevision = React.useRef(0);
+  const scopedKey = React.useRef('');
+  const currentWindowId = React.useRef<number | undefined>(undefined);
   React.useEffect(() => {
     // Browser metadata is independent of identity; no workspace data is read here.
     windowRead.current = readPopupWindow();
     void windowRead.current.catch(() => {});
     const invalidate = () => { windowRevision.current++; windowRead.current = null; };
     const storageChanged = (changes: Record<string, unknown>) => {
-      if (Object.keys(changes).some((key) => /^(workspaces:|windowBinding|lazyRestoreEntries:|persistentWindowAssociation:)/.test(key))) invalidate();
+      const scope = scopedKey.current;
+      if (scope && Object.keys(changes).some((key) => [scope, scope.replace(/^workspaces/, 'deleteTombstones'), scope.replace(/^workspaces/, 'lazyRestoreEntries'), scope.replace(/^workspaces/, `windowBinding:${currentWindowId.current}`), scope.replace(/^workspaces/, `windowBindingSuppressed:${currentWindowId.current}`)].includes(key))) invalidate();
     };
     browser.tabs.onCreated.addListener(invalidate);
     browser.tabs.onRemoved.addListener(invalidate);
@@ -517,23 +520,26 @@ export function PopupRoot() {
   const config = access?.config;
   const userId = access?.session?.user.id;
   const key = config && userId ? `workspaces:${accountOwner(config.url, userId)}` : '';
+  scopedKey.current = key;
   React.useEffect(() => {
     let active = true;
     setSnapshot(undefined);
     setSetupError('');
     if (key) {
       void (async () => {
-        while (active) {
+        for (let retry = 0; active && retry < 3; retry++) {
           const revision = windowRevision.current;
           const read = windowRead.current ?? readPopupWindow();
           windowRead.current = null;
           const current = await read;
+          currentWindowId.current = current.id;
           const value = await loadPopupWindow(key, current);
           if (!active) return;
           if (revision !== windowRevision.current) continue;
           setSnapshot({ key, value });
           return;
         }
+        if (active) throw new Error('当前窗口持续变化，请稍后重试');
       })().catch((error) => { if (active) setSetupError(error instanceof Error ? error.message : '暂时无法读取当前窗口'); });
     }
     return () => { active = false; };

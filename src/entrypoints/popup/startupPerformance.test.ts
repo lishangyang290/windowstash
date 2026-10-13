@@ -22,6 +22,7 @@ beforeEach(() => {
   vi.resetModules();
   vi.clearAllMocks();
   fixture.local.clear(); fixture.session.clear();
+  fixture.current.tabs = [];
   fixture.local.set('supabaseConfig', config);
   fixture.local.set('windowstash-data-owner:v1', JSON.stringify([config.url, userId]));
   fixture.local.set('windowstash-data-revision:v1', 'fixture-revision');
@@ -83,4 +84,24 @@ it('rejects prepared private data when Native identity changes during the scoped
     return entries;
   });
   await expect(loadPopupWindow(scope, await readPopupWindow())).rejects.toThrow('账号已变化');
+});
+
+it('resolves a deleted workspace with a stale session binding without network or private diagnostics', async () => {
+  const { deleteWorkspace } = await import('@/features/workspaces/workspaceService');
+  const { bindingRepository } = await import('@/lib/storage/bindingRepository');
+  const { loadPopupWindow, readPopupWindow } = await import('./startup');
+  const { startPopupPerformance, popupPerformanceSnapshot } = await import('@/lib/popupPerformance');
+  await deleteWorkspace('fixture-workspace', scope);
+  expect(await bindingRepository.get(7, scope)).toBeNull();
+  // Simulate a pre-fix binding left in Chrome's session store.
+  await bindingRepository.set(7, 'fixture-workspace', scope);
+  startPopupPerformance();
+  const snapshot = await loadPopupWindow(scope, await readPopupWindow());
+  expect(snapshot.resolution.status).toBe('unbound');
+  expect(snapshot.logicalTabsReady).toBe(true);
+  expect(await bindingRepository.isSuppressed(7, scope)).toBe(true);
+  expect(fetch).not.toHaveBeenCalled();
+  const metrics = popupPerformanceSnapshot();
+  expect(metrics.samples.some((sample) => sample.stage === 'workspace-resolution' && sample.ok)).toBe(true);
+  expect(JSON.stringify(metrics)).not.toMatch(/fixture-workspace|Private fixture|fixture-token|example.invalid/);
 });

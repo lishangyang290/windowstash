@@ -11,6 +11,16 @@ import { workspaceRepository } from '@/lib/storage/workspaceRepository';
 import { workspaceRemoteRepository } from '@/lib/supabase/workspaceRemoteRepository';
 import { bindingRepository } from '@/lib/storage/bindingRepository';
 
+const syncTasks = new Map<string, Promise<unknown>>();
+function serializeSync<T>(scope: string, id: string, task: () => Promise<T>): Promise<T> {
+  const key = `windowstash-sync:${scope}:${id}`;
+  if (globalThis.navigator?.locks) return navigator.locks.request(key, task).then((result) => result);
+  const result = (syncTasks.get(key) ?? Promise.resolve()).then(task, task);
+  syncTasks.set(key, result);
+  void result.finally(() => { if (syncTasks.get(key) === result) syncTasks.delete(key); }).catch(() => undefined);
+  return result;
+}
+
 async function log(
   workspaceId: string | null,
   workspaceName: string,
@@ -58,31 +68,36 @@ export const syncEngine = {
   async syncWorkspace(workspaceId: string, requestedKey?: string): Promise<void> {
     if (!(await workspaceRemoteRepository.isAuthenticated())) return;
     const storageKey = requestedKey ?? await accountStorageKey(STORAGE_KEYS.workspaces);
-    const local = await workspaceRepository.get(workspaceId, storageKey);
-    if (!local) return;
-    try {
-      const cloud = await workspaceRemoteRepository.get(workspaceId, storageKey);
-      if (!cloud) return await upload(local);
-      if (local.accountStorageKey !== cloud.accountStorageKey) return;
-      const localHash = await contentHash(local.content);
-      const decision = decideSync(local, localHash, cloud.content_hash, cloud.updated_at);
-      if (decision === 'conflict') {
-        await workspaceRepository.put({
-          ...local,
-          sync: { ...local.sync, syncStatus: 'conflict', lastSyncError: '本机与云端均有更新' },
-        });
-        await log(workspaceId, local.content.name, 'cloud-sync', 'failed', 'Conflict detected', storageKey);
-      } else if (decision === 'upload') {
-        await upload(local);
-      } else if (decision === 'download') {
-        await workspaceRepository.put(cloudRowToLocal(cloud));
-        await log(workspaceId, cloud.name, 'cloud-sync', 'success', 'Cloud changes downloaded', storageKey);
-      } else if (local.sync.syncStatus !== 'synced') {
-        await workspaceRepository.put(cloudRowToLocal(cloud));
+    return serializeSync(storageKey, workspaceId, async () => {
+      if (await tombstoneRepository.has(workspaceId, storageKey.replace(/^workspaces/, STORAGE_KEYS.tombstones))) return;
+      const local = await workspaceRepository.get(workspaceId, storageKey);
+      if (!local) return;
+      try {
+        const cloud = await workspaceRemoteRepository.get(workspaceId, storageKey);
+        if (!cloud) return await upload(local);
+        if (local.accountStorageKey !== cloud.accountStorageKey) return;
+        const localHash = await contentHash(local.content);
+        const latest = await workspaceRepository.get(workspaceId, storageKey);
+        if (!latest || await contentHash(latest.content) !== localHash || await tombstoneRepository.has(workspaceId, storageKey.replace(/^workspaces/, STORAGE_KEYS.tombstones))) return;
+        const decision = decideSync(local, localHash, cloud.content_hash, cloud.updated_at);
+        if (decision === 'conflict') {
+          await workspaceRepository.put({
+            ...local,
+            sync: { ...local.sync, syncStatus: 'conflict', lastSyncError: '本机与云端均有更新' },
+          });
+          await log(workspaceId, local.content.name, 'cloud-sync', 'failed', 'Conflict detected', storageKey);
+        } else if (decision === 'upload') {
+          await upload(local);
+        } else if (decision === 'download') {
+          await workspaceRepository.put(cloudRowToLocal(cloud));
+          await log(workspaceId, cloud.name, 'cloud-sync', 'success', 'Cloud changes downloaded', storageKey);
+        } else if (local.sync.syncStatus !== 'synced') {
+          await workspaceRepository.put(cloudRowToLocal(cloud));
+        }
+      } catch (error) {
+        await markFailed(workspaceId, error, storageKey);
       }
-    } catch (error) {
-      await markFailed(workspaceId, error, storageKey);
-    }
+    });
   },
 
   async syncAll(requestedKey?: string): Promise<void> {
@@ -90,10 +105,14 @@ export const syncEngine = {
     const storageKey = requestedKey ?? await accountStorageKey(STORAGE_KEYS.workspaces);
     const tombstoneKey = storageKey.replace(/^workspaces/, STORAGE_KEYS.tombstones);
     for (const tombstone of await tombstoneRepository.list(tombstoneKey)) {
+      if (tombstone.cloudDeletedAt) continue;
       try {
-        await workspaceRemoteRepository.remove(tombstone.workspaceId, ...(tombstone.accountStorageKey ? [tombstone.accountStorageKey] : []));
-        await tombstoneRepository.remove(tombstone.workspaceId, ...(tombstone.accountStorageKey ? [tombstone.accountStorageKey] : []));
-        await log(tombstone.workspaceId, tombstone.workspaceName, 'cloud-delete', 'success', 'Cloud delete success', storageKey);
+        await serializeSync(storageKey, tombstone.workspaceId, async () => {
+          await workspaceRemoteRepository.remove(tombstone.workspaceId, ...(tombstone.accountStorageKey ? [tombstone.accountStorageKey] : []));
+          // Retain deletion evidence for stale window identities and delayed downloads.
+          await tombstoneRepository.add({ ...tombstone, cloudDeletedAt: new Date().toISOString() });
+          await log(tombstone.workspaceId, tombstone.workspaceName, 'cloud-delete', 'success', 'Cloud delete success', storageKey);
+        });
       } catch (error) {
         await log(
           tombstone.workspaceId,
@@ -123,16 +142,19 @@ export const syncEngine = {
 
   async resolveConflict(workspaceId: string, choice: 'local' | 'cloud'): Promise<void> {
     const storageKey = await accountStorageKey(STORAGE_KEYS.workspaces);
-    const local = await workspaceRepository.get(workspaceId, storageKey);
-    if (!local) return;
-    if (choice === 'local') {
-      await workspaceRepository.put({ ...local, sync: { ...local.sync, syncStatus: 'pending' } });
-      await upload(local);
-      return;
-    }
-    const cloud = await workspaceRemoteRepository.get(workspaceId, storageKey);
-    if (!cloud) throw new Error('云端工作区不存在');
-    await workspaceRepository.put(cloudRowToLocal(cloud));
+    await serializeSync(storageKey, workspaceId, async () => {
+      if (await tombstoneRepository.has(workspaceId, storageKey.replace(/^workspaces/, STORAGE_KEYS.tombstones))) return;
+      const local = await workspaceRepository.get(workspaceId, storageKey);
+      if (!local) return;
+      if (choice === 'local') {
+        await workspaceRepository.put({ ...local, sync: { ...local.sync, syncStatus: 'pending' } });
+        await upload(local);
+        return;
+      }
+      const cloud = await workspaceRemoteRepository.get(workspaceId, storageKey);
+      if (!cloud) throw new Error('云端工作区不存在');
+      await workspaceRepository.put(cloudRowToLocal(cloud));
+    });
   },
 
   async cleanupExpiredLocalCopies(now = new Date()): Promise<number> {

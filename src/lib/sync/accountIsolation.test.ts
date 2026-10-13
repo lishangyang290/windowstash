@@ -37,6 +37,49 @@ beforeEach(() => {
   state.remote.get.mockResolvedValue(null); state.remote.list.mockResolvedValue([]);
 });
 describe('local-first account/project round trips', () => {
+  it('keeps concurrent deletion markers and other workspace saves', async () => {
+    await login(project, 'A');
+    await Promise.all(['one', 'two'].map((workspaceId) => tombstoneRepository.add({ workspaceId, workspaceName: workspaceId, deletedAt: '2026-01-01' })));
+    expect((await tombstoneRepository.list()).map((item) => item.workspaceId).sort()).toEqual(['one', 'two']);
+    await Promise.all(['one', 'two'].map((id) => workspaceRepository.saveContent({ ...content, id: `saved-${id}` })));
+    expect(await workspaceRepository.list()).toHaveLength(2);
+  });
+  it('retains deletion evidence after cloud success and rejects a stale cloud download', async () => {
+    await login(project, 'A');
+    const key = await accountStorageKey('workspaces');
+    await tombstoneRepository.add({ workspaceId: content.id, workspaceName: content.name, deletedAt: '2026-01-01' });
+    state.remote.remove.mockResolvedValue(undefined);
+    state.remote.list.mockResolvedValue([{ id: content.id, user_id: 'A', name: content.name, tabs: [], status: 'active', active_tab_index: 0, content_hash: 'old', created_at: content.createdAt, updated_at: content.updatedAt, accountStorageKey: key }]);
+    await syncEngine.syncAll();
+    expect(await workspaceRepository.get(content.id)).toBeNull();
+    expect(await tombstoneRepository.has(content.id)).toBe(true);
+    expect((await tombstoneRepository.list())[0]?.cloudDeletedAt).toBeTruthy();
+    await workspaceRepository.put({ accountStorageKey: key, content, sync: { syncStatus: 'synced', lastSyncedAt: null, lastSyncedHash: null, lastSyncedCloudUpdatedAt: null, localExpiresAt: '2027-01-01', lastSyncError: null } });
+    expect(await workspaceRepository.get(content.id)).toBeNull();
+    await expect(workspaceRepository.saveContent(content)).rejects.toThrow('工作区已删除');
+    await syncEngine.syncAll();
+    expect(state.remote.remove).toHaveBeenCalledOnce();
+  });
+
+  it('waits for an in-flight upload before deleting remotely and never restores it locally', async () => {
+    await login(project, 'A');
+    await workspaceRepository.saveContent(content);
+    const key = await accountStorageKey('workspaces');
+    let finish!: (row: CloudWorkspaceRow) => void;
+    state.remote.upsert.mockImplementationOnce(() => new Promise<CloudWorkspaceRow>((resolve) => { finish = resolve; }));
+    const upload = syncEngine.syncWorkspace(content.id);
+    await vi.waitFor(() => expect(state.remote.upsert).toHaveBeenCalledOnce());
+    await tombstoneRepository.add({ workspaceId: content.id, workspaceName: content.name, deletedAt: '2026-01-01' });
+    await workspaceRepository.remove(content.id);
+    const deletion = syncEngine.syncAll();
+    await Promise.resolve();
+    expect(state.remote.remove).not.toHaveBeenCalled();
+    finish({ id: content.id, user_id: 'A', name: content.name, tabs: [], status: 'active', active_tab_index: 0, content_hash: 'old', created_at: content.createdAt, updated_at: content.updatedAt, accountStorageKey: key });
+    await Promise.all([upload, deletion]);
+    expect(state.remote.remove).toHaveBeenCalledOnce();
+    expect(await workspaceRepository.get(content.id)).toBeNull();
+    expect(await tombstoneRepository.has(content.id)).toBe(true);
+  });
   it.each([[project, 'B'], ['https://project2.supabase.co', 'A']])('keeps offline data and all ancillary stores isolated through A → %s/%s → A', async (url, user) => {
     await login(project, 'A'); await seed();
     const keyA = await accountStorageKey('workspaces');

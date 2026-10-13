@@ -55,7 +55,8 @@ describe('real sync engine and real Supabase SDK against simulated projects/user
     await syncEngine.syncAll();
     expect(server.requests.every((request) => request.owner === ownerOf(identities[0].url, identities[0].userId))).toBe(true);
     expect(server.account(identities[0].url, identities[0].userId).get(content.id)?.name).toBe('A1');
-    expect(await tombstoneRepository.has('deleted-id')).toBe(false);
+    expect(await tombstoneRepository.has('deleted-id')).toBe(true);
+    expect((await tombstoneRepository.list()).find((item) => item.workspaceId === 'deleted-id')?.cloudDeletedAt).toBeTruthy();
     for (const [index, name] of [[1, 'A2'], [2, 'B1']] as const) {
       await login(index);
       expect((await workspaceRepository.get(content.id))?.content.name).toBe(name);

@@ -756,6 +756,35 @@ it('retries failed initial window reads without displaying actions before resolu
   expect(button('保存当前状态').disabled).toBe(false);
 });
 
+it('terminates initialization safely when relevant storage changes during every resolution', async () => {
+  loggedIn();
+  vi.mocked(resolveWorkspaceStateForWindow).mockImplementation(async () => {
+    for (const [callback] of vi.mocked(browser.storage.onChanged.addListener).mock.calls) {
+      callback({ ['workspaces:' + JSON.stringify([config.url, 'A'])]: { newValue: {} } }, 'local');
+    }
+    return { status: 'unbound', workspaceId: null, record: null, source: null };
+  });
+  await renderPopup();
+  expect(resolveWorkspaceStateForWindow).toHaveBeenCalledTimes(3);
+  expect(container.textContent).toContain('当前窗口持续变化，请稍后重试');
+  expect(button('保存当前状态').disabled).toBe(true);
+  vi.mocked(resolveWorkspaceStateForWindow).mockResolvedValue({ status: 'unbound', workspaceId: null, record: null, source: null });
+  await click('重试');
+  expect(button('保存当前状态').disabled).toBe(false);
+});
+
+it('does not restart popup preparation for another account or persistent association writes', async () => {
+  loggedIn();
+  vi.mocked(resolveWorkspaceStateForWindow).mockImplementation(async () => {
+    for (const [callback] of vi.mocked(browser.storage.onChanged.addListener).mock.calls) callback({ 'workspaces:other': { newValue: {} }, 'persistentWindowAssociation:other': { newValue: {} } }, 'local');
+    return { status: 'unbound', workspaceId: null, record: null, source: null };
+  });
+  await renderPopup();
+  expect(resolveWorkspaceStateForWindow).toHaveBeenCalledOnce();
+  expect(button('保存当前状态').disabled).toBe(false);
+  vi.mocked(resolveWorkspaceStateForWindow).mockResolvedValue({ status: 'unbound', workspaceId: null, record: null, source: null });
+});
+
 it('ignores identical auth storage writes and unrelated companion diagnostic writes', async () => {
   loggedIn();
   await renderOptions();
