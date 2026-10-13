@@ -27,7 +27,8 @@ if (windows) {
 }
 const zipPath = join(output, `${name}-${windows ? 'Windows-x64' : 'macOS-arm64'}.zip`);
 if (windows) {
-  execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Compress-Archive -LiteralPath $env:PACKAGE_DIR -DestinationPath $env:ZIP_PATH'], { env: { ...process.env, PACKAGE_DIR: packageDir, ZIP_PATH: zipPath }, stdio: 'inherit' });
+  // 7-Zip writes standard slash-separated ZIP members; Windows PowerShell does not.
+  execFileSync('7z', ['a', '-tzip', zipPath, name], { cwd: staging, stdio: 'inherit' });
 } else {
   execFileSync('ditto', ['-c', '-k', '--keepParent', '--norsrc', '--noextattr', '--noqtn', '--noacl', packageDir, zipPath]);
 }
