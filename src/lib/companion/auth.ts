@@ -8,6 +8,9 @@ export const LINK_KEY = 'windowstash-companion:auth-link:v1';
 interface Link { capability: string }
 interface Reply { completed?: boolean; failure?: string; session: Session | null; config: { url: string; publishable_key: string }; capability: string }
 const reads = new Map<string, Promise<Reply>>();
+export class NativeAuthError extends Error {
+  constructor(public readonly code: string, message: string) { super(message); }
+}
 let authRevision = 0;
 export async function authLink(): Promise<Link | null> {
   return (await browser.storage.local.get(LINK_KEY))[LINK_KEY] as Link | undefined ?? null;
@@ -45,6 +48,7 @@ async function sendAuth(action: string, extra: Record<string, unknown>, link: Li
   if (response?.status === 'error') {
     const code = response.code ?? 'unknown';
     const messages: Record<string, string> = {
+      not_linked: '桌面授权关联已失效，请重新登录并授权',
       login_request_missing: '登录请求已失效，请返回 Companion 重新开始',
       login_request_expired: '登录请求已过期，请返回 Companion 重新开始',
       unauthorized_instance: '浏览器与桌面端的关联已失效，请返回 Companion 重新开始',
@@ -59,7 +63,7 @@ async function sendAuth(action: string, extra: Record<string, unknown>, link: Li
     };
     console.warn('WindowStash authorization failed:', code); // Fixed code only, never credentials.
     const message = messages[code] ?? '授权未完成，请重新打开 Companion 后重试';
-    throw new Error(message);
+    throw new NativeAuthError(code, message);
   }
   if (!response || !/^[a-f0-9]{64}$/.test(response.capability) || !('session' in response)) throw new Error('本机授权响应无效，请重试');
   if (action === 'clear' || action === 'replace') {

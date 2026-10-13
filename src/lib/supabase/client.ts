@@ -2,7 +2,7 @@ import { hideDataAccount, selectDataAccount } from '@/lib/storage/accountScope';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { browser } from 'wxt/browser';
 import { STORAGE_KEYS } from '@/lib/constants';
-import { authLink, authLock, nativeAuth } from '@/lib/companion/auth';
+import { authLink, authLock, LINK_KEY, nativeAuth, NativeAuthError } from '@/lib/companion/auth';
 import { measurePopupStage } from '@/lib/popupPerformance';
 
 export interface SupabaseConfig {
@@ -35,6 +35,27 @@ const extensionStorage = {
 
 let client: SupabaseClient | null = null;
 let clientConfig = '';
+
+/** Explicit recovery only after the Host confirms that its grant is missing. */
+export async function resetMissingCompanionLink(): Promise<void> {
+  await authLock(async () => {
+    const config = await getSupabaseConfig();
+    if (!config || !await authLink()) throw new Error('登录状态已变化，请重试');
+    try {
+      await nativeAuth('read');
+      throw new Error('桌面关联已恢复，请重试');
+    } catch (error) {
+      if (!(error instanceof NativeAuthError) || error.code !== 'not_linked') throw error;
+    }
+    if (JSON.stringify(config) !== JSON.stringify(await getSupabaseConfig())) throw new Error('账号配置已变化，请重试');
+    await hideDataAccount();
+    await client?.auth.stopAutoRefresh();
+    const sessionKey = `${SESSION_PREFIX}sb-${new URL(config.url).hostname.split('.')[0]}-auth-token`;
+    await browser.storage.local.remove([LINK_KEY, sessionKey]);
+    client = null;
+    clientConfig = '';
+  });
+}
 
 function isServiceRoleKey(key: string): boolean {
   if (key.startsWith('sb_secret_')) return true;

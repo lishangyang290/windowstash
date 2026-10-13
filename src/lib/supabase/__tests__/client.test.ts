@@ -3,10 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => {
   const storage = new Map<string, unknown>();
   const clients: Array<{ auth: { signOut: ReturnType<typeof vi.fn> } }> = [];
-  return { storage, clients, createClient: vi.fn() };
+  return { storage, clients, createClient: vi.fn(), native: vi.fn() };
 });
 
 vi.mock('wxt/browser', () => ({ browser: {
+  runtime: { sendNativeMessage: mocks.native },
   storage: { local: {
     get: vi.fn(async (key: string | string[] | null) => {
       if (key === null) return Object.fromEntries(mocks.storage);
@@ -26,15 +27,59 @@ describe('runtime Supabase client', () => {
     vi.resetModules();
     vi.clearAllMocks();
     mocks.storage.clear();
+    vi.stubGlobal('navigator', { locks: { request: (_name: string, task: () => Promise<unknown>) => task() } });
     mocks.clients.length = 0;
     vi.stubEnv('VITE_SUPABASE_URL', '');
     vi.stubEnv('VITE_SUPABASE_PUBLISHABLE_KEY', '');
     mocks.createClient.mockImplementation(() => {
-      const client = { auth: { signOut: vi.fn(async () => ({ error: null })) } };
+      const client = { auth: { signOut: vi.fn(async () => ({ error: null })), stopAutoRefresh: vi.fn(async () => {}) } };
       mocks.clients.push(client);
       return client;
     });
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true })));
+  });
+
+  function staleLink() {
+    mocks.storage.set('supabaseConfig', { url: 'https://project.supabase.co', publishableKey: 'public-fixture' });
+    mocks.storage.set('windowstash-companion:instance:v1', 'b'.repeat(64));
+    mocks.storage.set('windowstash-companion:auth-link:v1', { capability: 'a'.repeat(64) });
+    mocks.storage.set('windowstash-auth:sb-project-auth-token', 'stale-session-fixture');
+    mocks.storage.set('workspaces:fixture-owner', { saved: { sync: { syncStatus: 'pending' }, content: { name: 'Preserved' } } });
+    mocks.storage.set('deleteTombstones:fixture-owner', { deleted: { workspaceId: 'deleted' } });
+    mocks.storage.set('windowstash-auth:sb-other-auth-token', 'other-project-fixture');
+  }
+
+  it('recovers a confirmed missing native grant without losing workspaces or another project session', async () => {
+    staleLink();
+    mocks.native.mockResolvedValue({ status: 'error', code: 'not_linked' });
+    const saved = structuredClone(mocks.storage.get('workspaces:fixture-owner'));
+    const deleted = structuredClone(mocks.storage.get('deleteTombstones:fixture-owner'));
+    const { resetMissingCompanionLink, getSupabaseClient } = await import('../client');
+    await getSupabaseClient();
+    await resetMissingCompanionLink();
+    expect(mocks.storage.has('windowstash-companion:auth-link:v1')).toBe(false);
+    expect(mocks.storage.has('windowstash-auth:sb-project-auth-token')).toBe(false);
+    expect(mocks.storage.get('windowstash-data-owner:v1')).toBe('signed-out');
+    expect(mocks.storage.get('workspaces:fixture-owner')).toEqual(saved);
+    expect(mocks.storage.get('deleteTombstones:fixture-owner')).toEqual(deleted);
+    expect(mocks.storage.get('windowstash-auth:sb-other-auth-token')).toBe('other-project-fixture');
+    await getSupabaseClient();
+    expect(mocks.clients).toHaveLength(2);
+  });
+
+  it.each(['network_unavailable', 'unauthorized_instance', 'auth_store_corrupt'])('preserves all state when native recovery receives %s', async (code) => {
+    staleLink(); mocks.native.mockResolvedValue({ status: 'error', code });
+    const before = structuredClone(mocks.storage);
+    const { resetMissingCompanionLink } = await import('../client');
+    await expect(resetMissingCompanionLink()).rejects.toThrow();
+    expect(mocks.storage).toEqual(before);
+  });
+
+  it('does not reset a link that has already been restored', async () => {
+    staleLink(); mocks.native.mockResolvedValue({ capability: 'a'.repeat(64), session: null, config: { url: 'https://project.supabase.co' } });
+    const before = structuredClone(mocks.storage);
+    await expect((await import('../client')).resetMissingCompanionLink()).rejects.toThrow('已恢复');
+    expect(mocks.storage).toEqual(before);
   });
 
   it('requires a valid http/https URL and a non-empty publishable key', async () => {
