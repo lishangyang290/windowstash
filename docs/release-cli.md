@@ -1,22 +1,12 @@
 # WindowStash 交互式发布
 
-验收并合并这套工具后，日常发布只需要：macOS 在 Finder 双击项目根目录的 **WindowStash Release.command**，Windows 在资源管理器双击 **WindowStash Release.cmd**。两个入口共用同一发布逻辑。粘贴发布信息，以单独一行 `:end` 结束，检查解析结果，最后输入提示要求的完整确认文字。无需再使用 Codex。程序只在这次终端会话内运行，结束后保留结果供查看。
+验收并合并这套工具后，日常发布只需要：在 Finder 双击项目根目录的 **WindowStash Release.command**，粘贴发布信息，以单独一行 `:end` 结束，检查解析结果，最后输入提示要求的完整确认文字。无需再使用 Codex。程序只在这次终端会话内运行，结束后保留结果供查看。
 
 ## 首次准备
 
 需要 Node.js 22 或更新的 LTS、npm、Git，以及对 `lishangyang290/windowstash` 的推送权限。首次在根目录和 companion 目录分别运行 `npm ci` 安装项目依赖；工具不会自动安装。建议安装 GitHub CLI 并执行 `gh auth login`，以自动查询构建和附件状态。未安装或未认证 gh 时仍可发布，但须通过显示的网页确认 Release 是否完成。
 
 启动文件兼容 Homebrew（Apple Silicon / Intel）、Volta、fnm 默认别名、nvm 与 asdf 常见路径。使用自定义 Node 安装目录时，请使 Node/npm 位于终端 PATH 内。文件必须保留可执行权限（755）；Git 添加该文件时会记录为 100755。
-
-Windows 入口用启动文件所在位置定位项目，支持带空格、中文和括号的路径，不需要管理员权限。缺少 Node/npm/Git 或项目依赖时给出中文提示，不自动安装，也不修改系统 PATH、注册表或代理。`.cmd` 保存为 UTF-8 无 BOM、CRLF；`.gitattributes` 固定检出换行，避免批处理解析异常。参数原样传给 Node，例如：
-
-```bat
-"WindowStash Release.cmd" --dry-run
-"WindowStash Release.cmd" --restore
-"WindowStash Release.cmd" --verbose
-```
-
-Windows 上工具直接用当前 Node 执行 npm 的 `npm-cli.js`，从 npm 提供的入口、Node 安装目录或已有 PATH 目录定位，不将参数拼接为 shell 命令。Git、Node 和 gh 继续直接执行。程序失败后保留退出码并暂停窗口，便于查看恢复提示。
 
 正式发布前必须位于干净的 main，本地 main、origin/main 和实时远端 main 均一致。工具不自动 pull、merge、rebase，也不清理用户文件。如果 tracking 引用过期，请自行检查并同步。网络、权限、Tag 或 Release 检查失败会停止。
 
@@ -48,23 +38,7 @@ main HEAD：
 2. 生成七个版本文件的更新（九处正式声明），只改 JSON 版本键和 Cargo 对应包的版本；生成新 Release Notes，更新教程中的 `WindowStash-vX.Y.Z` 安装包名称。
 3. 执行既有版本一致性检查、发布工具测试、Extension 与 Companion 的 Test / Lint / Typecheck / Build、git diff --check。各端 Build 已包含正式隐私检查，避免重复运行。不在本地构建 macOS .app。
 4. 展示修改、说明、检查与 Commit / Tag，要求明确输入 `发布 vX.Y.Z`。确认后再次检查文件与远端，才暂存本次文件、提交、推送 main，在准确的发布提交上创建和推送 Tag。
-5. 继续使用 `.github/workflows/release.yml`，同一 Tag 在 macOS Apple Silicon 和 Windows x64 Runner 分别构建。两平台均成功后，由唯一发布任务创建草稿、上传全部附件、重新下载并核对 SHA-256，最后才转为正式 Release。gh 可用时等待最多 15 分钟，每约 12 秒查询匹配 Tag 和发布提交的真实 Job/Step，分别显示平台任务状态、已结束/总步骤数及成功、跳过、未成功数量。支持刷新的终端原地更新四行进度，等待耗时每秒刷新；重定向输出、`TERM=dumb` 或 `NO_COLOR` 使用纯文本查询摘要。单次查询超过 30 秒会停止等待并保留最后确认的状态。只有 Workflow 成功且正式 Release 的三个预期附件均非空才报告成功，并显示双平台下载链接。等待超时或状态无法确认时给出网页，不把 Tag 推送等同于 Release 成功。Ctrl+C 可结束等待。
-
-## 双平台产物与安全构建验证
-
-同一个版本 `vX.Y.Z` 的正式 Release 包含以下三个附件，Chrome 扩展仅嵌入各平台完整 ZIP，不重复上传同名扩展附件：
-
-- `WindowStash-vX.Y.Z-macOS-arm64.zip`：原有正式 `.app`、Chrome Extension、教程和 README。
-- `WindowStash-vX.Y.Z-Windows-x64.zip`：x64 NSIS 安装程序、Chrome Extension、教程和 README。
-- `WindowStash-vX.Y.Z-Windows-x64-setup.exe`：便于已有用户独立更新 Companion。
-
-macOS 使用 `macos-15` arm64 Runner，保留应用签名、隐私扫描和解压验证，并检查 Companion 与 Native Host 为 arm64。Windows 使用 `windows-2022` x64 Runner、Rust MSVC 和现有 `tauri:build:windows` 脚本。验证 NSIS 内确实包含 x64 Companion 和 Native Host，再扫描其内容及最终 ZIP。教程保留 macOS 原步骤，并补充 Windows 安装和通知区域说明。应用 Bundle ID 保持 `app.windowstash.companion`。
-
-不创建真实版本的安全 CI 验证入口是同一工作流的 `workflow_dispatch`。工作流进入默认分支后，可在 GitHub Actions 的 **Release Windows and macOS → Run workflow** 中选择需要验证的分支。使用源码声明的现有版本，运行同样的双平台检查与打包；只上传 `validation-macOS-arm64` 和 `validation-Windows-x64` 临时 Actions artifacts，保留 7 天。此模式不创建 Commit、Tag 或 Release。它独立于本地 `--dry-run`：预演仅检查发布计划，手动 CI 验证会实际构建安装包。
-
-全局及构建任务只授予 `contents: read`，关闭 checkout 凭据持久化。唯一 `publish` 任务需要整个构建矩阵成功，且仅在 `push` 版本 Tag 时获得 `contents: write`；手动验证不会进入它。发布脚本再次核实事件、仓库、版本 Tag 和准确提交。Tag 提交必须位于 main 历史中，版本声明和对应更新说明必须一致。已有同名 Release（包括草稿）均拒绝覆盖；重跑不会使用 `--clobber`。上传或校验失败留下草稿，需要人工检查，不会自动重试或正式公开。
-
-本地回归测试用临时仓库及完全模拟的远端/gh 进程验证 dry-run、取消恢复、失败记录、附件完整性和草稿转正式顺序。ESM 预加载路径通过 `pathToFileURL()` 转换；Git 提交内容核验只统一 CRLF/LF，仍比较完整文本。平台专属入口测试在对应系统执行；其他业务与安全回归测试两平台共用。
+5. 继续使用原有 `.github/workflows/release.yml` 构建正式 ZIP 和 Release，不创建空 Release。gh 可用时等待最多 15 分钟，每约 12 秒查询匹配 Tag 和发布提交的真实 Job/Step，显示当前任务、已结束/总步骤数及成功、跳过、未成功数量。支持刷新的终端原地更新四行进度，等待耗时每秒刷新；重定向输出、`TERM=dumb` 或 `NO_COLOR` 使用纯文本查询摘要。单次查询超过 30 秒会停止等待并保留最后确认的状态。只有 Workflow 成功且对应正式 ZIP 非空才报告成功，并显示 Release 与 ZIP 下载链接。等待超时或状态无法确认时给出网页，不把 Tag 推送等同于 Release 成功。Ctrl+C 可结束等待。
 
 ## 终端入口和预演
 
@@ -101,8 +75,8 @@ main 已推送但 Tag 未推送时，核实发布提交与现有本地 Tag；如
 
 调查了 [remark/unified](https://github.com/remarkjs/remark)、[mdast-util-from-markdown](https://github.com/syntax-tree/mdast-util-from-markdown) 和 [Marked](https://github.com/markedjs/marked)。前两者适合 AST 插件管线；本工具只需要标题、段落、列表与代码块，因此选用仍在维护、MIT 许可且没有运行时依赖的 Marked，锁定在 package-lock 中。仅使用 lexer，不渲染 HTML。上下文版本判断与元数据排除使用少量规则，不引入完整 Markdown 转换管线。进程、交互、文件读写与自动测试使用 Node.js 自带能力。
 
-## 手动验收
+## 本次手动验收
 
-不要为验收运行正式发布。双击对应系统的入口，确认当前版本、路径和中文提示，粘贴示例并用 :end 结束，尝试菜单修改和取消。也可运行 --dry-run，确认开发分支被安全拦截。成功的 main 预演、版本更新、取消恢复、测试失败、推送失败均通过临时 Git 仓库自动测试，无需改动真实 main。
+不要为验收运行正式发布。双击 .command，确认版本 0.3.0、路径和中文提示，粘贴示例并用 :end 结束，尝试菜单修改和取消。也可运行 --dry-run，确认开发分支被安全拦截。成功的 main 预演、版本更新、取消恢复、测试失败、推送失败均通过临时 Git 仓库自动测试，无需改动真实 main。
 
-自动化测试通过 CMD 执行 Windows 入口，覆盖无参数启动、help、dry-run、restore、verbose、错误退出、缺少依赖和带空格/中文/括号的路径。真实资源管理器和 Finder 双击的窗口行为仍需人工确认。GitHub Runner 的正式安装包构建与安装验收以手动验证工作流的实际结果为准；本地静态检查不能代替它。合并 main、推送 Tag 和正式发布由用户另行决定。
+当前自动化环境不能访问 Terminal 图形界面，因此真实 Finder 双击还需要用户手动确认；受限 PATH 启动、暂停保留结果与 Git 可执行模式已独立验证。开发分支完成验收后可提交并推送；合并 main 和正式发布由用户另行决定。
