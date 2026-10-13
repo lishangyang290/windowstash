@@ -111,6 +111,10 @@ export async function resolveLogicalTab<T extends MatchableTab & { favIconUrl?: 
   if (!id) return tab;
   const entry = await lazyRestoreRepository.get(id);
   if (!entry) throw new LazyTabResolutionError();
+  return logicalTabFromEntry(tab, entry);
+}
+
+function logicalTabFromEntry<T extends MatchableTab & { favIconUrl?: string }>(tab: T, entry: LazyRestoreEntry): T {
   return {
     ...tab,
     title: entry.title,
@@ -120,8 +124,20 @@ export async function resolveLogicalTab<T extends MatchableTab & { favIconUrl?: 
   };
 }
 
-export function resolveLogicalTabs<T extends MatchableTab & { favIconUrl?: string }>(tabs: T[]): Promise<T[]> {
-  return Promise.all(tabs.map(resolveLogicalTab));
+export async function resolveLogicalTabs<T extends MatchableTab & { favIconUrl?: string }>(tabs: T[], lazyStorageKey?: string): Promise<T[]> {
+  if (!lazyStorageKey) return Promise.all(tabs.map(resolveLogicalTab));
+  const ids = tabs.map(lazyIdFromTab);
+  if (!ids.some(Boolean)) return tabs;
+  // One request-local, account-scoped snapshot; the workspace resolver rechecks
+  // live identity before exposing any result. No cross-popup data cache.
+  const entries = new Map((await lazyRestoreRepository.list(lazyStorageKey)).map((entry) => [entry.id, entry]));
+  return tabs.map((tab, index) => {
+    const id = ids[index];
+    if (!id) return tab;
+    const entry = entries.get(id);
+    if (!entry) throw new LazyTabResolutionError();
+    return logicalTabFromEntry(tab, entry);
+  });
 }
 
 export async function resolveLazyStoredTab(

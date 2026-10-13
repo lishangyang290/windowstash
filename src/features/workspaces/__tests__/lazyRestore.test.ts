@@ -408,3 +408,36 @@ function lazyEntry(position: number) {
     createdAt: '2026-09-28T00:00:00.000Z',
   };
 }
+
+it('resolves fifty logical tabs from one scoped lazy registry read, retaining pinned state', async () => {
+  vi.clearAllMocks();
+  const key = 'lazyRestoreEntries:["https://project.supabase.co","A"]';
+  lazyMock.list.mockResolvedValue(Array.from({ length: 50 }, (_, index) => ({ id: 'batch-' + index, originalUrl: 'https://real.example/' + index, title: 'Saved ' + index, favIconUrl: 'https://real.example/icon.png' })));
+  const tabs = Array.from({ length: 50 }, (_, index) => ({ id: index, index, url: 'chrome-extension://test/lazy-tab.html?id=batch-' + index, pinned: index === 1 }));
+  const result = await resolveLogicalTabs(tabs, key);
+  expect(lazyMock.list).toHaveBeenCalledExactlyOnceWith(key);
+  expect(lazyMock.get).not.toHaveBeenCalled();
+  expect(result[1]).toMatchObject({ id: 1, index: 1, pinned: true, url: 'https://real.example/1', title: 'Saved 1' });
+});
+
+it('reads no registry for ordinary tabs and never reuses a completed lazy snapshot', async () => {
+  vi.clearAllMocks();
+  const key = 'lazyRestoreEntries:["https://project.supabase.co","A"]';
+  const ordinary = [{ index: 0, url: 'https://real.example', pinned: true }];
+  expect(await resolveLogicalTabs(ordinary, key)).toEqual(ordinary);
+  expect(lazyMock.list).not.toHaveBeenCalled();
+  const lazy = [{ index: 0, url: 'chrome-extension://test/lazy-tab.html?id=fresh' }];
+  lazyMock.list.mockResolvedValueOnce([{ id: 'fresh', originalUrl: 'https://real.example/old', title: 'Old' }]);
+  expect((await resolveLogicalTabs(lazy, key))[0]?.url).toBe('https://real.example/old');
+  lazyMock.list.mockResolvedValueOnce([{ id: 'fresh', originalUrl: 'https://real.example/new', title: 'New' }]);
+  expect((await resolveLogicalTabs(lazy, key))[0]?.url).toBe('https://real.example/new');
+  expect(lazyMock.list).toHaveBeenCalledTimes(2);
+});
+
+it('rejects missing scoped lazy entries rather than using another account registry', async () => {
+  vi.clearAllMocks();
+  lazyMock.list.mockResolvedValue([]);
+  lazyMock.get.mockResolvedValue({ id: 'other-account', originalUrl: 'https://private.example' });
+  await expect(resolveLogicalTabs([{ index: 0, url: 'chrome-extension://test/lazy-tab.html?id=other-account' }], 'lazyRestoreEntries:account-A')).rejects.toBeInstanceOf(LazyTabResolutionError);
+  expect(lazyMock.get).not.toHaveBeenCalled();
+});

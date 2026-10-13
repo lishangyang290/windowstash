@@ -26,8 +26,8 @@ export const bindingRepository = {
     await browser.storage.session.set({ [storageKey.replace(/^windowBinding:/, 'windowBindingSuppressed:')]: true });
     await browser.storage.session.remove(storageKey);
   },
-  async isSuppressed(windowId: number): Promise<boolean> {
-    const storageKey = await suppressionKey(windowId);
+  async isSuppressed(windowId: number, requestedKey?: string): Promise<boolean> {
+    const storageKey = requestedKey ? (await key(windowId, requestedKey)).replace(/^windowBinding:/, 'windowBindingSuppressed:') : await suppressionKey(windowId);
     const result = await browser.storage.session.get(storageKey);
     return result[storageKey] === true;
   },

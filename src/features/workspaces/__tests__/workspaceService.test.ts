@@ -917,3 +917,24 @@ function recordWithTabs(count: number, activeTabIndex: number): WorkspaceLocalRe
     },
   };
 }
+
+it('keeps bound workspace reads inside the requested project/user/window scope', async () => {
+  vi.clearAllMocks();
+  const scope = 'workspaces:["https://project.supabase.co","A"]';
+  accountKey.mockResolvedValue(scope);
+  bindingMock.get.mockResolvedValue('workspace-1');
+  workspaceMock.get.mockResolvedValue(localRecord);
+  await expect(resolveWorkspaceStateForWindow(42, [], scope, true)).resolves.toMatchObject({ status: 'resolved' });
+  expect(bindingMock.get).toHaveBeenCalledWith(42, scope);
+  expect(workspaceMock.get).toHaveBeenCalledWith('workspace-1', scope);
+  expect(workspaceMock.list).not.toHaveBeenCalled();
+});
+
+it('rejects a scoped resolution when the account changes while the record is being read', async () => {
+  vi.clearAllMocks();
+  const scope = 'workspaces:["https://project.supabase.co","A"]';
+  accountKey.mockResolvedValue('workspaces:["https://project.supabase.co","B"]');
+  bindingMock.get.mockResolvedValue('workspace-1');
+  workspaceMock.get.mockResolvedValue(localRecord);
+  await expect(resolveWorkspaceStateForWindow(42, [], scope, true)).rejects.toThrow('账号已变化');
+});

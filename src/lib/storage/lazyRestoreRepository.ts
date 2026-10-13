@@ -1,6 +1,7 @@
 import { accountStorageKey } from './accountScope';
 import { browser } from 'wxt/browser';
 import { STORAGE_KEYS } from '@/lib/constants';
+import { measurePopupStage } from '@/lib/popupPerformance';
 
 export interface LazyRestoreEntry {
   accountStorageKey?: string;
@@ -21,7 +22,7 @@ export interface LazyRestoreEntry {
 type EntryMap = Record<string, LazyRestoreEntry>;
 
 async function readMap(storageKey: string): Promise<EntryMap> {
-  const result = await browser.storage.local.get(storageKey);
+  const result = await measurePopupStage('lazy-storage', () => browser.storage.local.get(storageKey));
   const entries = (result[storageKey] as EntryMap | undefined) ?? {};
   for (const entry of Object.values(entries)) entry.accountStorageKey = storageKey;
   return entries;
@@ -43,15 +44,15 @@ async function mutate<T>(task: (storageKey: string) => Promise<T>, requestedKey?
   return result;
 }
 
-async function readSettledMap(): Promise<EntryMap> {
-  const storageKey = await accountStorageKey(STORAGE_KEYS.lazyRestoreEntries);
+async function readSettledMap(requestedKey?: string): Promise<EntryMap> {
+  const storageKey = requestedKey ?? await accountStorageKey(STORAGE_KEYS.lazyRestoreEntries);
   await mutationQueue;
   return readMap(storageKey);
 }
 
 export const lazyRestoreRepository = {
-  async list(): Promise<LazyRestoreEntry[]> {
-    return Object.values(await readSettledMap());
+  async list(requestedKey?: string): Promise<LazyRestoreEntry[]> {
+    return Object.values(await readSettledMap(requestedKey));
   },
 
   async get(id: string): Promise<LazyRestoreEntry | null> {

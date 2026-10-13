@@ -55,41 +55,50 @@ export type WorkspaceWindowResolution =
 export async function resolveWorkspaceStateForWindow(
   windowId: number,
   tabs: MatchableTab[],
+  requestedKey?: string,
+  logicalTabsReady = false,
 ): Promise<WorkspaceWindowResolution> {
-  let boundId = await bindingRepository.get(windowId);
-  if (!boundId && !await bindingRepository.isSuppressed(windowId)) {
+  const scope = requestedKey ?? await accountStorageKey('workspaces');
+  const resolution = await resolveScopedWorkspaceState(windowId, tabs, scope, logicalTabsReady);
+  if (scope !== await accountStorageKey('workspaces')) throw new Error('账号已变化，请重新打开');
+  return resolution;
+}
+
+async function resolveScopedWorkspaceState(windowId: number, tabs: MatchableTab[], scope: string, logicalTabsReady: boolean): Promise<WorkspaceWindowResolution> {
+  let boundId = await bindingRepository.get(windowId, scope);
+  if (!boundId && !await bindingRepository.isSuppressed(windowId, scope)) {
     await restorePersistentWindowAssociations();
-    boundId = await bindingRepository.get(windowId);
+    boundId = await bindingRepository.get(windowId, scope);
   }
   if (boundId) {
-    let bound = await workspaceRepository.get(boundId);
+    let bound = await workspaceRepository.get(boundId, scope);
     if (!bound) {
       await syncEngine.syncAll().catch(() => undefined);
-      bound = await workspaceRepository.get(boundId);
+      bound = await workspaceRepository.get(boundId, scope);
     }
     return bound
       ? { status: 'resolved', workspaceId: boundId, record: bound, source: 'binding' }
       : { status: 'unavailable', workspaceId: boundId, record: null, source: 'binding' };
   }
-  if (await bindingRepository.isSuppressed(windowId)) {
+  if (await bindingRepository.isSuppressed(windowId, scope)) {
     return { status: 'unbound', workspaceId: null, record: null, source: null };
   }
 
   let logicalTabs;
   try {
-    logicalTabs = await resolveLogicalTabs(tabs);
+    logicalTabs = logicalTabsReady ? tabs : await resolveLogicalTabs(tabs);
   } catch {
     return { status: 'unresolved', workspaceId: null, record: null, source: null };
   }
-  const matched = matchWorkspace(logicalTabs, await workspaceRepository.list());
+  const matched = matchWorkspace(logicalTabs, await workspaceRepository.list(scope));
   const conflict = matched && await (async () => {
     const windows = await browser.windows.getAll({ populate: false });
     for (const window of windows) {
-      if (window.id != null && window.id !== windowId && await bindingRepository.get(window.id) === matched.content.id) return true;
+      if (window.id != null && window.id !== windowId && await bindingRepository.get(window.id, scope) === matched.content.id) return true;
     }
     return false;
   })();
-  if (matched && !conflict) await bindWindow(windowId, matched.content.id, logicalTabs);
+  if (matched && !conflict) await bindWindow(windowId, matched.content.id, logicalTabs, scope);
   return matched && !conflict
     ? { status: 'resolved', workspaceId: matched.content.id, record: matched, source: 'matcher' }
     : { status: 'unbound', workspaceId: null, record: null, source: null };

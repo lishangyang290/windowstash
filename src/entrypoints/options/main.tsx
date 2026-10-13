@@ -16,7 +16,8 @@ import { syncEngine } from '@/lib/sync/syncEngine';
 import { syncLogRepository } from '@/lib/storage/syncLogRepository';
 import { workspaceRepository } from '@/lib/storage/workspaceRepository';
 import { authService } from '@/lib/supabase/authService';
-import { getSupabaseConfig, type SupabaseConfig } from '@/lib/supabase/client';
+import { useVerifiedAccess } from '@/lib/supabase/useVerifiedAccess';
+import type { SupabaseConfig } from '@/lib/supabase/client';
 import { isValidEmail, PASSWORD_REQUIREMENTS, passwordChangeErrorMessage, passwordRequirementsMet, registrationErrorMessage, validatePasswordChange, validateRegistration } from '@/lib/supabase/passwordPolicy';
 import type { StoredTab, SyncLogEntry, WorkspaceLocalRecord } from '@/types/workspace';
 import '@/styles/base.css';
@@ -406,26 +407,32 @@ function Dashboard({ session, config, recoveryMode, onAuthChanged, onSignedOut }
   const [legacy, setLegacy] = React.useState({ workspaces: 0, tombstones: 0 });
   const [legacyError, setLegacyError] = React.useState('');
   const [manualSyncState, setManualSyncState] = React.useState<ManualSyncState>('idle');
+  const refreshRevision = React.useRef(0);
 
   const refresh = React.useCallback(async () => {
+    const revision = ++refreshRevision.current;
     if ((await authService.session())?.user.id !== session.user.id) {
       await onAuthChanged();
       return { records: [], session: null };
     }
     const [nextRecords, nextLogs, nextLegacy] = await Promise.all([workspaceRepository.list(), syncLogRepository.list(), legacyDataSummary()]);
+    if (revision !== refreshRevision.current) return { records: [], session: null };
     setLegacy(nextLegacy);
     setRecords(nextRecords);
     setLogs(nextLogs);
     setLoading(false);
     return { records: nextRecords, session };
-  }, [session, onAuthChanged]);
+  }, [session.user.id, onAuthChanged]);
 
   React.useEffect(() => {
     void refresh();
     void browser.runtime.sendMessage({ type: 'SYNC_ALL' });
-    const listener = () => void refresh();
+    const listener = (changes: Record<string, unknown>) => {
+      if (Object.keys(changes).some((key) => key.startsWith('workspaces:') || key.startsWith('syncLogs:') || key.startsWith('deleteTombstones:') || key.startsWith('windowstash-unowned-'))) void refresh();
+    };
     browser.storage.onChanged.addListener(listener);
     return () => {
+      refreshRevision.current++;
       browser.storage.onChanged.removeListener(listener);
     };
   }, [refresh]);
@@ -545,57 +552,15 @@ function Dashboard({ session, config, recoveryMode, onAuthChanged, onSignedOut }
 
 export function OptionsRoot() {
   const navigation = useSetupNavigation();
-  const [access, setAccess] = React.useState<{ config: SupabaseConfig | null; session: Session | null }>();
-  const [message, setMessage] = React.useState('');
+  const { access, checking, message, refresh } = useVerifiedAccess();
   const [authNotice, setAuthNotice] = React.useState('');
-  const [connection, setConnection] = React.useState('');
-  const revision = React.useRef(0);
   const recoveryMode = new URLSearchParams(window.location.search).get('recover') === '1';
-  const refresh = React.useCallback(async (clear = true) => {
-    const current = ++revision.current;
-    if (clear) setAccess(undefined);
-    setMessage('');
-    try {
-      const config = await getSupabaseConfig();
-      setConnection(config ? `${config.url}\n${config.publishableKey}` : '');
-      const session = config ? await authService.session() : null;
-      if (current === revision.current) setAccess({ config, session });
-    } catch (error) {
-      const config = await getSupabaseConfig();
-      if (current === revision.current) {
-        setAccess({ config, session: null });
-        setMessage(error instanceof Error ? error.message : '无法读取登录状态，请重试');
-      }
-    }
-  }, []);
-  React.useEffect(() => {
-    void refresh();
-    const changed = (changes: Record<string, unknown>) => {
-      if (Object.keys(changes).some((key) => key === 'supabaseConfig' || key.startsWith('windowstash-auth:') || key === 'windowstash-data-owner:v1' || key.startsWith('windowstash-companion'))) void refresh();
-    };
-    const recheck = () => void refresh(false);
-    const authChanged = () => void refresh();
-    browser.storage.onChanged.addListener(changed);
-    window.addEventListener('pageshow', authChanged);
-    window.addEventListener('focus', recheck);
-    let unsubscribe: (() => void) | undefined;
-    let active = true;
-    void authService.subscribe(authChanged).then((stop) => { if (active) unsubscribe = stop; else stop(); }).catch(() => { if (active) void refresh(); });
-    return () => {
-      active = false;
-      revision.current++;
-      unsubscribe?.();
-      browser.storage.onChanged.removeListener(changed);
-      window.removeEventListener('pageshow', authChanged);
-      window.removeEventListener('focus', recheck);
-    };
-  }, [refresh, connection]);
   const notice = authNotice ? <SuccessToast key={authNotice} message={authNotice} onDismiss={() => setAuthNotice('')} /> : null;
   if (!access) return <><PageShell><p role="status">正在检查登录状态…</p></PageShell>{notice}</>;
   const { config, session } = access;
   if (!config || !session || navigation.editing) return <><SetupFlow config={config} navigation={navigation}
     login={(previous, onBusyChange, showTitle) => <AccountDialog companion flow showTitle={showTitle} onPrevious={previous} onBusyChange={onBusyChange} session={null} onClose={() => {}} onChanged={refresh} onSignedIn={() => setAuthNotice('登录成功')} />} onSaved={refresh} message={message} />{notice}</>;
-  return <><Dashboard key={`${config.url}\n${session.user.id}`} session={session} config={config} recoveryMode={recoveryMode} onAuthChanged={refresh} onSignedOut={() => setAuthNotice('已退出登录')} />{notice}</>;
+  return <><div inert={checking}><Dashboard key={`${config.url}\n${config.publishableKey}\n${session.user.id}`} session={session} config={config} recoveryMode={recoveryMode} onAuthChanged={refresh} onSignedOut={() => setAuthNotice('已退出登录')} /></div>{notice}</>;
 }
 
 const authorizationPage = new URLSearchParams(window.location.search).has('companionLogin') || window.location.pathname?.endsWith('/authorize.html');

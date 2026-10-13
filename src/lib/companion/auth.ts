@@ -2,20 +2,46 @@ import { browser } from 'wxt/browser';
 import type { Session } from '@supabase/supabase-js';
 import { instanceId } from './connection';
 import { NATIVE_HOST } from './protocol';
+import { measurePopupStage } from '@/lib/popupPerformance';
 
 export const LINK_KEY = 'windowstash-companion:auth-link:v1';
 interface Link { capability: string }
 interface Reply { completed?: boolean; failure?: string; session: Session | null; config: { url: string; publishable_key: string }; capability: string }
+const reads = new Map<string, Promise<Reply>>();
+let authRevision = 0;
 export async function authLink(): Promise<Link | null> {
   return (await browser.storage.local.get(LINK_KEY))[LINK_KEY] as Link | undefined ?? null;
 }
 export async function nativeAuth(action: string, extra: Record<string, unknown> = {}): Promise<Reply> {
-  const link = await authLink();
-  const instance = await instanceId();
-  const response = await browser.runtime.sendNativeMessage(NATIVE_HOST, {
+  return measurePopupStage('native-auth', () => performNativeAuth(action, extra));
+}
+async function performNativeAuth(action: string, extra: Record<string, unknown>): Promise<Reply> {
+  // Share only concurrent reads. Never reuse a completed identity verification.
+  if (action !== 'read') { authRevision++; reads.clear(); }
+  const revision = authRevision;
+  const [state, instance] = await Promise.all([
+    measurePopupStage('native-storage', () => browser.storage.local.get(action === 'read'
+      ? [LINK_KEY, 'supabaseConfig', 'windowstash-data-owner:v1', 'windowstash-data-revision:v1', 'windowstash-companion:auth-revision']
+      : LINK_KEY)),
+    instanceId(),
+  ]);
+  const link = state[LINK_KEY] as Link | undefined ?? null;
+  if (action === 'read') {
+    const key = JSON.stringify([revision, instance, link, state, extra]);
+    const existing = reads.get(key);
+    if (existing) return existing;
+    const task = sendAuth(action, extra, link, instance);
+    reads.set(key, task);
+    try { return await task; }
+    finally { if (reads.get(key) === task) reads.delete(key); }
+  }
+  return sendAuth(action, extra, link, instance);
+}
+async function sendAuth(action: string, extra: Record<string, unknown>, link: Link | null, instance: string): Promise<Reply> {
+  const response = await measurePopupStage('native-message', () => browser.runtime.sendNativeMessage(NATIVE_HOST, {
     version: 1, type: 'auth', action, instance_id: instance, capability: link?.capability ?? null,
     login_request: null, route_id: null, config: null, session: null, ...extra,
-  }) as Reply & { status?: string; code?: string };
+  })) as Reply & { status?: string; code?: string };
   if (response?.status === 'error') {
     const code = response.code ?? 'unknown';
     const messages: Record<string, string> = {

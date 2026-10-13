@@ -6,7 +6,23 @@
     <title>WindowStash</title>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <!-- Paint a neutral shell before JavaScript loads; never embed account data. -->
+      <main class="popup-shell popup-main-shell" data-popup-state="preparing" aria-busy="true">
+        <header class="popup-header"><div class="brand" aria-label="WindowStash"><img class="brand-mark" src="/icon-128.png" alt="" /><span>WindowStash</span></div></header>
+        <section class="popup-content">
+          <div class="bound-summary popup-placeholder-summary" aria-hidden="true"><span class="popup-skeleton popup-skeleton-title"></span><span class="popup-skeleton popup-skeleton-subtitle"></span></div>
+          <div class="unchanged-state" role="status">正在准备当前工作区…</div>
+          <button class="associate-link" disabled>关联已有工作区</button>
+          <div class="popup-actions">
+            <button class="button button-primary" disabled>保存当前状态</button>
+            <button class="button" disabled>保存并关闭窗口</button>
+            <button class="button button-quiet reopen-workspace" disabled>重新打开工作区</button>
+          </div>
+        </section>
+        <button class="manager-link" disabled>管理工作区 <span>→</span></button>
+      </main>
+    </div>
     <script type="module" src="./main.tsx"></script>
   </body>
 </html>

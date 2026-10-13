@@ -1,7 +1,9 @@
 import { dataAccountLock, dataAccountHidden, hideDataAccount, initializeDataAccount, selectDataAccount } from '@/lib/storage/accountScope';
 import { authLink, authLock, nativeAuth } from '@/lib/companion/auth';
-import { getSupabaseConfig } from '@/lib/supabase/client';
+import { getSupabaseConfig, type SupabaseConfig } from '@/lib/supabase/client';
 import { friendlySupabaseError, getSupabaseClient } from '@/lib/supabase/client';
+import type { AuthChangeEvent, Session } from '@supabase/supabase-js';
+import { measurePopupStage } from '@/lib/popupPerformance';
 
 async function requireClient() {
   const client = await getSupabaseClient();
@@ -26,23 +28,23 @@ export const authService = {
     if (!session) throw new Error('请先登录 WindowStash');
     return session;
   },
-  async subscribe(changed: () => void) {
+  async subscribe(changed: (event: AuthChangeEvent, session: Session | null) => void) {
     const client = await getSupabaseClient();
-    const subscription = client?.auth.onAuthStateChange((event) => {
-      if (event !== 'INITIAL_SESSION') changed();
+    const subscription = client?.auth.onAuthStateChange((event, session) => {
+      if (event !== 'INITIAL_SESSION') changed(event, session);
     }).data.subscription;
     return () => subscription?.unsubscribe();
   },
-  async session() {
+  async session(knownConfig?: SupabaseConfig | null) {
     if (await dataAccountHidden()) return null;
-    const client = await getSupabaseClient();
+    const config = knownConfig === undefined ? await getSupabaseConfig() : knownConfig;
+    const client = await measurePopupStage('supabase-client', () => getSupabaseClient(config));
     if (!client) return null;
-    const { data, error } = await client.auth.getSession();
+    const { data, error } = await measurePopupStage('supabase-session', () => client.auth.getSession());
     if (error) throw error;
     if (await dataAccountHidden()) return null;
     if (data.session) {
-      const config = await getSupabaseConfig();
-      if (config) await initializeDataAccount(config.url, data.session.user.id);
+      if (config) await measurePopupStage('account-initialization', () => initializeDataAccount(config.url, data.session!.user.id));
     } else await hideDataAccount();
     return await dataAccountHidden() ? null : data.session;
   },

@@ -1,8 +1,7 @@
-import { authService } from '@/lib/supabase/authService';
-import { accountOwner, accountStorageKey } from '@/lib/storage/accountScope';
+import { accountOwner } from '@/lib/storage/accountScope';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { browser } from 'wxt/browser';
+import { browser, type Browser } from 'wxt/browser';
 import { Logo } from '@/components/Logo';
 import { SuccessToast } from '@/components/SuccessToast';
 import {
@@ -19,16 +18,17 @@ import {
   focusWindowTab,
   listWorkspacesForAssociation,
   reopenSavedTab,
-  resolveWorkspaceStateForWindow,
   saveCurrentWindow,
   updateWorkspace,
   type WorkspaceWindowResolution,
 } from '@/features/workspaces/workspaceService';
-import { LazyTabResolutionError, resolveLogicalTabs } from '@/features/workspaces/lazyRestore';
+import { LazyTabResolutionError } from '@/features/workspaces/lazyRestore';
 import { validateWorkspaceName } from '@/features/workspaces/workspaceName';
 import type { WorkspaceLocalRecord, WorkspaceStatus } from '@/types/workspace';
-import { getSupabaseConfig, type SupabaseConfig } from '@/lib/supabase/client';
+import { useVerifiedAccess } from '@/lib/supabase/useVerifiedAccess';
 import { WorkspaceActions } from './WorkspaceActions';
+import { loadPopupWindow, readPopupWindow, type PopupSnapshot } from './startup';
+import { startPopupPerformance, markPopupCommit, popupPerformanceSnapshot } from '@/lib/popupPerformance';
 import '@/styles/base.css';
 import './style.css';
 
@@ -46,6 +46,23 @@ const CHANGE_DESCRIPTIONS: Record<TabChangeKind, string> = {
   removed: '这些标签页存在于上次保存中，但当前窗口里已经没有了。',
   updated: '这些标签页仍然存在，但保存内容发生了变化。',
 };
+
+function PopupPreparing({ error, onRetry }: { error: string; onRetry: () => void }) {
+  return <main className="popup-shell popup-main-shell" data-popup-state="preparing" aria-busy={!error}>
+    <header className="popup-header"><Logo /></header>
+    <section className="popup-content">
+      <div className="bound-summary popup-placeholder-summary" aria-hidden="true">
+        <span className="popup-skeleton popup-skeleton-title" />
+        <span className="popup-skeleton popup-skeleton-subtitle" />
+      </div>
+      <div className="unchanged-state" role={error ? 'alert' : 'status'}>{error || '正在准备当前工作区…'}</div>
+      {error ? <button className="button" onClick={onRetry}>重试</button> : null}
+      <button className="associate-link" disabled>关联已有工作区</button>
+      <WorkspaceActions action={null} phase="idle" saveBlocked reopenBlocked reopenLabel="重新打开工作区" reopeningWorkspace={false} showReopen onSave={() => {}} onReopen={() => {}} />
+    </section>
+    <button className="manager-link" disabled>管理工作区 <span>→</span></button>
+  </main>;
+}
 
 function GlobeIcon() {
   return (
@@ -118,21 +135,21 @@ function UpdatedItem({ change, onOpen }: { change: UpdatedTabChange; onOpen: (ch
   );
 }
 
-function Popup({ accountKey }: { accountKey: string }) {
-  const [windowId, setWindowId] = React.useState<number | null>(null);
-  const [tabs, setTabs] = React.useState<CurrentTabSnapshot[]>([]);
-  const [record, setRecord] = React.useState<WorkspaceLocalRecord | null>(null);
-  const [resolution, setResolution] = React.useState<WorkspaceWindowResolution | null>(null);
-  const [name, setName] = React.useState('');
-  const [status, setStatus] = React.useState<WorkspaceStatus>('active');
+function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnapshot }) {
+  const [windowId, setWindowId] = React.useState<number | null>(initial.windowId);
+  const [tabs, setTabs] = React.useState<CurrentTabSnapshot[]>(initial.tabs);
+  const [record, setRecord] = React.useState<WorkspaceLocalRecord | null>(initial.resolution.record);
+  const [resolution, setResolution] = React.useState<WorkspaceWindowResolution | null>(initial.resolution);
+  const [name, setName] = React.useState(initial.resolution.record?.content.name ?? '');
+  const [status, setStatus] = React.useState<WorkspaceStatus>(initial.resolution.record?.content.status ?? 'active');
   const [page, setPage] = React.useState<'main' | 'details' | 'associate'>('main');
   const [activeKind, setActiveKind] = React.useState<TabChangeKind>('added');
   const [reopening, setReopening] = React.useState('');
   const [reopeningWorkspace, setReopeningWorkspace] = React.useState(false);
   const [saveAction, setSaveAction] = React.useState<SaveAction | null>(null);
   const [savePhase, setSavePhase] = React.useState<SavePhase>('idle');
-  const [error, setError] = React.useState('');
-  const [logicalTabsReady, setLogicalTabsReady] = React.useState(false);
+  const [error, setError] = React.useState(initial.error);
+  const [logicalTabsReady, setLogicalTabsReady] = React.useState(initial.logicalTabsReady);
   const [editingName, setEditingName] = React.useState(false);
   const [draftName, setDraftName] = React.useState('');
   const [renameError, setRenameError] = React.useState('');
@@ -140,50 +157,39 @@ function Popup({ accountKey }: { accountKey: string }) {
   const [success, setSuccess] = React.useState('');
   const [associationOptions, setAssociationOptions] = React.useState<WorkspaceLocalRecord[]>([]);
   const [associating, setAssociating] = React.useState('');
-  const windowIdRef = React.useRef<number | null>(null);
+  const [refreshing, setRefreshing] = React.useState(false);
+  const windowIdRef = React.useRef<number | null>(initial.windowId);
   const renameInputRef = React.useRef<HTMLInputElement>(null);
   const renameSubmittingRef = React.useRef(false);
   const refreshRevision = React.useRef(0);
 
   const refresh = React.useCallback(async (knownWindowId?: number) => {
     const revision = ++refreshRevision.current;
-    const scope = await accountStorageKey('workspaces');
-    const current = knownWindowId == null
-      ? await browser.windows.getCurrent({ populate: true })
-      : await browser.windows.get(knownWindowId, { populate: true });
-    if (current.id == null) throw new Error('Missing window');
-    const rawTabs = [...(current.tabs ?? [])].sort((a, b) => a.index - b.index);
-    let nextResolution = await resolveWorkspaceStateForWindow(current.id, rawTabs);
-    const applyResolution = (value: WorkspaceWindowResolution) => {
-      setResolution(value);
-      setRecord(value.record);
-      if (value.record) {
-        setName(value.record.content.name);
-        setStatus(value.record.content.status);
-      }
-    };
-    if (revision !== refreshRevision.current || scope !== await accountStorageKey('workspaces')) return;
-    windowIdRef.current = current.id;
-    setWindowId(current.id);
-    applyResolution(nextResolution);
+    setRefreshing(true);
     try {
-      const nextTabs = await resolveLogicalTabs(rawTabs);
-      if (nextResolution.status === 'unresolved') {
-        nextResolution = await resolveWorkspaceStateForWindow(current.id, nextTabs);
-        if (revision !== refreshRevision.current || scope !== await accountStorageKey('workspaces')) return;
-        applyResolution(nextResolution);
+      const current = await readPopupWindow(knownWindowId);
+      const next = await loadPopupWindow(accountKey, current);
+      if (revision !== refreshRevision.current) return;
+      windowIdRef.current = next.windowId;
+      setWindowId(next.windowId);
+      setResolution(next.resolution);
+      setRecord(next.resolution.record);
+      if (next.resolution.record) {
+        setName(next.resolution.record.content.name);
+        setStatus(next.resolution.record.content.status);
       }
-      if (revision !== refreshRevision.current || scope !== await accountStorageKey('workspaces')) return;
-      setTabs(nextTabs);
-      setLogicalTabsReady(true);
-      setError('');
+      setTabs(next.tabs);
+      setLogicalTabsReady(next.logicalTabsReady);
+      setError(next.error);
     } catch (reason) {
-      if (revision !== refreshRevision.current || scope !== await accountStorageKey('workspaces')) return;
-      setTabs(rawTabs);
-      setLogicalTabsReady(false);
-      setError(reason instanceof LazyTabResolutionError ? reason.message : '暂时无法读取当前窗口');
+      if (revision === refreshRevision.current) {
+        setLogicalTabsReady(false);
+        setError(reason instanceof Error ? reason.message : '暂时无法读取当前窗口');
+      }
+    } finally {
+      if (revision === refreshRevision.current) setRefreshing(false);
     }
-  }, []);
+  }, [accountKey]);
 
   const handleRefreshError = React.useCallback((reason: unknown) => {
     setLogicalTabsReady(false);
@@ -191,7 +197,6 @@ function Popup({ accountKey }: { accountKey: string }) {
   }, []);
 
   React.useEffect(() => {
-    void refresh().catch(handleRefreshError);
     const refreshBoundWindow = (changedWindowId: number) => {
       if (changedWindowId === windowIdRef.current) void refresh(changedWindowId).catch(handleRefreshError);
     };
@@ -199,26 +204,30 @@ function Popup({ accountKey }: { accountKey: string }) {
     const onRemoved = (_tabId: number, info: { windowId: number }) => refreshBoundWindow(info.windowId);
     const onUpdated = (_tabId: number, _changeInfo: unknown, tab: { windowId: number }) => refreshBoundWindow(tab.windowId);
     const onMoved = (_tabId: number, info: { windowId: number }) => refreshBoundWindow(info.windowId);
-    const accountChanged = () => {
-      setRecord(null); setResolution(null); setAssociationOptions([]); setName('');
-      void refresh().catch(handleRefreshError);
-    };
+    const onAttached = (_tabId: number, info: { newWindowId: number }) => refreshBoundWindow(info.newWindowId);
+    const onDetached = (_tabId: number, info: { oldWindowId: number }) => refreshBoundWindow(info.oldWindowId);
     const storageChanged = (changes: Record<string, unknown>) => {
-      if (Object.keys(changes).some((key) => key === 'supabaseConfig' || key === 'windowstash-data-owner:v1' || key.startsWith('windowstash-auth:') || key.startsWith('windowstash-companion'))) accountChanged();
+      if (Object.keys(changes).some((key) => key === accountKey || key === accountKey.replace(/^workspaces/, 'lazyRestoreEntries') || key === accountKey.replace(/^workspaces/, `windowBinding:${windowIdRef.current}`) || key === accountKey.replace(/^workspaces/, `windowBindingSuppressed:${windowIdRef.current}`))) {
+        void refresh(windowIdRef.current ?? undefined).catch(handleRefreshError);
+      }
     };
     browser.storage.onChanged.addListener(storageChanged);
     browser.tabs.onCreated.addListener(onCreated);
     browser.tabs.onRemoved.addListener(onRemoved);
     browser.tabs.onUpdated.addListener(onUpdated);
     browser.tabs.onMoved.addListener(onMoved);
+    browser.tabs.onAttached?.addListener(onAttached);
+    browser.tabs.onDetached?.addListener(onDetached);
     return () => {
       browser.storage.onChanged.removeListener(storageChanged);
       browser.tabs.onCreated.removeListener(onCreated);
       browser.tabs.onRemoved.removeListener(onRemoved);
       browser.tabs.onUpdated.removeListener(onUpdated);
       browser.tabs.onMoved.removeListener(onMoved);
+      browser.tabs.onAttached?.removeListener(onAttached);
+      browser.tabs.onDetached?.removeListener(onDetached);
     };
-  }, [handleRefreshError, refresh]);
+  }, [accountKey, handleRefreshError, refresh]);
 
   React.useEffect(() => () => { refreshRevision.current++; }, []);
 
@@ -238,7 +247,7 @@ function Popup({ accountKey }: { accountKey: string }) {
   }, [activeKind, availableKinds, page, totalChanges]);
 
   async function openChange(change: TabChange) {
-    if (windowId == null) return;
+    if (refreshing || windowId == null) return;
     setError('');
     try {
       if (change.kind === 'removed') {
@@ -256,7 +265,7 @@ function Popup({ accountKey }: { accountKey: string }) {
   }
 
   async function submit(closeAfterSave: boolean) {
-    if (windowId == null) return;
+    if (refreshing || windowId == null || !resolution || !logicalTabsReady) return;
     if (!name.trim()) {
       setError('请输入工作区名称');
       return;
@@ -282,7 +291,7 @@ function Popup({ accountKey }: { accountKey: string }) {
   }
 
   async function reopen() {
-    if (windowId == null) return;
+    if (refreshing || windowId == null) return;
     if (resolution?.status === 'unresolved') {
       const url = new URL('/options.html', browser.runtime.getURL('/'));
       url.searchParams.set('recover', '1');
@@ -317,7 +326,7 @@ function Popup({ accountKey }: { accountKey: string }) {
   }
 
   async function associate(workspaceId: string) {
-    if (windowId == null) return;
+    if (refreshing || windowId == null) return;
     setAssociating(workspaceId);
     setError('');
     try {
@@ -379,8 +388,8 @@ function Popup({ accountKey }: { accountKey: string }) {
   const buttons = <WorkspaceActions
     action={saveAction}
     phase={savePhase}
-    saveBlocked={resolution == null || !logicalTabsReady || isUnavailable}
-    reopenBlocked={isUnavailable}
+    saveBlocked={refreshing || resolution == null || !logicalTabsReady || isUnavailable}
+    reopenBlocked={refreshing || isUnavailable}
     reopenLabel={recovering ? '从已保存工作区恢复' : '重新打开工作区'}
     reopeningWorkspace={reopeningWorkspace}
     showReopen={isBound || isUnresolved}
@@ -448,7 +457,7 @@ function Popup({ accountKey }: { accountKey: string }) {
   }
 
   return (
-    <main className="popup-shell">
+    <main className="popup-shell popup-main-shell" data-popup-state="ready">
       {successToast}
       <header className="popup-header"><Logo /></header>
       <section className="popup-content">
@@ -533,43 +542,76 @@ function Popup({ accountKey }: { accountKey: string }) {
 }
 
 export function PopupRoot() {
-  const [identity, setIdentity] = React.useState<{ config: SupabaseConfig | null; userId: string | null }>();
+  const { access, checking, message, refresh } = useVerifiedAccess();
   const [setupError, setSetupError] = React.useState('');
+  const [snapshot, setSnapshot] = React.useState<{ key: string; value: PopupSnapshot }>();
+  const [attempt, setAttempt] = React.useState(0);
+  const windowRead = React.useRef<Promise<Browser.windows.Window> | null>(null);
+  const windowRevision = React.useRef(0);
   React.useEffect(() => {
-    let active = true, revision = 0;
-    let unsubscribe = () => {};
-    async function refresh() {
-      const request = ++revision;
-      if (active) { setIdentity(undefined); setSetupError(''); }
-      try {
-        const config = await getSupabaseConfig();
-        const session = config ? await authService.session() : null;
-        if (active && request === revision) setIdentity({ config, userId: session?.user.id ?? null });
-      } catch {
-        if (active && request === revision) setSetupError('暂时无法确认登录状态，请重试');
-      }
-    }
-    const changed = (changes: Record<string, unknown>) => {
-      if (Object.keys(changes).some((key) => key === 'supabaseConfig' || key.startsWith('windowstash-data-') || key.startsWith('windowstash-auth:') || key.startsWith('windowstash-companion'))) void refresh();
+    // Browser metadata is independent of identity; no workspace data is read here.
+    windowRead.current = readPopupWindow();
+    void windowRead.current.catch(() => {});
+    const invalidate = () => { windowRevision.current++; windowRead.current = null; };
+    const storageChanged = (changes: Record<string, unknown>) => {
+      if (Object.keys(changes).some((key) => /^(workspaces:|windowBinding|lazyRestoreEntries:|persistentWindowAssociation:)/.test(key))) invalidate();
     };
-    void refresh();
-    browser.storage.onChanged.addListener(changed);
-    void authService.subscribe(() => void refresh()).then((stop) => { if (active) unsubscribe = stop; else stop(); }).catch(() => {});
-    return () => { active = false; revision++; unsubscribe(); browser.storage.onChanged.removeListener(changed); };
+    browser.tabs.onCreated.addListener(invalidate);
+    browser.tabs.onRemoved.addListener(invalidate);
+    browser.tabs.onUpdated.addListener(invalidate);
+    browser.tabs.onMoved.addListener(invalidate);
+    browser.tabs.onAttached?.addListener(invalidate);
+    browser.tabs.onDetached?.addListener(invalidate);
+    browser.storage.onChanged.addListener(storageChanged);
+    return () => {
+      browser.tabs.onCreated.removeListener(invalidate);
+      browser.tabs.onRemoved.removeListener(invalidate);
+      browser.tabs.onUpdated.removeListener(invalidate);
+      browser.tabs.onMoved.removeListener(invalidate);
+      browser.tabs.onAttached?.removeListener(invalidate);
+      browser.tabs.onDetached?.removeListener(invalidate);
+      browser.storage.onChanged.removeListener(storageChanged);
+    };
   }, []);
-  if (!identity) return <main className="popup-loading">{setupError || '正在确认登录状态…'}</main>;
-  const { config, userId } = identity;
+  const config = access?.config;
+  const userId = access?.session?.user.id;
+  const key = config && userId ? `workspaces:${accountOwner(config.url, userId)}` : '';
+  React.useEffect(() => {
+    let active = true;
+    setSnapshot(undefined);
+    setSetupError('');
+    if (key) {
+      void (async () => {
+        while (active) {
+          const revision = windowRevision.current;
+          const read = windowRead.current ?? readPopupWindow();
+          windowRead.current = null;
+          const current = await read;
+          const value = await loadPopupWindow(key, current);
+          if (!active) return;
+          if (revision !== windowRevision.current) continue;
+          setSnapshot({ key, value });
+          return;
+        }
+      })().catch((error) => { if (active) setSetupError(error instanceof Error ? error.message : '暂时无法读取当前窗口'); });
+    }
+    return () => { active = false; };
+  }, [key, attempt]);
+  React.useLayoutEffect(() => { markPopupCommit(Boolean(key && snapshot?.key === key && !checking)); });
+  if (!access || (key && snapshot?.key !== key)) return <PopupPreparing error={setupError || message} onRetry={() => void refresh().then(() => setAttempt((value) => value + 1))} />;
   if (!config || !userId) return <main className="popup-shell">
     <header className="popup-header"><Logo /></header>
     <section className="popup-content popup-setup">
       <h1>连接你的数据存储</h1>
       <p>WindowStash 使用你自己的 Supabase 项目保存工作区。在独立设置标签页中完成配置，切换页面复制信息时，已填写的内容会保留。</p>
       <button className="button button-primary" onClick={() => void browser.runtime.openOptionsPage().catch(() => setSetupError('无法打开设置页，请重试'))}>开始设置</button>
-      {setupError ? <div className="inline-error" role="alert">{setupError}</div> : null}
+      {setupError || message ? <div className="inline-error" role="alert">{setupError || message}</div> : null}
       <button className="config-tutorial" onClick={() => window.open('/开始使用.html', '_blank', 'noopener,noreferrer')}>查看开始使用教程 <span>↗</span></button>
     </section>
   </main>;
-  return <Popup key={`${config.url}:${userId}`} accountKey={`workspaces:${accountOwner(config.url, userId)}`} />;
+  return <div inert={checking}><Popup key={key} accountKey={key} initial={snapshot!.value} /></div>;
 }
 
+startPopupPerformance();
+Object.defineProperty(window, 'windowstashPopupPerformance', { value: popupPerformanceSnapshot, configurable: true });
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><PopupRoot /></React.StrictMode>);

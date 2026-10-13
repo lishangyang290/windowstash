@@ -5,10 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { authService } from '@/lib/supabase/authService';
 import { workspaceRepository } from '@/lib/storage/workspaceRepository';
 import schema from '../../../supabase/schema.sql?raw';
+import popupHtml from '../popup/index.html?raw';
 import { browser } from 'wxt/browser';
+import { resolveWorkspaceStateForWindow } from '@/features/workspaces/workspaceService';
 
 const storage = vi.hoisted(() => new Map<string, unknown>());
-const authEvents = vi.hoisted(() => ({ changed: () => {} }));
+const authEvents = vi.hoisted(() => ({ changed: (() => {}) as (event?: import('@supabase/supabase-js').AuthChangeEvent, session?: import('@supabase/supabase-js').Session | null) => void }));
 const requestPermission = vi.hoisted(() => vi.fn(async () => true));
 
 // Entry points bootstrap themselves; render their roots explicitly in these tests.
@@ -581,6 +583,8 @@ it('shows retained unowned legacy data and leaves it untouched when recovery is 
 
 it('shows login instead of saving after logout and restores the popup only after relogin', async () => {
   storage.set('supabaseConfig', config);
+  storage.set('windowstash-data-owner:v1', JSON.stringify([config.url, 'A']));
+  storage.set('windowstash-auth:sb-project-auth-token', JSON.stringify({ user: { id: 'A' } }));
   const session = { user: { id: 'A' } } as Awaited<ReturnType<typeof authService.session>>;
   vi.mocked(authService.session).mockResolvedValue(session);
   await renderPopup();
@@ -601,8 +605,8 @@ it('does not expose saving while identity is pending or when a pre-logout sessio
   let finish!: (value: Awaited<ReturnType<typeof authService.session>>) => void;
   vi.mocked(authService.session).mockImplementationOnce(() => new Promise((done) => { finish = done; }));
   await renderPopup();
-  expect(container.textContent).toContain('正在确认登录状态');
-  expect(container.textContent).not.toContain('保存当前状态');
+  expect(container.textContent).toContain('正在准备当前工作区');
+  expect(button('保存当前状态').disabled).toBe(true);
   vi.mocked(authService.session).mockResolvedValue(null);
   await act(async () => authEvents.changed());
   expect(container.textContent).toContain('开始设置');
@@ -619,4 +623,200 @@ it('reacts to logout storage events even when the SDK does not emit an auth even
   await act(async () => changed({ 'windowstash-data-owner:v1': { oldValue: 'A', newValue: 'signed-out' } }, 'local'));
   expect(container.textContent).toContain('开始设置');
   expect(container.textContent).not.toContain('保存当前状态');
+});
+
+function loggedIn(userId = 'A') {
+  storage.set('supabaseConfig', config);
+  storage.set('windowstash-data-owner:v1', JSON.stringify([config.url, userId]));
+  storage.set('windowstash-auth:sb-project-auth-token', JSON.stringify({ user: { id: userId } }));
+  const session = { user: { id: userId, email: userId + '@example.invalid' } } as Awaited<ReturnType<typeof authService.requireSession>>;
+  vi.mocked(authService.session).mockResolvedValue(session);
+  return session;
+}
+
+it('preserves manager DOM and search during repeated focus/pageshow checks and same-user auth events', async () => {
+  const session = loggedIn();
+  await renderOptions();
+  const dashboard = container.querySelector('.dashboard');
+  await enter(0, 'kept search');
+  let finish!: (session: Awaited<ReturnType<typeof authService.session>>) => void;
+  vi.mocked(authService.session).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  await act(async () => window.dispatchEvent(new Event('focus')));
+  expect(container.querySelector('.dashboard')).toBe(dashboard);
+  expect(container.querySelector('[inert]')).not.toBeNull();
+  expect(container.textContent).not.toContain('正在检查登录状态');
+  await act(async () => finish(session));
+  for (let i = 0; i < 3; i++) {
+    await switchTabs();
+    await act(async () => window.dispatchEvent(new Event('pageshow')));
+    await act(async () => authEvents.changed('TOKEN_REFRESHED', session));
+    await act(async () => authEvents.changed('SIGNED_IN', session));
+    expect(container.querySelector('.dashboard')).toBe(dashboard);
+    expect(container.querySelector('input')?.value).toBe('kept search');
+  }
+});
+
+it('opens authenticated popup repeatedly with one prepared snapshot and rechecks each time', async () => {
+  loggedIn();
+  for (let i = 0; i < 3; i++) {
+    const checks = vi.mocked(authService.session).mock.calls.length;
+    await renderPopup();
+    expect(container.textContent).toContain('保存当前状态');
+    expect(container.textContent).not.toContain('正在识别当前工作区');
+    expect(vi.mocked(authService.session).mock.calls.length).toBeGreaterThan(checks);
+    expect(button('保存当前状态').disabled).toBe(false);
+    act(() => root.unmount());
+    root = createRoot(container);
+  }
+});
+
+it('retains popup on same-user token storage notifications but hides it for an account switch', async () => {
+  const session = loggedIn();
+  await renderPopup();
+  const shell = container.querySelector('.popup-shell');
+  const changed = vi.mocked(browser.storage.onChanged.addListener).mock.calls.find(([callback]) => callback.length === 2)![0];
+  let finish!: (session: Awaited<ReturnType<typeof authService.session>>) => void;
+  vi.mocked(authService.session).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  await act(async () => changed({ 'windowstash-auth:sb-project-auth-token': { oldValue: JSON.stringify(session), newValue: JSON.stringify({ ...session, access_token: 'renewed' }) } }, 'local'));
+  expect(container.querySelector('.popup-shell')).toBe(shell);
+  expect(container.querySelector('[inert]')).not.toBeNull();
+  await act(async () => finish(session));
+  const next = loggedIn('B');
+  vi.mocked(authService.session).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  await act(async () => changed({ 'windowstash-data-owner:v1': { oldValue: JSON.stringify([config.url, 'A']), newValue: JSON.stringify([config.url, 'B']) } }, 'local'));
+  expect(container.querySelector('[data-popup-state="ready"]')).toBeNull();
+  await act(async () => finish(next));
+  expect(container.textContent).toContain('保存当前状态');
+});
+
+it('discards a late failed recheck and recovers after the latest check succeeds', async () => {
+  const session = loggedIn();
+  await renderOptions();
+  let fail!: (error: Error) => void;
+  vi.mocked(authService.session).mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+  await act(async () => window.dispatchEvent(new Event('focus')));
+  await act(async () => authEvents.changed('SIGNED_OUT', null));
+  await act(async () => fail(new Error('older request failed')));
+  expect(container.querySelector('.dashboard')).not.toBeNull();
+  vi.mocked(authService.session).mockRejectedValueOnce(new Error('host unavailable'));
+  await act(async () => window.dispatchEvent(new Event('focus')));
+  expect(container.querySelector('.dashboard')).toBeNull();
+  vi.mocked(authService.session).mockResolvedValue(session);
+  await act(async () => window.dispatchEvent(new Event('focus')));
+  expect(container.querySelector('.dashboard')).not.toBeNull();
+});
+
+it('uses each current Chrome window and account scope rather than a previous popup snapshot', async () => {
+  loggedIn();
+  vi.mocked(browser.windows.getCurrent).mockResolvedValueOnce({ id: 10, tabs: [] } as never);
+  await renderPopup();
+  expect(resolveWorkspaceStateForWindow).toHaveBeenLastCalledWith(10, [], 'workspaces:' + JSON.stringify([config.url, 'A']), true);
+  act(() => root.unmount());
+  root = createRoot(container);
+  vi.mocked(browser.windows.getCurrent).mockResolvedValueOnce({ id: 20, tabs: [] } as never);
+  await renderPopup();
+  expect(resolveWorkspaceStateForWindow).toHaveBeenLastCalledWith(20, [], 'workspaces:' + JSON.stringify([config.url, 'A']), true);
+});
+
+it('invalidates prefetched window metadata when tabs change while authentication is pending', async () => {
+  const session = loggedIn();
+  let finish!: (value: Awaited<ReturnType<typeof authService.session>>) => void;
+  vi.mocked(authService.session).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  await renderPopup();
+  vi.mocked(browser.windows.getCurrent).mockResolvedValueOnce({ id: 30, tabs: [] } as never);
+  const callbacks = vi.mocked(browser.tabs.onUpdated.addListener).mock.calls;
+  await act(async () => callbacks.forEach(([callback]) => callback(1, {}, { windowId: 30 } as never)));
+  await act(async () => finish(session));
+  expect(resolveWorkspaceStateForWindow).toHaveBeenLastCalledWith(30, [], 'workspaces:' + JSON.stringify([config.url, 'A']), true);
+  expect(container.textContent).toContain('保存当前状态');
+});
+
+it('never displays an old project snapshot when the project changes during authentication', async () => {
+  loggedIn();
+  let finish!: (value: Awaited<ReturnType<typeof authService.session>>) => void;
+  vi.mocked(authService.session).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  await renderPopup();
+  storage.set('supabaseConfig', { url: 'https://other.supabase.co', publishableKey: 'other-public-key' });
+  vi.mocked(authService.session).mockResolvedValue(null);
+  await act(async () => finish({ user: { id: 'A' } } as Awaited<ReturnType<typeof authService.requireSession>>));
+  expect(container.textContent).toContain('开始设置');
+  expect(resolveWorkspaceStateForWindow).not.toHaveBeenCalled();
+});
+
+it('retries failed initial window reads without displaying actions before resolution', async () => {
+  loggedIn();
+  vi.mocked(browser.windows.getCurrent).mockRejectedValueOnce(new Error('window unavailable'));
+  await renderPopup();
+  expect(container.textContent).toContain('window unavailable');
+  expect(button('保存当前状态').disabled).toBe(true);
+  await click('重试');
+  expect(container.textContent).toContain('保存当前状态');
+  expect(button('保存当前状态').disabled).toBe(false);
+});
+
+it('ignores identical auth storage writes and unrelated companion diagnostic writes', async () => {
+  loggedIn();
+  await renderOptions();
+  const checks = vi.mocked(authService.session).mock.calls.length;
+  const changed = vi.mocked(browser.storage.onChanged.addListener).mock.calls.find(([callback]) => callback.length === 2)![0];
+  await act(async () => changed({ 'windowstash-data-owner:v1': { oldValue: 'A', newValue: 'A' }, 'windowstash-companion:diagnostics': { newValue: 'connected' } }, 'local'));
+  expect(vi.mocked(authService.session).mock.calls.length).toBe(checks);
+  expect(container.querySelector('.dashboard')).not.toBeNull();
+});
+
+it('does not let an older manager data read overwrite newer workspace changes', async () => {
+  loggedIn();
+  let finish!: (records: Awaited<ReturnType<typeof workspaceRepository.list>>) => void;
+  vi.mocked(workspaceRepository.list).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  await renderOptions();
+  const record = (name: string): Awaited<ReturnType<typeof workspaceRepository.list>>[number] => ({ content: { id: 'workspace-1', name, status: 'active', tabs: [], activeTabIndex: 0, createdAt: '2026-10-13T00:00:00Z', updatedAt: '2026-10-13T00:00:00Z' }, sync: { syncStatus: 'synced', lastSyncedAt: null, lastSyncedHash: null, lastSyncedCloudUpdatedAt: null, localExpiresAt: '2026-11-13T00:00:00Z', lastSyncError: null } });
+  vi.mocked(workspaceRepository.list).mockResolvedValue([record('New workspace')]);
+  const callbacks = vi.mocked(browser.storage.onChanged.addListener).mock.calls;
+  await act(async () => callbacks.forEach(([callback]) => callback({ 'workspaces:current': { newValue: {} } }, 'local')));
+  expect(container.textContent).toContain('New workspace');
+  await act(async () => finish([record('Old workspace')]));
+  expect(container.textContent).toContain('New workspace');
+  expect(container.textContent).not.toContain('Old workspace');
+});
+
+it('includes a neutral shell before JavaScript and keeps every operation disabled', () => {
+  const dom = parseHTML(popupHtml);
+  expect(dom.document.querySelector('.popup-header')?.textContent).toContain('WindowStash');
+  expect(dom.document.querySelector('.popup-content')).not.toBeNull();
+  expect(dom.document.querySelector('.popup-actions')).not.toBeNull();
+  expect(dom.document.querySelector('.manager-link')).not.toBeNull();
+  expect([...dom.document.querySelectorAll('button')].every((item) => item.hasAttribute('disabled'))).toBe(true);
+  expect(dom.document.querySelector('[aria-busy="true"]')).not.toBeNull();
+});
+
+it('keeps the full neutral popup shell while workspace identification is pending', async () => {
+  loggedIn();
+  let finish!: (value: Awaited<ReturnType<typeof resolveWorkspaceStateForWindow>>) => void;
+  vi.mocked(resolveWorkspaceStateForWindow).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  await renderPopup();
+  expect(container.querySelector('.popup-header')?.textContent).toContain('WindowStash');
+  expect(container.querySelector('.popup-actions')).not.toBeNull();
+  for (const text of ['保存当前状态', '保存并关闭窗口', '重新打开工作区', '关联已有工作区']) expect(button(text).disabled).toBe(true);
+  expect(container.querySelector('[data-popup-state="ready"]')).toBeNull();
+  await act(async () => finish({ status: 'unbound', record: null, workspaceId: null, source: null }));
+  expect(container.querySelector('[data-popup-state="ready"]')).not.toBeNull();
+  expect(button('保存当前状态').disabled).toBe(false);
+});
+
+it('coalesces overlapping focus/pageshow and same-account auth checks', async () => {
+  const session = loggedIn();
+  await renderPopup();
+  const checks = vi.mocked(authService.session).mock.calls.length;
+  let finish!: (value: Awaited<ReturnType<typeof authService.session>>) => void;
+  vi.mocked(authService.session).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+  await act(async () => {
+    window.dispatchEvent(new Event('focus'));
+    window.dispatchEvent(new Event('pageshow'));
+    authEvents.changed('TOKEN_REFRESHED', session);
+  });
+  expect(vi.mocked(authService.session).mock.calls.length).toBe(checks + 1);
+  expect(container.querySelector('[inert]')).not.toBeNull();
+  await act(async () => finish(session));
+  expect(container.querySelector('[inert]')).toBeNull();
+  expect(button('保存当前状态').disabled).toBe(false);
 });

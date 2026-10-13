@@ -3,6 +3,7 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import { browser } from 'wxt/browser';
 import { STORAGE_KEYS } from '@/lib/constants';
 import { authLink, authLock, nativeAuth } from '@/lib/companion/auth';
+import { measurePopupStage } from '@/lib/popupPerformance';
 
 export interface SupabaseConfig {
   url: string;
@@ -75,7 +76,7 @@ export function getDevelopmentSupabaseConfig(): SupabaseConfig | null {
 }
 
 export async function getStoredSupabaseConfig(): Promise<SupabaseConfig | null> {
-  const result = await browser.storage.local.get(STORAGE_KEYS.supabaseConfig);
+  const result = await measurePopupStage('config-storage', () => browser.storage.local.get(STORAGE_KEYS.supabaseConfig));
   try {
     return result[STORAGE_KEYS.supabaseConfig]
       ? normalizeSupabaseConfig(result[STORAGE_KEYS.supabaseConfig] as SupabaseConfig)
@@ -148,8 +149,8 @@ export async function saveSupabaseConfig(value: SupabaseConfig, verifiedConfig?:
   return config;
 }
 
-export async function getSupabaseClient(): Promise<SupabaseClient | null> {
-  const config = await getSupabaseConfig();
+export async function getSupabaseClient(knownConfig?: SupabaseConfig | null): Promise<SupabaseClient | null> {
+  const config = knownConfig === undefined ? await getSupabaseConfig() : knownConfig;
   if (!config) {
     client = null;
     clientConfig = '';
