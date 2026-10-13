@@ -115,19 +115,23 @@ for (const scenario of ['macOnly', 'windowsOnly', 'missingInstaller', 'emptyWind
   assert.equal(harness.messages.some((text) => text.includes('发布成功')), scenario === 'complete');
 });
 
-test('手动 Actions 验证没有写权限或发布路径，只有统一 Tag 发布任务可写', async () => {
+test('PR 与手动 Actions 验证没有写权限或发布路径，只有成功的 Tag 发布任务可写', async () => {
   const source = await readFile(resolve(root, '.github/workflows/release.yml'), 'utf8');
   assert.match(source, /workflow_dispatch:/);
+  assert.match(source, /pull_request:\s+branches: \[main\]\s+types: \[opened, synchronize, reopened\]/);
+  assert.doesNotMatch(source, /pull_request_target|secrets\./);
   assert.match(source, /permissions:\s+contents: read/);
   const [build, publish] = source.split('\n  publish:');
   assert.doesNotMatch(build, /contents: write|gh release|publish-release\.mjs/);
   assert.match(publish, /needs: build/);
-  assert.match(publish, /if: github.event_name == 'push' && startsWith\(github.ref, 'refs\/tags\/v'\)/);
+  assert.match(publish, /if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith\(github.ref, 'refs\/tags\/v'\) && needs.build.result == 'success'/);
+  assert.match(build, /ref: \$\{\{ github.event.pull_request.head.sha \|\| github.sha \}\}/);
+  assert.match(build, /github.event_name == 'push' && 'release' \|\| 'validation'/);
   assert.match(publish, /contents: write/);
   assert.equal((source.match(/run: node scripts\/publish-release.mjs/g) ?? []).length, 1);
 });
 
-for (const scenario of ['success', 'existing', 'uploadFailure', 'missingAsset', 'corruptDownload', 'wrongTag', 'manual']) test(`统一发布任务安全流程（完全模拟 gh）：${scenario}`, async (t) => {
+for (const scenario of ['success', 'existing', 'uploadFailure', 'missingAsset', 'corruptDownload', 'wrongTag', 'manual', 'pr']) test(`统一发布任务安全流程（完全模拟 gh）：${scenario}`, async (t) => {
   const directory = await mkdtemp(resolve(tmpdir(), 'windowstash-publish-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const names = releaseAssets().map((asset) => asset.name).sort();
@@ -163,14 +167,14 @@ syncBuiltinESMExports();
 `, 'utf8');
   const { spawnSync } = await import('node:child_process');
   const result = spawnSync(process.execPath, ['--import', pathToFileURL(mock).href, resolve(root, 'scripts/publish-release.mjs')], {
-    cwd: directory, encoding: 'utf8', env: { ...process.env, GITHUB_EVENT_NAME: scenario === 'manual' ? 'workflow_dispatch' : 'push', GITHUB_REF: 'refs/tags/v0.4.0', GITHUB_REF_NAME: 'v0.4.0', GITHUB_SHA: 'a'.repeat(40), GITHUB_REPOSITORY: 'lishangyang290/windowstash' },
+    cwd: directory, encoding: 'utf8', env: { ...process.env, GITHUB_EVENT_NAME: scenario === 'pr' ? 'pull_request' : scenario === 'manual' ? 'workflow_dispatch' : 'push', GITHUB_REF: 'refs/tags/v0.4.0', GITHUB_REF_NAME: 'v0.4.0', GITHUB_SHA: 'a'.repeat(40), GITHUB_REPOSITORY: 'lishangyang290/windowstash' },
   });
   assert.ifError(result.error);
   assert.equal(result.status, scenario === 'success' ? 0 : 1, result.stderr);
-  const calls = scenario === 'manual' ? [] : (await readFile(resolve(directory, 'calls.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  const calls = ['manual', 'pr'].includes(scenario) ? [] : (await readFile(resolve(directory, 'calls.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
   assert.equal(calls.some((args) => args[1] === 'edit'), scenario === 'success');
   assert.ok(calls.every((args) => !args.includes('--clobber')));
-  if (['existing', 'wrongTag', 'manual'].includes(scenario)) assert.ok(!calls.some((args) => args[1] === 'create'));
+  if (['existing', 'wrongTag', 'manual', 'pr'].includes(scenario)) assert.ok(!calls.some((args) => args[1] === 'create'));
   else assert.ok(calls.find((args) => args[1] === 'create')?.includes('--draft'));
   if (scenario === 'success') {
     assert.deepEqual(calls.filter((args) => args[0] === 'release').map((args) => args[1]), ['create', 'upload', 'view', 'download', 'edit']);

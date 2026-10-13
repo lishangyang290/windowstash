@@ -3,6 +3,9 @@ on:
   push:
     tags: ['v*.*.*']
   workflow_dispatch:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
 permissions:
   contents: read
 concurrency:
@@ -33,6 +36,7 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: Set up Node.js
@@ -57,7 +61,7 @@ jobs:
             git merge-base --is-ancestor HEAD origin/main
             test -s ".github/release-notes/$GITHUB_REF_NAME.md"
           else
-            test "$RELEASE_EVENT" = workflow_dispatch
+            [[ "$RELEASE_EVENT" == workflow_dispatch || "$RELEASE_EVENT" == pull_request ]]
           fi
           for path in .env companion/.env .output companion/dist companion/src-tauri/target; do
             test ! -e "$path" || { echo "干净 checkout 不应包含：$path" >&2; exit 1; }
@@ -119,14 +123,14 @@ jobs:
       - name: Upload verified platform artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event_name == 'workflow_dispatch' && 'validation' || 'release' }}-${{ matrix.artifact }}
+          name: ${{ github.event_name == 'push' && 'release' || 'validation' }}-${{ matrix.artifact }}
           path: ${{ runner.temp }}/release-assets/*
           if-no-files-found: error
           retention-days: 7
   publish:
     name: Publish complete Release
     needs: build
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v') && needs.build.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
