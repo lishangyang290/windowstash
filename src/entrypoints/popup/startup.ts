@@ -3,6 +3,8 @@ import { resolveWorkspaceStateForWindow } from '@/features/workspaces/workspaceS
 import { LazyTabResolutionError, resolveLogicalTabs } from '@/features/workspaces/lazyRestore';
 import type { CurrentTabSnapshot } from '@/features/workspaces/tabDiff';
 import { measurePopupStage } from '@/lib/popupPerformance';
+import { readDeletionNotice } from '@/features/workspaces/remoteDeletion';
+import { bindingRepository } from '@/lib/storage/bindingRepository';
 
 export type PopupSnapshot = Awaited<ReturnType<typeof loadPopupWindow>>;
 export function readPopupWindow(windowId?: number) {
@@ -18,5 +20,7 @@ export async function loadPopupWindow(accountKey: string, current: Browser.windo
   try { tabs = await measurePopupStage('logical-tabs', () => resolveLogicalTabs(rawTabs, accountKey.replace(/^workspaces/, 'lazyRestoreEntries'))); logicalTabsReady = true; }
   catch (reason) { error = reason instanceof LazyTabResolutionError ? reason.message : '暂时无法读取当前窗口'; }
   const resolution = await measurePopupStage('workspace-resolution', () => resolveWorkspaceStateForWindow(current.id!, tabs, accountKey, logicalTabsReady));
-  return { windowId: current.id, tabs, resolution, logicalTabsReady, error };
+  const deletionNotice = await readDeletionNotice(accountKey, current.id);
+  const unsaved = resolution.status === 'unbound' && await bindingRepository.isSuppressed(current.id, accountKey);
+  return { windowId: current.id, tabs, resolution, logicalTabsReady, error, deletionNotice, unsaved };
 }

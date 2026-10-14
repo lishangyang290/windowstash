@@ -7,6 +7,7 @@ const browserMock = vi.hoisted(() => ({
   windows: { get: vi.fn(), getAll: vi.fn(), remove: vi.fn(), create: vi.fn(), update: vi.fn() },
   tabs: { create: vi.fn(), get: vi.fn(), remove: vi.fn(), update: vi.fn() },
   runtime: { sendMessage: vi.fn().mockResolvedValue(undefined), getURL: vi.fn((path: string) => `chrome-extension://test${path}`) },
+  storage: { local: { get: vi.fn(async () => ({})) } },
 }));
 const bindingMock = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), suppress: vi.fn(), suppressWorkspace: vi.fn(), isSuppressed: vi.fn(), remove: vi.fn() }));
 const logMock = vi.hoisted(() => ({ add: vi.fn() }));
@@ -15,7 +16,8 @@ const workspaceMock = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), saveConte
 const syncMock = vi.hoisted(() => ({ syncAll: vi.fn() }));
 const nativeMock = vi.hoisted(() => vi.fn());
 const nativeReadMock = vi.hoisted(() => vi.fn(async () => null as WorkspaceLocalRecord | null));
-vi.mock('@/lib/companion/workspaces', () => ({ publishNativeWorkspaces: nativeMock, getNativeWorkspace: nativeReadMock }));
+vi.mock('@/lib/companion/workspaces', () => ({ publishNativeWorkspaces: nativeMock, getNativeWorkspace: nativeReadMock, libraryStateKey: (scope: string) => `library:${scope}`, NativeWorkspaceDeletedError: class extends Error {} }));
+vi.mock('@/lib/sync/nativeWatch', () => ({ pullNativeLibrary: vi.fn(async () => {}) }));
 const lazyMock = vi.hoisted(() => ({
   list: vi.fn(), get: vi.fn(), put: vi.fn(), remove: vi.fn(), removeByTabId: vi.fn(), removeByWindowId: vi.fn(), removeMany: vi.fn(),
 }));
@@ -60,6 +62,13 @@ const localRecord: WorkspaceLocalRecord = {
 };
 
 describe('workspaceService', () => {
+  it('uses the native cloud download before an older Chrome cache when reopening a bound workspace', async () => {
+    bindingMock.get.mockResolvedValue('workspace-1');
+    const latest = { ...localRecord, content: { ...localRecord.content, name: 'Latest remote update', updatedAt: '2026-10-14T00:00:00Z' } };
+    nativeReadMock.mockResolvedValue(latest);
+    const result = await resolveWorkspaceForWindow(22, []);
+    expect(result?.content.name).toBe('Latest remote update'); expect(syncMock.syncAll).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     accountKey.mockImplementation(async (key: string) => key);

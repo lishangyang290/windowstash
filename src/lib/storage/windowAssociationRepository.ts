@@ -73,10 +73,14 @@ export const windowAssociationRepository = {
   },
 
   async removeForWorkspace(workspaceId: string, requestedKey?: string): Promise<void> {
+    return this.removeForWorkspaces(new Set([workspaceId]), requestedKey);
+  },
+
+  async removeForWorkspaces(workspaceIds: ReadonlySet<string>, requestedKey?: string): Promise<void> {
     const storagePrefix = await scopedPrefix(requestedKey);
     return serialize(async () => {
       const keys = (await list(storagePrefix))
-        .filter((record) => record.workspaceId === workspaceId)
+        .filter((record) => workspaceIds.has(record.workspaceId))
         .map((record) => key(record.associationId, storagePrefix));
       if (keys.length) await browser.storage.local.remove(keys);
     });

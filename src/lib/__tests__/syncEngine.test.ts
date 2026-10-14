@@ -124,3 +124,4 @@ describe('syncEngine.syncAll', () => {
     expect(workspaceMock.remove).toHaveBeenCalledWith('one', undefined);
   });
 });
+vi.mock('@/lib/sync/nativeSync', () => ({ syncNative: async () => false, resolveNativeConflict: async () => false }));

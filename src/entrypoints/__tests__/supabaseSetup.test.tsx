@@ -9,6 +9,7 @@ import popupHtml from '../popup/index.html?raw';
 import { browser } from 'wxt/browser';
 import { resolveWorkspaceStateForWindow, saveCurrentWindow } from '@/features/workspaces/workspaceService';
 import popupStyle from '../popup/style.css?raw';
+import { deletionNoticeKey } from '@/features/workspaces/remoteDeletion';
 
 const storage = vi.hoisted(() => new Map<string, unknown>());
 const authEvents = vi.hoisted(() => ({ changed: (() => {}) as (event?: import('@supabase/supabase-js').AuthChangeEvent, session?: import('@supabase/supabase-js').Session | null) => void }));
@@ -25,6 +26,11 @@ vi.mock('wxt/browser', () => {
     runtime: { getURL: vi.fn((path: string) => `chrome-extension://fixture${path}`), openOptionsPage: vi.fn(async () => undefined), sendMessage: vi.fn(async () => undefined) },
     permissions: { request: requestPermission },
     storage: {
+      session: {
+        get: vi.fn(async (key: string) => ({ [key]: storage.get(`session:${key}`) })),
+        set: vi.fn(async (values: Record<string, unknown>) => { Object.entries(values).forEach(([key, value]) => storage.set(`session:${key}`, value)); }),
+        remove: vi.fn(async (key: string) => { storage.delete(`session:${key}`); }),
+      },
       local: {
         get: vi.fn(async (key: string | string[] | null) => Object.fromEntries((key === null ? [...storage.keys()] : Array.isArray(key) ? key : [key]).map((item) => [item, storage.get(item)]))),
         set: vi.fn(async (values: Record<string, unknown>) => { Object.entries(values).forEach(([key, value]) => storage.set(key, value)); }),
@@ -51,6 +57,24 @@ vi.mock('@/lib/sync/syncEngine', () => ({ syncEngine: { syncAll: vi.fn(async () 
 let root: ReturnType<typeof createRoot>;
 let container: HTMLElement;
 const config = { url: 'https://project.supabase.co', publishableKey: 'sb_publishable_example' };
+
+it('retains the remote-deletion popup until acknowledgement, then shows the ordinary unsaved window', async () => {
+  const session = loggedIn('A'), owner = JSON.stringify([config.url, session.user.id]), scope = `workspaces:${owner}`;
+  vi.mocked(authService.session).mockResolvedValue(session);
+  storage.set('supabaseConfig', config); storage.set('windowstash-data-owner:v1', owner);
+  storage.set('windowstash-auth:sb-project-auth-token', JSON.stringify(session));
+  const notice = { id: 'event:window-1', workspaceId: 'deleted-id', deletedAt: '2026-10-14T00:00:00Z', windowId: 1, tabs: [] };
+  storage.set(deletionNoticeKey(scope), { [notice.id]: notice }); storage.set(`session:windowDeletion:1:${owner}`, notice.id);
+  await renderPopup();
+  expect(container.textContent).toContain('此工作区已被删除');
+  expect([...container.querySelectorAll('button')].map(item => item.textContent)).toEqual(['我知道了']);
+  act(() => root.unmount()); root = createRoot(container); await renderPopup();
+  expect(container.textContent).toContain('此工作区已被删除');
+  await click('我知道了');
+  expect(container.textContent).not.toContain('此工作区已被删除'); expect(container.textContent).toContain('未保存');
+  expect(storage.get(deletionNoticeKey(scope))).toEqual({});
+  expect(saveCurrentWindow).not.toHaveBeenCalled();
+});
 
 beforeEach(() => {
   vi.clearAllMocks();

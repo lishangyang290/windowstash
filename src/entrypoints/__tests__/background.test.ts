@@ -17,7 +17,8 @@ const recoverMock = vi.hoisted(() => vi.fn());
 const restoreSavedMock = vi.hoisted(() => vi.fn());
 const refreshAssociationMock = vi.hoisted(() => vi.fn());
 const pendingSyncMock = vi.hoisted(() => vi.fn(async () => {}));
-vi.mock('@/lib/sync/pendingSync', () => ({ PENDING_SYNC_ALARM: 'windowstash-pending-sync', syncPendingWorkspaces: pendingSyncMock }));
+const schedulePendingMock = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('@/lib/sync/pendingSync', () => ({ PENDING_SYNC_ALARM: 'windowstash-pending-sync', syncPendingWorkspaces: pendingSyncMock, schedulePendingSync: schedulePendingMock }));
 
 const browserMock = vi.hoisted(() => {
   const event = () => ({ addListener: vi.fn() });
@@ -47,7 +48,7 @@ vi.mock('@/features/workspaces/workspaceService', () => ({
   reopenWorkspace: reopenMock,
   restoreSavedWorkspace: restoreSavedMock,
 }));
-vi.mock('@/lib/sync/syncEngine', () => ({ syncEngine: { syncAll: vi.fn(), syncWorkspace: vi.fn(), cleanupExpiredLocalCopies: vi.fn() } }));
+vi.mock('@/lib/sync/syncEngine', () => ({ syncEngine: { syncAll: vi.fn(async () => {}), syncWorkspace: vi.fn(), cleanupExpiredLocalCopies: vi.fn() } }));
 vi.mock('@/lib/storage/bindingRepository', () => ({ bindingRepository: { remove: vi.fn() } }));
 vi.mock('@/features/workspaces/lazyRestore', () => ({
   beginStartupLazyReconciliation: vi.fn().mockResolvedValue(undefined),
@@ -76,6 +77,12 @@ beforeAll(async () => {
 });
 
 describe('background messages', () => {
+  it('keeps an automatic retry scheduled when cloud startup synchronization fails', async () => {
+    const { syncEngine } = await import('@/lib/sync/syncEngine');
+    vi.mocked(syncEngine.syncAll).mockRejectedValueOnce(new Error('offline'));
+    listeners.onStartup?.();
+    await vi.waitFor(() => expect(schedulePendingMock).toHaveBeenCalledWith(5 * 60_000));
+  });
   it('drains the durable queue from an alarm without a popup or manager sender', async () => {
     listeners.onAlarm?.({ name: 'windowstash-pending-sync' });
     expect(pendingSyncMock).toHaveBeenCalledOnce();

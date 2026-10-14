@@ -10,6 +10,7 @@ import { tombstoneRepository } from '@/lib/storage/tombstoneRepository';
 import { workspaceRepository } from '@/lib/storage/workspaceRepository';
 import { workspaceRemoteRepository } from '@/lib/supabase/workspaceRemoteRepository';
 import { bindingRepository } from '@/lib/storage/bindingRepository';
+import { syncNative, resolveNativeConflict } from './nativeSync';
 
 const syncTasks = new Map<string, Promise<unknown>>();
 function serializeSync<T>(scope: string, id: string, task: () => Promise<T>): Promise<T> {
@@ -66,6 +67,8 @@ async function upload(record: WorkspaceLocalRecord): Promise<void> {
 
 export const syncEngine = {
   async syncWorkspace(workspaceId: string, requestedKey?: string): Promise<void> {
+    const nativeScope = requestedKey ?? await accountStorageKey(STORAGE_KEYS.workspaces);
+    if (await syncNative(nativeScope)) return;
     if (!(await workspaceRemoteRepository.isAuthenticated())) return;
     const storageKey = requestedKey ?? await accountStorageKey(STORAGE_KEYS.workspaces);
     return serializeSync(storageKey, workspaceId, async () => {
@@ -74,7 +77,13 @@ export const syncEngine = {
       if (!local) return;
       try {
         const cloud = await workspaceRemoteRepository.get(workspaceId, storageKey);
-        if (!cloud) return await upload(local);
+        if (!cloud) {
+          if (local.sync.lastSyncedHash || local.sync.lastSyncedCloudUpdatedAt) {
+            await workspaceRepository.put({ ...local, sync: { ...local.sync, syncStatus: 'conflict', lastSyncError: '云端记录缺失，本机副本已保留，禁止自动重新上传' } });
+            return;
+          }
+          return await upload(local);
+        }
         if (local.accountStorageKey !== cloud.accountStorageKey) return;
         const localHash = await contentHash(local.content);
         const latest = await workspaceRepository.get(workspaceId, storageKey);
@@ -101,6 +110,8 @@ export const syncEngine = {
   },
 
   async syncAll(requestedKey?: string): Promise<void> {
+    const nativeScope = requestedKey ?? await accountStorageKey(STORAGE_KEYS.workspaces);
+    if (await syncNative(nativeScope)) return;
     if (!(await workspaceRemoteRepository.isAuthenticated())) return;
     const storageKey = requestedKey ?? await accountStorageKey(STORAGE_KEYS.workspaces);
     const tombstoneKey = storageKey.replace(/^workspaces/, STORAGE_KEYS.tombstones);
@@ -142,6 +153,7 @@ export const syncEngine = {
 
   async resolveConflict(workspaceId: string, choice: 'local' | 'cloud'): Promise<void> {
     const storageKey = await accountStorageKey(STORAGE_KEYS.workspaces);
+    if (await resolveNativeConflict(storageKey, workspaceId, choice)) return;
     await serializeSync(storageKey, workspaceId, async () => {
       if (await tombstoneRepository.has(workspaceId, storageKey.replace(/^workspaces/, STORAGE_KEYS.tombstones))) return;
       const local = await workspaceRepository.get(workspaceId, storageKey);

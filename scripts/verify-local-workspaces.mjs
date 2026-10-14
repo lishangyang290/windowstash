@@ -1,11 +1,12 @@
 // Real Native Messaging frames against isolated expired-credential fixtures. No registration or cloud.
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
+import { setTimeout, clearTimeout } from 'node:timers';
 
 const target = process.env.TAURI_ENV_TARGET_TRIPLE;
 const binary = fileURLToPath(new URL(`../companion/native-host/target/${target ? `${target}/` : ''}release/windowstash-native-host${process.platform === 'win32' ? '.exe' : ''}`, import.meta.url));
@@ -15,6 +16,7 @@ const id = 'a'.repeat(64);
 const capability = 'c'.repeat(64);
 const project = 'https://fixture.supabase.co';
 const workspaceId = '11111111-1111-4111-8111-111111111111';
+let watcher;
 
 function exchange(message, caller = origin) {
   const payload = Buffer.from(JSON.stringify(message), 'utf8');
@@ -57,6 +59,52 @@ try {
     total = reply.chunks;blocks.push(Buffer.from(reply.part, 'hex'));
   }
   assert.deepEqual(JSON.parse(Buffer.concat(blocks).toString('utf8')), record);
+  watcher = spawn(binary, [origin], { env: { ...process.env, WINDOWSTASH_BRIDGE_DIR: root }, windowsHide: true });
+  let stream = Buffer.alloc(0); const signals = []; let waiting;
+  watcher.stdout.on('data', data => {
+    stream = Buffer.concat([stream, data]);
+    while (stream.length >= 4 && stream.length >= stream.readUInt32LE() + 4) {
+      const length = stream.readUInt32LE(); signals.push(JSON.parse(stream.subarray(4, length+4).toString('utf8'))); stream = stream.subarray(length+4);
+      if (waiting) { const resolve = waiting; waiting = null; resolve(signals.shift()); }
+    }
+  });
+  const nextSignal = async () => {
+    if (signals.length) return signals.shift();
+    let timer;
+    try { return await Promise.race([new Promise(resolve => { waiting = resolve; }), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Native watch signal timed out')), 5_000); })]); }
+    finally { clearTimeout(timer); }
+  };
+  const watchMessage = Buffer.from(JSON.stringify({ version: 1, type: 'workspace_watch', instance_id: id, capability, project_url: project, user_id: 'fixture-user', action: 'signal' }));
+  const watchHeader = Buffer.alloc(4); watchHeader.writeUInt32LE(watchMessage.length); watcher.stdin.write(Buffer.concat([watchHeader, watchMessage]));
+  const initialSignal = await nextSignal(); assert.equal(initialSignal.status, 'changed');
+  const syncRequest = (action, payload = {}) => exchange({ version: 1, type: 'workspace_sync', instance_id: id, capability,
+    project_url: project, user_id: 'fixture-user', action, ...payload });
+  const lease = syncRequest('acquire'); assert.equal(lease.status, 'acquired');
+  assert.equal(syncRequest('acquire').status, 'busy');
+  assert.equal(syncRequest('renew', { token: 'invalid' }).code, 'sync_lease_expired');
+  const syncBlocks = []; let syncChunks = 1, generation;
+  for (let index = 0; index < syncChunks; index++) {
+    const reply = syncRequest('read', { index, generation });
+    assert.equal(reply.status, 'read'); generation = reply.generation; syncChunks = reply.chunks;
+    syncBlocks.push(Buffer.from(reply.part, 'hex'));
+  }
+  const state = JSON.parse(Buffer.concat(syncBlocks).toString('utf8'));
+  assert.equal(state.records[workspaceId].content.tabs[0].favIconUrl, record.content.tabs[0].favIconUrl);
+  state.records[workspaceId].content.name = 'Companion downloaded full record';
+  const syncBytes = Buffer.from(JSON.stringify(state)), count = Math.ceil(syncBytes.length / 16_384);
+  for (let index = 0; index < count; index++) {
+    const reply = syncRequest('apply', { token: lease.token, generation, index, chunks: count, part: syncBytes.subarray(index * 16_384, (index+1)*16_384).toString('hex') });
+    assert.equal(reply.status, index+1 === count ? 'persisted' : 'staged');
+  }
+  assert.equal((await library()).records[workspaceId].content.name, 'Companion downloaded full record');
+  const updatedSignal = await nextSignal(); assert(updatedSignal.generation > initialSignal.generation);
+  assert.deepEqual(Object.keys(updatedSignal).sort(), ['generation', 'status']);
+  const exited = new Promise(resolve => watcher.once('exit', resolve)); watcher.stdin.end();
+  let exitTimer;
+  try { assert.equal(await Promise.race([exited, new Promise((_, reject) => { exitTimer = setTimeout(() => reject(new Error('Native watch did not exit after EOF')), 5_000); })]), 0); }
+  finally { clearTimeout(exitTimer); }
+  assert.equal(syncRequest('apply', { token: lease.token, generation, index: 0, chunks: 1, part: '00' }).code, 'stale_workspace_revision');
+  assert.equal(syncRequest('release', { token: lease.token }).status, 'released');
   assert.equal(exchange({ ...messages({ records: [], deleted: [] }, 2)[0], capability: 'e'.repeat(64) }).code, 'unauthorized_instance');
   assert.equal(exchange({ ...messages({ records: [], deleted: [] }, 2)[0], user_id: 'another-user' }).code, 'wrong_account');
   assert.equal(exchange(messages({ records: [], deleted: [workspaceId] }, 2)[0]).status, 'persisted');
@@ -64,7 +112,8 @@ try {
   assert.equal(Object.keys((await library()).records).length, 0);
   assert.equal(exchange({ version: 1, type: 'workspace_read', instance_id: id, capability, project_url: project, user_id: 'fixture-user', id: workspaceId, index: 0 }).status, 'missing');
   assert.equal(exchange(parts[0]).code, 'stale_workspace_revision');
-  console.log('本机工作区正式 Host 帧往返、跨进程持久化、分块、过期令牌离线授权、账号隔离及本机删除防复活通过；未注册或替换任何组件。');
+  console.log('本机工作区正式 Host 帧往返、跨进程持久化、分块、过期令牌离线授权、账号隔离、上传租约、条件提交及本机删除防复活通过；未注册或替换任何组件。');
 } finally {
+  if (watcher && watcher.exitCode === null) watcher.kill();
   await rm(root, { recursive: true, force: true });
 }

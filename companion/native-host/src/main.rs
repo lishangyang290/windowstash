@@ -32,7 +32,34 @@ fn run() -> windowstash_native_host::Result<()> {
     }
     let bytes = read_frame(&mut io::stdin()).map_err(|_| "trusted_bootstrap_unavailable")?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| "invalid_request")?;
-    let response = if value.get("type").and_then(|v| v.as_str()) == Some("workspace_read") {
+    if value.get("type").and_then(|v| v.as_str()) == Some("workspace_watch") {
+        let root = bridge::directory()?;
+        let mut previous = None;
+        let mut previous_signal = None;
+        let disconnected = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let closed = disconnected.clone();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let _ = io::stdin().read(&mut [0u8; 1]);
+            closed.store(true, std::sync::atomic::Ordering::Release);
+        });
+        loop {
+            if disconnected.load(std::sync::atomic::Ordering::Acquire) { return Ok(()); }
+            let signal = std::fs::read(root.join("workspace-library/change.json")).ok();
+            if previous.is_none() || previous_signal != signal {
+                let request = serde_json::from_value(value.clone()).map_err(|_| "invalid_workspace_request")?;
+                let reply = windowstash_native_host::workspaces::sync(&root, &origin, request)?;
+                let generation = reply["generation"].as_u64().ok_or("invalid_workspace_request")?;
+                if previous != Some(generation) { write_frame(&mut io::stdout(), &reply)?; previous = Some(generation); }
+                previous_signal = signal;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+    let response = if value.get("type").and_then(|v| v.as_str()) == Some("workspace_sync") {
+        let request = serde_json::from_value(value).map_err(|_| "invalid_workspace_request")?;
+        windowstash_native_host::workspaces::sync(&bridge::directory()?, &origin, request)?
+    } else if value.get("type").and_then(|v| v.as_str()) == Some("workspace_read") {
         let request = serde_json::from_value(value).map_err(|_| "invalid_workspace_request")?;
         windowstash_native_host::workspaces::read(&bridge::directory()?, &origin, request)?
     } else if value.get("type").and_then(|v| v.as_str()) == Some("workspaces") {

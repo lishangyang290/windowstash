@@ -19,6 +19,7 @@ import {
   verifyWorkspaceSchema,
 } from './lib/supabase';
 import { workspaceService } from './features/workspaces';
+import { startWorkspaceSync } from './features/sync';
 import type { SupabaseConfig, View, WorkspaceSummary } from './types';
 import { SuccessToast } from './SuccessToast';
 import { VisibilityToggleInput } from './VisibilityToggleInput';
@@ -207,21 +208,26 @@ export function Launcher({ config, session, onConfigChange, onSignOut, browserLo
 
   React.useEffect(() => {
     void refresh();
+    const sync = browserLogin ? startWorkspaceSync() : null;
+    const online = () => sync?.kick();
+    window.addEventListener('online', online);
     let followup: number | undefined;
     const timer = window.setInterval(() => void refresh(), REFRESH_INTERVAL);
-    const unlistenLocal = listen('local-workspaces-changed', () => void refresh());
+    const unlistenLocal = listen('local-workspaces-changed', () => { void refresh(); sync?.kick(); });
+    const unlistenResume = listen('system-resumed', () => sync?.kick());
     const unlisten = listen('popover-opened', () => {
       setQuery('');
       setSelected(0);
       setOpening('');
       searchRef.current?.focus();
       void refresh();
+      sync?.kick();
       window.clearTimeout(followup);
       followup = window.setTimeout(() => void refresh(), 2_000);
     });
     searchRef.current?.focus();
-    return () => { refreshRevision.current++; window.clearTimeout(followup); window.clearInterval(timer); void unlisten.then((stop) => stop()); void unlistenLocal.then((stop) => stop()); };
-  }, [refresh, session.user.id]);
+    return () => { sync?.stop(); window.removeEventListener('online', online); refreshRevision.current++; window.clearTimeout(followup); window.clearInterval(timer); void unlisten.then((stop) => stop()); void unlistenLocal.then((stop) => stop()); void unlistenResume.then((stop) => stop()); };
+  }, [refresh, session.user.id, config.url, browserLogin]);
 
   const filtered = React.useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase();
@@ -402,7 +408,7 @@ function AccountApp() {
   if (!grant) return legacy ? <LegacyApp /> : <BrowserLogin externalError={error} />;
   const config = { url: grant.config.url, publishableKey: grant.config.publishable_key };
   // Launcher uses only user identity; no refresh token ever reaches the WebView.
-  return <Launcher key={grantIdentity(grant)} browserLogin config={config} session={grant.session} onConfigChange={() => {}} onSignOut={() => {}} />;
+  return <Launcher key={`${grantIdentity(grant)}:${grant.login_request}`} browserLogin config={config} session={grant.session} onConfigChange={() => {}} onSignOut={() => {}} />;
 }
 
 export default function App() {

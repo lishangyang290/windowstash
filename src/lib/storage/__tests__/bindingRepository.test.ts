@@ -12,11 +12,19 @@ const sessionMock = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock('wxt/browser', () => ({ browser: { storage: { session: sessionMock } } }));
+vi.mock('wxt/browser', () => ({ browser: { storage: { session: sessionMock,
+  local: { get: async (keys: string[]) => Object.fromEntries(keys.map(key => [key, values.get(key)])) },
+} } }));
 
 import { bindingRepository } from '@/lib/storage/bindingRepository';
 
 describe('bindingRepository', () => {
+  it('rejects deleted IDs even when an older matcher tries to bind them after the notice was acknowledged', async () => {
+    values.set('deleteTombstones', { 'old-id': { deletedAt: '2026-10-14' } });
+    await expect(bindingRepository.set(11, 'old-id')).rejects.toThrow('工作区已被删除');
+    expect(await bindingRepository.get(11)).toBeNull();
+    await bindingRepository.set(11, 'new-id'); expect(await bindingRepository.get(11)).toBe('new-id');
+  });
   beforeEach(() => {
     values.clear();
     vi.clearAllMocks();

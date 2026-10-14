@@ -12,7 +12,7 @@ vi.mock('wxt/browser', () => ({ browser: {
   storage: { local: storageArea(fixture.local), session: storageArea(fixture.session), onChanged: events },
   runtime: { sendNativeMessage: vi.fn(async (_host: string, message: { type: string; index?: number; chunks?: number; revision?: number }) => message.type === 'workspaces'
     ? { status: message.index === (message.chunks ?? 0) - 1 ? 'persisted' : 'staged', revision: message.revision }
-    : structuredClone(fixture.nativeReply)), sendMessage: vi.fn(async () => undefined), getURL: (path: string) => `chrome-extension://fixture${path}` },
+    : message.type === 'workspace_read' ? { status: 'missing' } : structuredClone(fixture.nativeReply)), sendMessage: vi.fn(async () => undefined), getURL: (path: string) => `chrome-extension://fixture${path}` },
   windows: { getCurrent: vi.fn(async () => structuredClone(fixture.current)), getAll: vi.fn(async () => []) },
 } }));
 
@@ -61,7 +61,7 @@ it.each([0, 50])('profiles cold SDK startup with %i lazy tabs using cloned in-me
   expect(snapshot.tabs[1]?.pinned).toBe(true);
   expect(fetch).not.toHaveBeenCalled();
   expect(vi.mocked(browser.runtime.sendNativeMessage).mock.calls.length).toBeLessThanOrEqual(4);
-  expect(vi.mocked(browser.runtime.sendNativeMessage).mock.calls.every(([, message]) => 'action' in message && message.action === 'local')).toBe(true);
+  expect(vi.mocked(browser.runtime.sendNativeMessage).mock.calls.every(([, message]) => ('action' in message && message.action === 'local') || ('type' in message && message.type === 'workspace_read'))).toBe(true);
   const metrics = popupPerformanceSnapshot();
   const stages = Object.fromEntries([...new Set(metrics.samples.map((sample) => sample.stage))].map((stage) => [stage, { count: metrics.samples.filter((sample) => sample.stage === stage).length, totalMs: Number(metrics.samples.filter((sample) => sample.stage === stage).reduce((sum, sample) => sum + sample.durationMs, 0).toFixed(3)) }]));
   const lazyReads = vi.mocked(browser.storage.local.get).mock.calls.filter(([keys]) => keys === lazyKey).length;
@@ -98,7 +98,7 @@ it('resolves a deleted workspace with a stale session binding without network or
   await deleteWorkspace('fixture-workspace', scope);
   expect(await bindingRepository.get(7, scope)).toBeNull();
   // Simulate a pre-fix binding left in Chrome's session store.
-  await bindingRepository.set(7, 'fixture-workspace', scope);
+  fixture.session.set(scope.replace(/^workspaces/, 'windowBinding:7'), 'fixture-workspace');
   startPopupPerformance();
   const snapshot = await loadPopupWindow(scope, await readPopupWindow());
   expect(snapshot.resolution.status).toBe('unbound');

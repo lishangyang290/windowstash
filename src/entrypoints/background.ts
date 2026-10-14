@@ -2,10 +2,12 @@ import { requireDataAccount } from '@/lib/storage/accountScope';
 import { accountStorageKey } from '@/lib/storage/accountScope';
 import { isLibraryChange, libraryScope, publishNativeWorkspaces } from '@/lib/companion/workspaces';
 import { authService } from '@/lib/supabase/authService';
+import { pullNativeLibrary, watchNativeLibrary } from '@/lib/sync/nativeWatch';
+import { captureDeletionWindow } from '@/features/workspaces/remoteDeletion';
 import { browser } from 'wxt/browser';
 import { CLEANUP_ALARM, LAZY_RECONCILIATION_ALARM, SYNC_ALARM, WINDOW_ASSOCIATION_ALARM } from '@/lib/constants';
 import { syncEngine } from '@/lib/sync/syncEngine';
-import { PENDING_SYNC_ALARM, syncPendingWorkspaces } from '@/lib/sync/pendingSync';
+import { PENDING_SYNC_ALARM, schedulePendingSync, syncPendingWorkspaces } from '@/lib/sync/pendingSync';
 import { bindingRepository } from '@/lib/storage/bindingRepository';
 import type { BackgroundMessage } from '@/types/messages';
 import { openOrFocusWorkspace, recoverWorkspace, reopenWorkspace, restoreSavedWorkspace } from '@/features/workspaces/workspaceService';
@@ -32,9 +34,11 @@ import {
 
 export default defineBackground(() => {
   const LOCAL_LIBRARY_ALARM = 'windowstash-local-library-retry';
+  const synchronize = () => syncEngine.syncAll().catch(() => schedulePendingSync(5 * 60_000));
   const publishLocal = (scope: string, force = false) => publishNativeWorkspaces(scope, force)
-    .catch(() => browser.alarms.create(LOCAL_LIBRARY_ALARM, { delayInMinutes: 1 }));
-  const publishCurrent = () => accountStorageKey('workspaces').then((scope) => publishLocal(scope, true)).catch(() => undefined);
+    .then(() => pullNativeLibrary(scope))
+    .catch(async () => { await pullNativeLibrary(scope).catch(() => undefined); await browser.alarms.create(LOCAL_LIBRARY_ALARM, { delayInMinutes: 1 }); });
+  const publishCurrent = () => accountStorageKey('workspaces').then(async (scope) => { await watchNativeLibrary(scope); await publishLocal(scope, true); }).catch(() => undefined);
   browser.storage?.onChanged?.addListener((changes, area) => {
     if (area !== 'local') return;
     for (const [key, change] of Object.entries(changes)) {
@@ -48,6 +52,7 @@ export default defineBackground(() => {
   };
   const scheduleAssociationMaintenance = (delay = 1_000) => browser.alarms.create(WINDOW_ASSOCIATION_ALARM, { when: Date.now() + delay });
   const persistWindowChange = (windowId: number) => {
+    void accountStorageKey('workspaces').then(scope => captureDeletionWindow(scope, windowId)).catch(() => undefined);
     void refreshBoundWindowAssociation(windowId)
       .then((captured) => captured ? undefined : restorePersistentWindowAssociations())
       .catch(() => undefined);
@@ -56,18 +61,18 @@ export default defineBackground(() => {
 
   browser.runtime.onInstalled.addListener(() => {
     void ensureAlarms();
-    void syncEngine.syncAll();
+    void synchronize();
   });
   browser.runtime.onStartup.addListener(() => {
     void ensureAlarms();
-    void syncEngine.syncAll();
+    void synchronize();
     void beginStartupLazyReconciliation().then(hydrateStartupLazyTabs).catch(() => undefined);
     void scheduleAssociationMaintenance(5_000);
   });
   browser.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === LOCAL_LIBRARY_ALARM) void publishCurrent();
     if (alarm.name === PENDING_SYNC_ALARM) void syncPendingWorkspaces().catch(() => undefined);
-    if (alarm.name === SYNC_ALARM) void syncEngine.syncAll();
+    if (alarm.name === SYNC_ALARM) void synchronize();
     if (alarm.name === CLEANUP_ALARM) {
       void syncEngine.cleanupExpiredLocalCopies();
       void Promise.all([isStartupLazyReconciliationActive(), isStartupLazyReconciliationComplete()]).then(([active, complete]) => {

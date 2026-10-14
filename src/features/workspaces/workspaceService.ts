@@ -9,7 +9,8 @@ import type { BackgroundMessage } from '@/types/messages';
 import type { StoredTab, WorkspaceContent, WorkspaceLocalRecord, WorkspaceStatus } from '@/types/workspace';
 import { syncEngine } from '@/lib/sync/syncEngine';
 import { schedulePendingSync } from '@/lib/sync/pendingSync';
-import { getNativeWorkspace, publishNativeWorkspaces } from '@/lib/companion/workspaces';
+import { getNativeWorkspace, publishNativeWorkspaces, libraryStateKey, NativeWorkspaceDeletedError } from '@/lib/companion/workspaces';
+import { pullNativeLibrary } from '@/lib/sync/nativeWatch';
 import { matchWorkspace, MIN_CANDIDATE_GAP, scoreWorkspaceMatch, type MatchableTab } from './workspaceMatcher';
 import {
   canLazyRestore,
@@ -40,16 +41,24 @@ async function recordLog(
   await syncLogRepository.add({ workspaceId, workspaceName, action, result, message }, storageKey?.replace(/^workspaces/, STORAGE_KEYS.syncLogs));
 }
 
-async function getLocalWorkspace(id: string, scope: string) {
+async function getLocalWorkspace(id: string, scope: string, preferNative = true) {
   const cached = await workspaceRepository.get(id, scope);
-  if (cached) return cached;
   if (await tombstoneRepository.has(id, scope.replace(/^workspaces/, STORAGE_KEYS.tombstones))) return null;
-  const record = await getNativeWorkspace(id, scope);
+  let record;
+  try { record = await getNativeWorkspace(id, scope); }
+  catch (error) {
+    if (error instanceof NativeWorkspaceDeletedError) { await pullNativeLibrary(scope); return null; }
+    if (cached) return cached;
+    throw error;
+  }
+  if (cached && record && ((await browser.storage.local.get(libraryStateKey(scope)))[libraryStateKey(scope)] as { pending?: boolean } | undefined)?.pending) return cached;
+  // Save against the version the user edited; a newer native/cloud baseline must cause a conflict.
+  if (cached && !preferNative) return cached;
   if (record) {
     const account = await requireDataAccount(scope);
     await withDataAccount(account, () => workspaceRepository.put(record));
   }
-  return record;
+  return record ?? cached;
 }
 
 export async function getCurrentWindowSnapshot() {
@@ -151,7 +160,8 @@ export async function saveCurrentWindow(input: {
     await bindingRepository.suppress(input.windowId, storageKey);
     throw new Error('工作区已删除，请重新打开弹窗后保存为新工作区');
   }
-  let previous = boundId ? await getLocalWorkspace(boundId, storageKey) : null;
+  let previous = boundId ? await getLocalWorkspace(boundId, storageKey, false) : null;
+  if (boundId && await tombstoneRepository.has(boundId, storageKey.replace(/^workspaces/, STORAGE_KEYS.tombstones))) throw new Error('工作区已在其他设备删除，请先确认删除通知；当前窗口及标签页已保留。');
   if (boundId && !previous) {
     await syncEngine.syncAll(storageKey).catch(() => undefined);
     previous = await workspaceRepository.get(boundId, storageKey);

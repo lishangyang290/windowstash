@@ -3,8 +3,10 @@ import { authLink } from './auth';
 import { instanceId } from './connection';
 import { hex, NATIVE_HOST } from './protocol';
 import type { WorkspaceLocalRecord } from '@/types/workspace';
+import type { LocalExchange } from '../../../shared/workspaceSync';
+export class NativeWorkspaceDeletedError extends Error {}
 
-async function nativeMessage(message: Record<string, unknown>, started: number): Promise<unknown> {
+export async function nativeMessage(message: Record<string, unknown>, started: number): Promise<unknown> {
   const remaining = 5_000 - (Date.now() - started);
   if (remaining <= 0) throw new Error('本机工作区通道超时；原数据已保留，请重试');
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -14,6 +16,21 @@ async function nativeMessage(message: Record<string, unknown>, started: number):
       new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('本机工作区通道超时；原数据已保留，请重试')), remaining); }),
     ]);
   } finally { clearTimeout(timer); }
+}
+
+export async function nativeLibraryExchange(scope: string): Promise<LocalExchange | null> {
+  const link = await authLink(); if (!link) return null;
+  const [project, user] = JSON.parse(scope.slice('workspaces:'.length)) as [string, string];
+  const instance = await instanceId();
+  return async (action, payload) => {
+    const data = await browser.storage.local.get(['windowstash-data-owner:v1', 'supabaseConfig']);
+    if (data['windowstash-data-owner:v1'] !== scope.slice('workspaces:'.length)
+      || (data.supabaseConfig as { url?: string })?.url !== project || (await authLink())?.capability !== link.capability) throw new Error('账号已变化，同步已停止');
+    const reply = await nativeMessage({ version: 1, type: 'workspace_sync', instance_id: instance, capability: link.capability,
+      project_url: project, user_id: user, action, ...payload }, Date.now()) as { status?: string; code?: string };
+    if (reply?.status === 'error') throw new Error(reply.code ?? '本机同步通道不可用');
+    return reply;
+  };
 }
 
 const PREFIX = 'windowstash-local-library:';
@@ -53,7 +70,7 @@ export function publishNativeWorkspaces(scope: string, force = false): Promise<v
     if (!link) return;
     const key = libraryStateKey(scope);
     const snapshot = await locked(key, async () => {
-      const data = await browser.storage.local.get([scope, scope.replace(/^workspaces/, 'deleteTombstones'), key, 'supabaseConfig', 'windowstash-data-owner:v1']);
+      const data = await browser.storage.local.get([scope, scope.replace(/^workspaces/, 'deleteTombstones'), scope.replace(/^workspaces/, 'syncRecovery'), key, 'supabaseConfig', 'windowstash-data-owner:v1']);
       const owner = scope.slice('workspaces:'.length);
       if (!scope.startsWith('workspaces:[') || data['windowstash-data-owner:v1'] !== owner) throw new Error('账号已变化，本机待同步数据已保留');
       let state = data[key] as LibraryState | undefined;
@@ -70,7 +87,9 @@ export function publishNativeWorkspaces(scope: string, force = false): Promise<v
     if (JSON.stringify([new URL(config.url).href.replace(/\/+$/, ''), owner[1]]) !== snapshot.owner) throw new Error('账号配置已变化，本机数据已保留');
     const records = Object.values(snapshot.data[scope] as Record<string, { content: unknown; sync: unknown }> | undefined ?? {}).map(({ content, sync }) => ({ content, sync }));
     const deleted = Object.keys(snapshot.data[scope.replace(/^workspaces/, 'deleteTombstones')] as object | undefined ?? {});
-    const bytes = new TextEncoder().encode(JSON.stringify({ records, deleted }));
+    const recovery = snapshot.data[scope.replace(/^workspaces/, 'syncRecovery')] as Record<string, WorkspaceLocalRecord[]> | undefined;
+    const conflicts = Object.fromEntries(Object.entries(recovery ?? {}).map(([id, versions]) => [id, versions.map(({ content, sync }) => ({ content, sync }))]));
+    const bytes = new TextEncoder().encode(JSON.stringify({ records, deleted, ...(Object.keys(conflicts).length ? { conflicts } : {}) }));
     if (bytes.length > 8 * 1024 * 1024) throw new Error('本机工作区数据超过传输上限；保存数据已保留');
     const chunks = Math.max(1, Math.ceil(bytes.length / 16_384));
     const envelope = { version: 1, type: 'workspaces', instance_id: await instanceId(), capability: link.capability, project_url: config.url, user_id: owner[1], revision: snapshot.state.revision, chunks };
@@ -97,14 +116,18 @@ export async function getNativeWorkspace(id: string, scope: string): Promise<Wor
   if (new URL(config.url).href.replace(/\/+$/, '') !== project) throw new Error('账号配置已变化，请重新打开工作区');
   const envelope = { version: 1, type: 'workspace_read', instance_id: await instanceId(), capability: link.capability, project_url: config.url, user_id: userId, id };
   const parts: Uint8Array[] = [];
-  let chunks = 1, revision: number | undefined;
+  let chunks = 1, revision: number | undefined, generation: number | undefined;
   for (let index = 0; index < chunks; index++) {
-    const reply = await nativeMessage({ ...envelope, index, revision }, started) as { status?: string; id?: string; revision?: number; chunks?: number; index?: number; part?: string };
-    if (index === 0 && reply?.status === 'missing') return null;
+    const reply = await nativeMessage({ ...envelope, index, revision, generation }, started) as { status?: string; id?: string; revision?: number; generation?: number; deleted?: boolean; chunks?: number; index?: number; part?: string };
+    if (index === 0 && reply?.status === 'missing') {
+      if (reply.deleted) throw new NativeWorkspaceDeletedError('工作区已在其他设备删除，当前窗口及标签页不会受到影响。');
+      return null;
+    }
     if (reply?.status !== 'read' || reply.id !== id || reply.index !== index || !Number.isSafeInteger(reply.revision)
-      || (revision !== undefined && revision !== reply.revision) || !Number.isSafeInteger(reply.chunks) || reply.chunks! < 1 || reply.chunks! > 512
+      || (revision !== undefined && revision !== reply.revision) || (generation !== undefined && reply.generation !== generation)
+      || (reply.generation !== undefined && (!Number.isSafeInteger(reply.generation) || reply.generation < 0)) || !Number.isSafeInteger(reply.chunks) || reply.chunks! < 1 || reply.chunks! > 512
       || (index > 0 && chunks !== reply.chunks) || typeof reply.part !== 'string' || reply.part.length > 32_768 || !/^(?:[a-f0-9]{2})*$/.test(reply.part)) throw new Error('本机恢复数据校验失败，原数据已保留');
-    chunks = reply.chunks!; revision = reply.revision;
+    chunks = reply.chunks!; revision = reply.revision; generation = reply.generation;
     parts.push(Uint8Array.from(reply.part.match(/../g) ?? [], pair => parseInt(pair, 16)));
   }
   const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));

@@ -92,6 +92,14 @@ describe('durable native workspace projection', () => {
 });
 
 describe('offline native restoration', () => {
+  it('rejects a cloud change between chunks even when the Chrome projection revision is unchanged', async () => {
+    fixture.send.mockImplementation(async (_host, message) => ({ status: 'read', id: 'one', index: message.index, revision: 7, generation: message.index === 0 ? 2 : 3, chunks: 2, part: '00' }));
+    await expect(getNativeWorkspace('one', scope)).rejects.toThrow('校验失败');
+  });
+  it('distinguishes an explicit native tombstone from an absent record', async () => {
+    fixture.send.mockResolvedValue({ status: 'missing', deleted: true });
+    await expect(getNativeWorkspace('one', scope)).rejects.toThrow('工作区已在其他设备删除');
+  });
   it('reassembles a versioned UTF-8 record with complete tabs and favicon', async () => {
     const record = { content: { id: 'one', tabs: [{ title: '离线'.repeat(8_000), url: 'https://example.invalid', favIconUrl: 'https://example.invalid/favicon.ico' }] }, sync: { syncStatus: 'synced' } };
     const bytes = new TextEncoder().encode(JSON.stringify(record));

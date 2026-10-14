@@ -25,6 +25,7 @@ import { validateWorkspaceName } from '@/features/workspaces/workspaceName';
 import type { WorkspaceLocalRecord, WorkspaceStatus } from '@/types/workspace';
 import { useVerifiedAccess } from '@/lib/supabase/useVerifiedAccess';
 import { WorkspaceActions } from './WorkspaceActions';
+import { acknowledgeDeletion, deletionNoticeKey, type DeletionNotice } from '@/features/workspaces/remoteDeletion';
 import { loadPopupWindow, readPopupWindow, type PopupSnapshot } from './startup';
 import { startPopupPerformance, markPopupCommit, popupPerformanceSnapshot } from '@/lib/popupPerformance';
 import '@/styles/base.css';
@@ -127,6 +128,8 @@ function UpdatedItem({ change, onOpen }: { change: UpdatedTabChange; onOpen: (ch
 }
 
 function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnapshot }) {
+  const [deletionNotice, setDeletionNotice] = React.useState<DeletionNotice | null>(initial.deletionNotice ?? null);
+  const [unsaved, setUnsaved] = React.useState(initial.unsaved);
   const [windowId, setWindowId] = React.useState<number | null>(initial.windowId);
   const [tabs, setTabs] = React.useState<CurrentTabSnapshot[]>(initial.tabs);
   const [record, setRecord] = React.useState<WorkspaceLocalRecord | null>(initial.resolution.record);
@@ -169,6 +172,8 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
       }
       setTabs(next.tabs);
       setLogicalTabsReady(next.logicalTabsReady);
+      setDeletionNotice(next.deletionNotice ?? null);
+      setUnsaved(next.unsaved);
       setError(next.error);
     } catch (reason) {
       if (revision === refreshRevision.current) {
@@ -196,7 +201,7 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
     const onAttached = (_tabId: number, info: { newWindowId: number }) => refreshBoundWindow(info.newWindowId);
     const onDetached = (_tabId: number, info: { oldWindowId: number }) => refreshBoundWindow(info.oldWindowId);
     const storageChanged = (changes: Record<string, unknown>) => {
-      if (Object.keys(changes).some((key) => key === accountKey || key === accountKey.replace(/^workspaces/, 'lazyRestoreEntries') || key === accountKey.replace(/^workspaces/, `windowBinding:${windowIdRef.current}`) || key === accountKey.replace(/^workspaces/, `windowBindingSuppressed:${windowIdRef.current}`))) {
+      if (Object.keys(changes).some((key) => key === deletionNoticeKey(accountKey) || key === accountKey || key === accountKey.replace(/^workspaces/, 'lazyRestoreEntries') || key === accountKey.replace(/^workspaces/, `windowBinding:${windowIdRef.current}`) || key === accountKey.replace(/^workspaces/, `windowBindingSuppressed:${windowIdRef.current}`))) {
         void refresh(windowIdRef.current ?? undefined).catch(handleRefreshError);
       }
     };
@@ -361,6 +366,18 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
   />;
   const successToast = success ? <SuccessToast message={success} onDismiss={() => setSuccess('')} /> : null;
 
+  if (deletionNotice) return <main className="popup-shell popup-main-shell">
+    <header className="popup-header"><Logo /></header>
+    <section className="popup-content">
+      <h1>此工作区已被删除</h1>
+      <p>此工作区已在其他设备删除，当前窗口及标签页不会受到影响。</p>
+      <button className="button button-primary" onClick={() => {
+        if (windowId != null) void acknowledgeDeletion(accountKey, windowId).then(() => refresh(windowId)).catch(reason => setError(reason instanceof Error ? reason.message : '请稍后重试'));
+      }}>我知道了</button>
+      {error ? <div className="inline-error" role="alert">{error}</div> : null}
+    </section>
+  </main>;
+
   if (page === 'details' && isBound) {
     const activeChanges = activeKind === 'added' ? diff.added : activeKind === 'removed' ? diff.removed : diff.updated;
     return (
@@ -444,7 +461,7 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
           </div>
         ) : (
           <>
-            <div className="window-summary"><strong>当前窗口</strong><span>{tabs.length} 个标签页</span></div>
+            <div className="window-summary"><strong>当前窗口</strong><span>{unsaved ? '未保存 · ' : ''}{tabs.length} 个标签页</span></div>
             <label className="name-field"><span>名称</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="请输入工作区名称" autoFocus /></label>
           </>
         )}
