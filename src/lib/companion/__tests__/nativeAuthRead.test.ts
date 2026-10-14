@@ -14,6 +14,15 @@ import { nativeAuth } from '../auth';
 const reply = { capability: 'a'.repeat(64), config: { url: 'https://project.supabase.co', publishable_key: 'public' }, session: { user: { id: 'A' } } };
 
 describe('shared Mac/Windows Native Host reads', () => {
+  it('does not join a local identity read to an in-flight cloud refresh', async () => {
+    let finish!: (value: typeof reply) => void;
+    mocks.send.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const cloud = nativeAuth('read');
+    await vi.waitFor(() => expect(mocks.send).toHaveBeenCalledOnce());
+    await expect(nativeAuth('local')).resolves.toEqual(reply);
+    expect(mocks.send.mock.calls[1]?.[1].action).toBe('local');
+    finish(reply); await cloud;
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.state.clear();

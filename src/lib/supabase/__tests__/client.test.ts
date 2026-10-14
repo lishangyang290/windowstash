@@ -49,6 +49,21 @@ describe('runtime Supabase client', () => {
     mocks.storage.set('windowstash-auth:sb-other-auth-token', 'other-project-fixture');
   }
 
+  it('does not hold the browser auth lock during a linked cloud refresh and logs out locally without fetch', async () => {
+    staleLink();
+    const request = vi.fn((_name: string, task: () => Promise<unknown>) => task());
+    vi.stubGlobal('navigator', { locks: { request } });
+    mocks.native.mockResolvedValue({ capability: 'a'.repeat(64), config: { url: 'https://project.supabase.co' }, session: { user: { id: 'A' }, access_token: 'fixture' } });
+    const { getSupabaseClient } = await import('../client');
+    await getSupabaseClient();
+    const options = mocks.createClient.mock.calls[0]![2];
+    await options.global.fetch('https://project.supabase.co/auth/v1/token?grant_type=refresh_token');
+    expect(request).not.toHaveBeenCalled();
+    const response = await options.global.fetch('https://project.supabase.co/auth/v1/logout?scope=local');
+    expect(response.status).toBe(204);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('recovers a confirmed missing native grant without losing workspaces or another project session', async () => {
     staleLink();
     mocks.native.mockResolvedValue({ status: 'error', code: 'not_linked' });

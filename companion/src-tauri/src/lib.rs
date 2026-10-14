@@ -74,7 +74,14 @@ fn select_chrome_target(
 
 #[tauri::command]
 async fn desktop_auth() -> Result<serde_json::Value, String> {
-    tauri::async_runtime::spawn_blocking(|| {
+    read_desktop_auth(false).await
+}
+#[tauri::command]
+async fn desktop_cloud_auth() -> Result<serde_json::Value, String> {
+    read_desktop_auth(true).await
+}
+async fn read_desktop_auth(cloud: bool) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
         let root = windowstash_native_host::bridge::directory().map_err(str::to_string)?;
         let bytes = match fs::read(root.join("selection.json")) {
             Ok(bytes) => bytes,
@@ -85,10 +92,12 @@ async fn desktop_auth() -> Result<serde_json::Value, String> {
         };
         let selected: connection::Selection =
             serde_json::from_slice(&bytes).map_err(|_| "浏览器关联损坏，请重新选择")?;
-        windowstash_native_host::auth::desktop(&root, &selected.route_id).map_err(|code| match code
+        (if cloud { windowstash_native_host::auth::desktop(&root, &selected.route_id) }
+        else { windowstash_native_host::auth::desktop_local(&root, &selected.route_id) }).map_err(|code| match code
         {
             "network_unavailable" => "暂时无法连接云端，请检查网络后重试".into(),
-            "session_refresh_failed" => "登录已失效，请在浏览器中重新登录".into(),
+            "session_refresh_failed" => "云端认证暂时不可用，本机授权和数据已保留".into(),
+            "authorization_revoked" => "账号授权已被撤销，请重新登录".into(),
             _ => "无法读取登录状态，请重试".into(),
         })
     })
@@ -359,6 +368,7 @@ pub fn run() {
             begin_browser_login,
             confirm_browser_login,
             desktop_auth,
+            desktop_cloud_auth,
             local_workspaces,
             hide_popover,
             show_popover,

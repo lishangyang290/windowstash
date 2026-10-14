@@ -202,7 +202,7 @@ fn locked<T>(
         .map_err(|_| "auth_store_unavailable")?;
     task()
 }
-fn ensure_fresh(root: &Path, mut grant: Grant) -> Result<Grant, &'static str> {
+fn ensure_fresh(mut grant: Grant) -> Result<Grant, &'static str> {
     let expiry = grant
         .session
         .get("expires_at")
@@ -239,9 +239,7 @@ fn ensure_fresh(root: &Path, mut grant: Grant) -> Result<Grant, &'static str> {
                 .and_then(Value::as_str)
                 .unwrap_or(""),
         ) {
-            grant.session = Value::Null;
-            grant.revision += 1;
-            bridge::write_json(&path(root, &grant.instance_id), &grant)?;
+            return Err("authorization_revoked");
         }
         return Err("session_refresh_failed");
     }
@@ -259,8 +257,45 @@ fn ensure_fresh(root: &Path, mut grant: Grant) -> Result<Grant, &'static str> {
     }
     grant.session = session;
     grant.revision += 1;
-    bridge::write_json(&path(root, &grant.instance_id), &grant)?;
     Ok(grant)
+}
+
+fn authorized(root: &Path, origin: &str, instance: &str, capability: Option<&str>) -> Result<Grant, &'static str> {
+    let grant = load(root, instance)?.ok_or("not_linked")?;
+    if grant.origin != origin || capability != Some(grant.capability.as_str()) { return Err("unauthorized_instance"); }
+    Ok(grant)
+}
+
+/// Network work holds only the refresh lock; local readers and logout remain available.
+fn cloud_grant(root: &Path, origin: &str, instance: &str, capability: Option<&str>) -> Result<Grant, &'static str> {
+    let initial = locked(root, || authorized(root, origin, instance, capability))?;
+    if initial.session.is_null() { return Ok(initial); }
+    let refresh = OpenOptions::new().create(true).truncate(false).read(true).write(true)
+        .open(root.join("accounts/refresh-lock")).map_err(|_| "auth_store_unavailable")?;
+    refresh.lock_exclusive().map_err(|_| "auth_store_unavailable")?;
+    let before = locked(root, || authorized(root, origin, instance, capability))?;
+    if before.config.url != initial.config.url || user_id(&before.session) != user_id(&initial.session) { return Err("account_mismatch"); }
+    if before.session.is_null() { return Ok(before); }
+    let result = ensure_fresh(before.clone());
+    locked(root, || {
+        let current = authorized(root, origin, instance, capability)?;
+        if current.config.url != before.config.url || (!current.session.is_null() && user_id(&current.session) != user_id(&before.session)) { return Err("account_mismatch"); }
+        if current.revision != before.revision { return Ok(current); }
+        match result {
+            Ok(next) => {
+                if next.revision != before.revision { bridge::write_json(&path(root, instance), &next)?; }
+                Ok(next)
+            }
+            Err("authorization_revoked") => {
+                let mut revoked = current;
+                revoked.session = Value::Null;
+                revoked.revision += 1;
+                bridge::write_json(&path(root, instance), &revoked)?;
+                Err("authorization_revoked")
+            }
+            Err(code) => Err(code),
+        }
+    })
 }
 pub fn dispatch(root: &Path, origin: &str, request: Request) -> Result<Value, &'static str> {
     if request.version != 1
@@ -270,19 +305,45 @@ pub fn dispatch(root: &Path, origin: &str, request: Request) -> Result<Value, &'
     {
         return Err("invalid_auth_request");
     }
+    if ["read", "refresh", "local"].contains(&request.action.as_str()) {
+        let grant = if request.action == "local" {
+            locked(root, || authorized(root, origin, &request.instance_id, request.capability.as_deref()))?
+        } else { cloud_grant(root, origin, &request.instance_id, request.capability.as_deref())? };
+        return Ok(json!({"session":grant.session,"config":grant.config,"capability":grant.capability}));
+    }
+    if request.action == "replace" {
+        let before = locked(root, || authorized(root, origin, &request.instance_id, request.capability.as_deref()))?;
+        let config = request.config.ok_or("invalid_project_config")?;
+        let session = request.session.ok_or("invalid_session")?;
+        validate(&config, &session)?;
+        return locked(root, || {
+            let mut next = authorized(root, origin, &request.instance_id, request.capability.as_deref())?;
+            if next.revision != before.revision { return Err("auth_changed"); }
+            next.config = config; next.session = session; next.revision += 1;
+            bridge::write_json(&path(root, &request.instance_id), &next)?;
+            Ok(json!({"session":next.session,"config":next.config,"capability":next.capability}))
+        });
+    }
+    let bootstrap_revision = if request.action == "bootstrap" {
+        let current = locked(root, || load(root, &request.instance_id))?;
+        let retry = current.as_ref().is_some_and(|g| g.origin == origin && request.capability.as_deref() == Some(&g.capability) && request.login_request.as_deref() == Some(&g.login_request));
+        if retry { None } else {
+            let pending: LoginRequest = serde_json::from_slice(&fs::read(root.join("login-request.json")).map_err(|_| "login_request_missing")?).map_err(|_| "login_request_missing")?;
+            if pending.expires_at < bridge::now() || request.login_request.as_deref() != Some(&pending.id) || request.route_id.as_deref() != Some(&pending.route_id) || pending.origin != origin { return Err("login_request_expired"); }
+            validate(request.config.as_ref().ok_or("invalid_project_config")?, request.session.as_ref().ok_or("invalid_session")?)?;
+            Some(current.map(|g| g.revision))
+        }
+    } else { None };
     locked(root, || {
         let mut grant = load(root, &request.instance_id)?;
+        if bootstrap_revision.is_some_and(|expected| expected != grant.as_ref().map(|g| g.revision)) { return Err("auth_changed"); }
         if request.action == "bootstrap" {
             if let Some(current) = grant.as_ref() {
                 if current.origin == origin
                     && request.capability.as_deref() == Some(&current.capability)
                     && request.login_request.as_deref() == Some(&current.login_request)
                 {
-                    let current = if current.session.is_null() {
-                        current.clone()
-                    } else {
-                        ensure_fresh(root, current.clone())?
-                    };
+                    let current = current.clone();
                     // A retry repeats desktop verification, rather than replaying a failed receipt.
                     let receipt_path = root.join("login-completion.json");
                     if fs::read(&receipt_path)
@@ -312,7 +373,6 @@ pub fn dispatch(root: &Path, origin: &str, request: Request) -> Result<Value, &'
             }
             let config = request.config.ok_or("invalid_project_config")?;
             let session = request.session.ok_or("invalid_session")?;
-            validate(&config, &session)?;
             let next = Grant {
                 instance_id: request.instance_id.clone(),
                 origin: origin.into(),
@@ -374,17 +434,6 @@ pub fn dispatch(root: &Path, origin: &str, request: Request) -> Result<Value, &'
                         "failure":matched.and_then(|r| r["failure"].as_str())}));
                 }
                 "read" | "refresh" => {}
-                "replace" => {
-                    let config = request.config.ok_or("invalid_project_config")?;
-                    let session = request.session.ok_or("invalid_session")?;
-                    validate(&config, &session)?;
-                    let mut next = current.clone();
-                    next.config = config;
-                    next.session = session;
-                    next.revision += 1;
-                    bridge::write_json(&path(root, &request.instance_id), &next)?;
-                    grant = Some(next);
-                }
                 "clear" => {
                     // Keep linkage so a later browser login can update the SAME route.
                     let mut next = current.clone();
@@ -397,48 +446,23 @@ pub fn dispatch(root: &Path, origin: &str, request: Request) -> Result<Value, &'
             }
         }
         let next = grant.ok_or("not_linked")?;
-        let next = if next.session.is_null() {
-            next
-        } else {
-            ensure_fresh(root, next)?
-        };
         Ok(json!({"session":next.session,"config":next.config,"capability":next.capability}))
     })
 }
 /// Desktop never exposes refresh tokens or bridge capabilities to its WebView.
 pub fn desktop(root: &Path, route: &str) -> Result<Value, &'static str> {
-    locked(root, || {
-        let mut grants = Vec::new();
-        for entry in fs::read_dir(root.join("accounts"))
-            .map_err(|_| "auth_store_unavailable")?
-            .flatten()
-        {
-            if entry.path().extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let grant: Grant = serde_json::from_slice(
-                &fs::read(entry.path()).map_err(|_| "auth_store_unavailable")?,
-            )
-            .map_err(|_| "auth_store_corrupt")?;
-            if grant.route_id == route {
-                grants.push(grant);
-            }
-        }
-        // A route has a single account owner; never choose among duplicate identities.
-        if grants.len() > 1 {
-            return Err("ambiguous_account");
-        }
-        let Some(grant) = grants.pop() else {
-            return Ok(Value::Null);
-        };
-        if grant.session.is_null() {
-            return Ok(Value::Null);
-        }
-        let grant = ensure_fresh(root, grant)?;
-        Ok(
-            json!({"login_request":grant.login_request, "config": grant.config, "session": {"access_token": grant.session["access_token"], "expires_at":grant.session["expires_at"], "user":grant.session["user"]}, "instance_id":grant.instance_id,"revision":grant.revision}),
-        )
-    })
+    let grant = with_local_desktop(root, route, |grant| Ok(grant.cloned()))?;
+    let Some(grant) = grant else { return Ok(Value::Null); };
+    let grant = cloud_grant(root, &grant.origin, &grant.instance_id, Some(&grant.capability))?;
+    Ok(desktop_reply(&grant))
+}
+
+fn desktop_reply(grant: &Grant) -> Value {
+    if grant.session.is_null() { return Value::Null; }
+    json!({"login_request":grant.login_request,"config":grant.config,"session":{"access_token":grant.session["access_token"],"expires_at":grant.session["expires_at"],"user":grant.session["user"]},"instance_id":grant.instance_id,"revision":grant.revision})
+}
+pub fn desktop_local(root: &Path, route: &str) -> Result<Value, &'static str> {
+    with_local_desktop(root, route, |grant| Ok(grant.map_or(Value::Null, desktop_reply)))
 }
 
 #[cfg(test)]
@@ -458,6 +482,20 @@ mod tests {
             session: json!({"access_token":"fixture-access","refresh_token":"fixture-refresh","expires_at":bridge::now()+3600,"user":{"id":"user-A"}}),
             revision: 1,
         }
+    }
+    #[test]
+    fn local_authorization_survives_expiry_but_not_explicit_logout() {
+        let root = tempfile::tempdir().unwrap();
+        let mut grant = grant(); grant.session["expires_at"] = json!(0);
+        // A missing refresh token makes any accidental refresh fail deterministically.
+        grant.session.as_object_mut().unwrap().remove("refresh_token");
+        bridge::write_json(&path(root.path(), &grant.instance_id), &grant).unwrap();
+        let request = |action: &str| serde_json::from_value(json!({"version":1,"type":"auth","action":action,"instance_id":grant.instance_id,"capability":grant.capability})).unwrap();
+        assert_eq!(dispatch(root.path(), &grant.origin, request("local")).unwrap()["session"]["user"]["id"], "user-A");
+        assert_eq!(desktop_local(root.path(), &grant.route_id).unwrap()["session"]["user"]["id"], "user-A");
+        dispatch(root.path(), &grant.origin, request("clear")).unwrap();
+        assert!(dispatch(root.path(), &grant.origin, request("local")).unwrap()["session"].is_null());
+        assert!(desktop_local(root.path(), &grant.route_id).unwrap().is_null());
     }
     #[test]
     fn desktop_receives_access_only_and_stays_bound_to_its_route() {

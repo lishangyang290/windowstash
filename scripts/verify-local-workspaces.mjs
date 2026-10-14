@@ -49,11 +49,20 @@ try {
   }
   assert.equal((await library()).records[workspaceId].content.name, 'Offline local');
   assert.equal((await library()).records[workspaceId].content.tabs[0].favIconUrl, 'https://example.invalid/favicon.ico');
+  const blocks = [];
+  let total = 1;
+  for (let index = 0; index < total; index++) {
+    const reply = exchange({ version: 1, type: 'workspace_read', instance_id: id, capability, project_url: project, user_id: 'fixture-user', id: workspaceId, index, revision: index ? 1 : undefined });
+    assert.equal(reply.status, 'read');assert.equal(reply.revision, 1);assert.equal(reply.index, index);
+    total = reply.chunks;blocks.push(Buffer.from(reply.part, 'hex'));
+  }
+  assert.deepEqual(JSON.parse(Buffer.concat(blocks).toString('utf8')), record);
   assert.equal(exchange({ ...messages({ records: [], deleted: [] }, 2)[0], capability: 'e'.repeat(64) }).code, 'unauthorized_instance');
   assert.equal(exchange({ ...messages({ records: [], deleted: [] }, 2)[0], user_id: 'another-user' }).code, 'wrong_account');
   assert.equal(exchange(messages({ records: [], deleted: [workspaceId] }, 2)[0]).status, 'persisted');
   for (const part of messages({ records: [record], deleted: [] }, 3)) exchange(part);
   assert.equal(Object.keys((await library()).records).length, 0);
+  assert.equal(exchange({ version: 1, type: 'workspace_read', instance_id: id, capability, project_url: project, user_id: 'fixture-user', id: workspaceId, index: 0 }).status, 'missing');
   assert.equal(exchange(parts[0]).code, 'stale_workspace_revision');
   console.log('本机工作区正式 Host 帧往返、跨进程持久化、分块、过期令牌离线授权、账号隔离及本机删除防复活通过；未注册或替换任何组件。');
 } finally {

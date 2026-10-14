@@ -12,11 +12,19 @@ const target=process.env.TAURI_ENV_TARGET_TRIPLE;
 const binary=fileURLToPath(new URL(`../companion/native-host/target/${target?`${target}/`:''}release/windowstash-native-host${suffix}`, import.meta.url));
 const origin='chrome-extension://'+'a'.repeat(32)+'/';
 const id='b'.repeat(64),route='c'.repeat(64),login='d'.repeat(64);
-let refreshes=0,user='account-A';
+let refreshes=0,user='account-A',mode='online',pendingRefresh,refreshStarted;
 const server=createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;
  res.setHeader('Content-Type','application/json');
  if(req.url==='/auth/v1/user')return res.end(JSON.stringify({id:user}));
- if(req.url==='/auth/v1/token?grant_type=refresh_token') {refreshes++;assert.equal(JSON.parse(body).refresh_token,'fixture-refresh-1');return res.end(JSON.stringify({access_token:'fixture-access-2',refresh_token:'fixture-refresh-2',expires_in:3600,user:{id:user}}));}
+ if(req.url==='/auth/v1/token?grant_type=refresh_token') {
+  refreshes++;assert.equal(JSON.parse(body).refresh_token,'fixture-refresh-1');
+  if(mode==='offline')return req.socket.destroy();
+  if(mode==='revoked')return res.end(JSON.stringify({error_code:'refresh_token_not_found'}));
+  if(mode==='transient')return res.end(JSON.stringify({error_code:'temporarily_unavailable'}));
+  const response=JSON.stringify({access_token:'fixture-access-2',refresh_token:'fixture-refresh-2',expires_in:3600,user:{id:user}});
+  if(mode==='blocked'){pendingRefresh=()=>res.end(response);refreshStarted();return;}
+  return res.end(response);
+ }
  res.statusCode=404;res.end('{}');
 });
 async function exchange(action,extra={}) {
@@ -46,10 +54,24 @@ const initial={access_token:'fixture-access-1',refresh_token:'fixture-refresh-1'
 
  assert.equal((await exchange('read',{capability:'e'.repeat(64)})).code,'unauthorized_instance');
  const stored=JSON.parse(await readFile(join(root,'accounts',id+'.json'),'utf8'));stored.session.expires_at=1;await writeFile(join(root,'accounts',id+'.json'),JSON.stringify(stored),{mode:0o600});
+ assert.equal((await exchange('local',{capability})).session.expires_at,1);assert.equal(refreshes,0);
  const responses=await Promise.all(Array.from({length:6},()=>exchange('refresh',{capability})));assert.equal(refreshes,1);assert(responses.every(r=>r.session.refresh_token==='fixture-refresh-2'));
  const resumed=await exchange('read',{capability});assert.equal(resumed.session.user.id,'account-A');
  await exchange('clear',{capability});assert.equal((await exchange('read',{capability})).session,null);
  user='account-B';const next={...initial,user:{id:user}};const changed=await exchange('replace',{capability,config,session:next});assert.equal(changed.session.user.id,'account-B');
  const replay=await exchange('bootstrap',{capability,login_request:login,route_id:route,config,session:initial});assert.equal(replay.session.user.id,'account-B');
- console.log('PASS: real production Native Host + isolated HTTP fixture: session validation, private persistence, concurrent refresh (6 requests / 1 rotation), process restart, logout, account replacement, replay isolation. No real Supabase credentials or system registration used.');
-}finally{if(server.listening)await new Promise(done=>server.close(done));await rm(root,{recursive:true,force:true})}
+ const expire=async()=>{const stored=JSON.parse(await readFile(join(root,'accounts',id+'.json'),'utf8'));stored.session={...stored.session,expires_at:1,refresh_token:'fixture-refresh-1'};await writeFile(join(root,'accounts',id+'.json'),JSON.stringify(stored),'utf8');};
+ await expire();mode='offline';assert.equal((await exchange('read',{capability})).code,'network_unavailable');assert.equal((await exchange('local',{capability})).session.user.id,'account-B');
+ mode='transient';assert.equal((await exchange('read',{capability})).code,'session_refresh_failed');assert.equal((await exchange('local',{capability})).session.user.id,'account-B');
+ mode='online';assert.equal((await exchange('read',{capability})).session.access_token,'fixture-access-2');
+ await expire();mode='blocked';const started=new Promise(resolve=>{refreshStarted=resolve;});const delayed=exchange('refresh',{capability});await started;
+ assert.equal((await exchange('local',{capability})).session.user.id,'account-B');
+ await exchange('clear',{capability});assert.equal((await exchange('local',{capability})).session,null);
+ pendingRefresh();pendingRefresh=null;assert.equal((await delayed).session,null);
+ mode='online';await exchange('replace',{capability,config,session:next});await expire();
+ mode='blocked';const changing=new Promise(resolve=>{refreshStarted=resolve;});const oldAccountRefresh=exchange('refresh',{capability});await changing;
+ user='account-C';const accountC={...initial,user:{id:user}};await exchange('replace',{capability,config,session:accountC});
+ pendingRefresh();pendingRefresh=null;assert.equal((await oldAccountRefresh).code,'account_mismatch');assert.equal((await exchange('local',{capability})).session.user.id,'account-C');await expire();
+ mode='revoked';assert.equal((await exchange('refresh',{capability})).code,'authorization_revoked');assert.equal((await exchange('local',{capability})).session,null);
+ console.log('PASS: isolated real Host: offline expiry, reconnect, transient failure preservation, local access during blocked refresh, logout defeating late refresh, explicit revocation, concurrent refresh, account isolation. No real credentials or registration used.');
+}finally{pendingRefresh?.();if(server.listening)await new Promise(done=>server.close(done));await rm(root,{recursive:true,force:true})}

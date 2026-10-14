@@ -9,7 +9,7 @@ vi.mock('wxt/browser', () => ({ browser: {
 } }));
 vi.mock('../auth', () => ({ authLink: async () => fixture.link }));
 vi.mock('../connection', () => ({ instanceId: async () => 'a'.repeat(64) }));
-import { libraryStateKey, persistLibraryChange, publishNativeWorkspaces } from '../workspaces';
+import { getNativeWorkspace, libraryStateKey, persistLibraryChange, publishNativeWorkspaces } from '../workspaces';
 const owner = JSON.stringify(['https://project.supabase.co', 'user-A']);
 const scope = `workspaces:${owner}`;
 beforeEach(() => {
@@ -67,7 +67,7 @@ describe('durable native workspace projection', () => {
     vi.useFakeTimers();
     await persistLibraryChange(scope, { [scope]: {} });
     fixture.send.mockImplementationOnce(() => new Promise(() => {}));
-    const failed = expect(publishNativeWorkspaces(scope)).rejects.toThrow('写入超时');
+    const failed = expect(publishNativeWorkspaces(scope)).rejects.toThrow('通道超时');
     await vi.advanceTimersByTimeAsync(5_000);
     await failed;
     expect(fixture.storage.get(libraryStateKey(scope))).toEqual({ revision: 1, pending: true });
@@ -88,5 +88,24 @@ describe('durable native workspace projection', () => {
     expect(fixture.storage.get(libraryStateKey(scope))).toEqual({ revision: 1, pending: false });
     await publishNativeWorkspaces(scope, true);
     expect(fixture.send).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('offline native restoration', () => {
+  it('reassembles a versioned UTF-8 record with complete tabs and favicon', async () => {
+    const record = { content: { id: 'one', tabs: [{ title: '离线'.repeat(8_000), url: 'https://example.invalid', favIconUrl: 'https://example.invalid/favicon.ico' }] }, sync: { syncStatus: 'synced' } };
+    const bytes = new TextEncoder().encode(JSON.stringify(record));
+    fixture.send.mockImplementation(async (_host, message) => ({ status: 'read', id: 'one', index: message.index, revision: 7, chunks: Math.ceil(bytes.length / 16_384), part: [...bytes.subarray(message.index * 16_384, (message.index + 1) * 16_384)].map(b => b.toString(16).padStart(2, '0')).join('') }));
+    await expect(getNativeWorkspace('one', scope)).resolves.toEqual({ ...record, accountStorageKey: scope });
+    expect(fixture.send.mock.calls[1]?.[1]).toMatchObject({ revision: 7, index: 1 });
+  });
+  it('rejects mixed revisions rather than importing a partial snapshot', async () => {
+    fixture.send.mockImplementation(async (_host, message) => ({ status: 'read', id: 'one', index: message.index, revision: message.index === 0 ? 7 : 8, chunks: 2, part: '00' }));
+    await expect(getNativeWorkspace('one', scope)).rejects.toThrow('校验失败');
+  });
+  it('does not infer deletion or call cloud when a record is absent', async () => {
+    fixture.send.mockResolvedValue({ status: 'missing' });
+    await expect(getNativeWorkspace('one', scope)).resolves.toBeNull();
+    expect(fixture.storage.get(scope)).toBeUndefined();
   });
 });

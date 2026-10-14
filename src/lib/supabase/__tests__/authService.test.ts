@@ -6,9 +6,10 @@ const authMock = vi.hoisted(() => ({
 }));
 
 const native = vi.hoisted(() => vi.fn());
+const configState = vi.hoisted(() => ({ config: null as { url: string; publishableKey: string } | null }));
 vi.mock('@/lib/companion/auth', () => ({ authLock: async (task: () => Promise<unknown>) => task(), authLink: async () => ({ capability: 'fixture' }), nativeAuth: native }));
 
-vi.mock('@/lib/supabase/client', () => ({ getSupabaseConfig: async () => null, getSupabaseClient: async () => ({ auth: authMock }) }));
+vi.mock('@/lib/supabase/client', () => ({ getSupabaseConfig: async () => configState.config, getSupabaseClient: async () => ({ auth: authMock }) }));
 
 import { dataAccountHidden } from '@/lib/storage/accountScope';
 import { authService } from '@/lib/supabase/authService';
@@ -37,7 +38,7 @@ it('notifies Companion when Chrome signs out without touching local workspace st
   authMock.getSession.mockResolvedValue({ data: { session: null } });
   authMock.signOut.mockResolvedValue({ error: null });
   native.mockResolvedValue(undefined);
-  vi.mocked(dataAccountHidden).mockResolvedValueOnce(true);
+  vi.mocked(dataAccountHidden).mockResolvedValueOnce(true).mockResolvedValueOnce(true);
   await authService.signOut();
   expect(authMock.signOut).toHaveBeenCalled();
   expect(native).toHaveBeenCalledWith('clear');
@@ -57,8 +58,29 @@ it('keeps an explicitly signed-out account hidden even if the SDK still has a ca
 });
 it('does not clear a newer shared login when an older logout completes late', async () => {
   native.mockClear();
+  authMock.signOut.mockClear();
   authMock.signOut.mockResolvedValue({ error: null });
   vi.mocked(dataAccountHidden).mockResolvedValueOnce(false);
   await authService.signOut();
   expect(native).not.toHaveBeenCalledWith('clear');
+  expect(authMock.signOut).not.toHaveBeenCalled();
+});
+
+describe('verified native offline identity', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    configState.config = { url: 'https://fixture.supabase.co', publishableKey: 'fixture' };
+    vi.mocked(dataAccountHidden).mockResolvedValue(false);
+  });
+  it('uses an authorized expired session without asking the cloud SDK to refresh', async () => {
+    native.mockResolvedValue({ config: { url: configState.config!.url }, session: { user: { id: 'A' }, expires_at: 0 } });
+    authMock.getSession.mockRejectedValue(new Error('Network offline'));
+    expect((await authService.session())?.user.id).toBe('A');
+    expect(native).toHaveBeenCalledWith('local');
+    expect(authMock.getSession).not.toHaveBeenCalled();
+  });
+  it('refuses a native identity from a different project', async () => {
+    native.mockResolvedValue({ config: { url: 'https://other.supabase.co' }, session: { user: { id: 'B' } } });
+    expect(await authService.session()).toBeNull();
+  });
 });

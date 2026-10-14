@@ -188,20 +188,23 @@ export async function getSupabaseClient(knownConfig?: SupabaseConfig | null): Pr
     },
     global: { fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (url.includes('/auth/v1/logout?scope=local') && await authLink()) return new Response(null, { status: 204 });
       if (url.includes('/auth/v1/token?grant_type=refresh_token')) {
-        return authLock(async () => {
-          if (!(await authLink())) {
-            const response = await fetch(input, init);
-            if (response.ok) {
-              const session = await response.clone().json();
-              const key = `windowstash-auth:sb-${new URL(config.url).hostname.split('.')[0]}-auth-token`;
-              await browser.storage.local.set({ [key]: JSON.stringify(session) });
-            }
-            return response;
-          }
+        if (await authLink()) {
+          // The Host serializes rotations. Never hold the browser mutation lock across network I/O.
           const reply = await nativeAuth('refresh');
-          if (!reply.session) return new Response(JSON.stringify({ error: 'invalid_grant', error_description: '请在 Chrome 中重新登录' }), { status: 401 });
+          if (reply.config.url !== config.url) throw new Error('账号配置已变化，请重试');
+          if (!reply.session) return new Response(JSON.stringify({ error: 'invalid_grant', error_description: '账号已退出或授权已撤销' }), { status: 401 });
           return new Response(JSON.stringify(reply.session), { headers: { 'Content-Type': 'application/json' } });
+        }
+        return authLock(async () => {
+          const response = await fetch(input, init);
+          if (response.ok) {
+            const session = await response.clone().json();
+            const key = `windowstash-auth:sb-${new URL(config.url).hostname.split('.')[0]}-auth-token`;
+            await browser.storage.local.set({ [key]: JSON.stringify(session) });
+          }
+          return response;
         });
       }
       return fetch(input, init);

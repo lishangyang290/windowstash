@@ -21,7 +21,7 @@ export function acceptBrowserGrant(grant: BrowserGrant | null) {
 }
 export const readBrowserGrant = () => invoke<BrowserGrant | null>('desktop_auth');
 export async function browserAccessToken(identity: string) {
-  const grant = await readBrowserGrant();
+  const grant = await invoke<BrowserGrant | null>('desktop_cloud_auth');
   if (!grant || grantIdentity(grant) !== identity) throw new Error('账号已变化，请重新加载工作区');
   return grant.session.access_token;
 }

@@ -29,6 +29,8 @@ export const authService = {
     return session;
   },
   async subscribe(changed: (event: AuthChangeEvent, session: Session | null) => void) {
+    // Linked local identity is observed through storage signals, independently of SDK refresh failures.
+    if (await authLink()) return () => {};
     const client = await getSupabaseClient();
     const subscription = client?.auth.onAuthStateChange((event, session) => {
       if (event !== 'INITIAL_SESSION') changed(event, session);
@@ -38,6 +40,13 @@ export const authService = {
   async session(knownConfig?: SupabaseConfig | null) {
     if (await dataAccountHidden()) return null;
     const config = knownConfig === undefined ? await getSupabaseConfig() : knownConfig;
+    if (config && await authLink()) {
+      const reply = await nativeAuth('local');
+      if (reply.config.url !== config.url || await dataAccountHidden()) return null;
+      if (reply.session) await initializeDataAccount(config.url, reply.session.user.id);
+      else await hideDataAccount();
+      return await dataAccountHidden() ? null : reply.session;
+    }
     const client = await measurePopupStage('supabase-client', () => getSupabaseClient(config));
     if (!client) return null;
     const { data, error } = await measurePopupStage('supabase-session', () => client.auth.getSession());
@@ -58,7 +67,9 @@ export const authService = {
       const session = data.session;
       if (loginConfig?.url !== (await getSupabaseConfig())?.url) throw new Error('Supabase 项目已变化，请重新登录');
       await authLock(async () => {
+        await hideDataAccount();
         if (await authLink()) {
+          await nativeAuth('clear');
           const config = await getSupabaseConfig();
           if (!config) throw new Error('请先连接 Supabase');
           await nativeAuth('replace', { config: { url: config.url, publishable_key: config.publishableKey }, session });
@@ -94,13 +105,14 @@ export const authService = {
   },
   async signOut() {
     await hideDataAccount();
-    const client = await requireClient();
-    const { error } = await client.auth.signOut();
-    if (error) throw error;
     await authLock(() => dataAccountLock(async () => {
       // A late logout must not clear a newer browser/desktop login.
       if (await dataAccountHidden() && await authLink()) await nativeAuth('clear');
     }));
+    if (!await dataAccountHidden()) return;
+    const client = await requireClient();
+    const { error } = await client.auth.signOut({ scope: 'local' });
+    if (error) throw error;
   },
   async updatePassword(currentPassword: string, password: string) {
     const { error } = await (await requireClient()).auth.updateUser({ current_password: currentPassword, password });

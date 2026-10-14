@@ -9,7 +9,7 @@ import type { BackgroundMessage } from '@/types/messages';
 import type { StoredTab, WorkspaceContent, WorkspaceLocalRecord, WorkspaceStatus } from '@/types/workspace';
 import { syncEngine } from '@/lib/sync/syncEngine';
 import { schedulePendingSync } from '@/lib/sync/pendingSync';
-import { publishNativeWorkspaces } from '@/lib/companion/workspaces';
+import { getNativeWorkspace, publishNativeWorkspaces } from '@/lib/companion/workspaces';
 import { matchWorkspace, MIN_CANDIDATE_GAP, scoreWorkspaceMatch, type MatchableTab } from './workspaceMatcher';
 import {
   canLazyRestore,
@@ -38,6 +38,18 @@ async function recordLog(
   storageKey?: string,
 ) {
   await syncLogRepository.add({ workspaceId, workspaceName, action, result, message }, storageKey?.replace(/^workspaces/, STORAGE_KEYS.syncLogs));
+}
+
+async function getLocalWorkspace(id: string, scope: string) {
+  const cached = await workspaceRepository.get(id, scope);
+  if (cached) return cached;
+  if (await tombstoneRepository.has(id, scope.replace(/^workspaces/, STORAGE_KEYS.tombstones))) return null;
+  const record = await getNativeWorkspace(id, scope);
+  if (record) {
+    const account = await requireDataAccount(scope);
+    await withDataAccount(account, () => workspaceRepository.put(record));
+  }
+  return record;
 }
 
 export async function getCurrentWindowSnapshot() {
@@ -72,7 +84,7 @@ async function resolveScopedWorkspaceState(windowId: number, tabs: MatchableTab[
     boundId = await bindingRepository.get(windowId, scope);
   }
   if (boundId) {
-    let bound = await workspaceRepository.get(boundId, scope);
+    let bound = await getLocalWorkspace(boundId, scope);
     if (!bound) {
       if (await tombstoneRepository.has(boundId, scope.replace(/^workspaces/, STORAGE_KEYS.tombstones))) {
         await bindingRepository.suppress(windowId, scope);
@@ -139,7 +151,7 @@ export async function saveCurrentWindow(input: {
     await bindingRepository.suppress(input.windowId, storageKey);
     throw new Error('工作区已删除，请重新打开弹窗后保存为新工作区');
   }
-  let previous = boundId ? await workspaceRepository.get(boundId, storageKey) : null;
+  let previous = boundId ? await getLocalWorkspace(boundId, storageKey) : null;
   if (boundId && !previous) {
     await syncEngine.syncAll(storageKey).catch(() => undefined);
     previous = await workspaceRepository.get(boundId, storageKey);
@@ -182,7 +194,7 @@ export async function restoreWorkspace(
   options: RestoreWorkspaceOptions = {},
 ): Promise<number> {
   const account = await requireDataAccount();
-  const record = await workspaceRepository.get(workspaceId, account.storageKey);
+  const record = await getLocalWorkspace(workspaceId, account.storageKey);
   if (!record) throw new Error('本地工作区不存在，请先完成云端同步');
   const scope = record.accountStorageKey ?? account.storageKey;
   const requireScope = async () => { if (scope !== await accountStorageKey(STORAGE_KEYS.workspaces)) throw new Error('账号已变化，请重新打开工作区'); };
@@ -336,7 +348,7 @@ export async function recoverWorkspace(workspaceId: string, sourceWindowId: numb
 
 export async function restoreSavedWorkspace(workspaceId: string): Promise<number> {
   await requireDataAccount();
-  if (!await workspaceRepository.get(workspaceId)) await syncEngine.syncAll();
+  if (!await getLocalWorkspace(workspaceId, (await requireDataAccount()).storageKey)) await syncEngine.syncAll();
   return restoreWorkspace(workspaceId, { focused: true, cleanupOnFailure: true });
 }
 
@@ -379,7 +391,7 @@ async function logLaunch(
 
 async function runOpenOrFocusWorkspace(workspaceId: string, scope: string): Promise<number> {
   const requireScope = async () => { if (scope !== await accountStorageKey(STORAGE_KEYS.workspaces)) throw new Error('账号已变化，请重新打开工作区'); };
-  let record = await workspaceRepository.get(workspaceId, scope);
+  let record = await getLocalWorkspace(workspaceId, scope);
   if (!record) {
     await syncEngine.syncAll(scope);
     record = await workspaceRepository.get(workspaceId, scope);

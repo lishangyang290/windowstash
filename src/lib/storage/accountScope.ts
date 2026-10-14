@@ -42,7 +42,7 @@ export async function withDataAccount<T>(account: Awaited<ReturnType<typeof requ
 async function currentOwner(url: string): Promise<string | null> {
   let userId: string | undefined;
   if (await authLink()) {
-    const reply = await nativeAuth('read');
+    const reply = await nativeAuth('local');
     if (reply.config?.url.replace(/\/+$/, '') === url.replace(/\/+$/, '')) userId = reply.session?.user.id;
   } else {
     const key = `windowstash-auth:sb-${new URL(url).hostname.split('.')[0]}-auth-token`;

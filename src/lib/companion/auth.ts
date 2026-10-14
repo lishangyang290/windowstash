@@ -20,17 +20,18 @@ export async function nativeAuth(action: string, extra: Record<string, unknown> 
 }
 async function performNativeAuth(action: string, extra: Record<string, unknown>): Promise<Reply> {
   // Share only concurrent reads. Never reuse a completed identity verification.
-  if (action !== 'read') { authRevision++; reads.clear(); }
+  const reading = action === 'read' || action === 'local';
+  if (!reading) { authRevision++; reads.clear(); }
   const revision = authRevision;
   const [state, instance] = await Promise.all([
-    measurePopupStage('native-storage', () => browser.storage.local.get(action === 'read'
+    measurePopupStage('native-storage', () => browser.storage.local.get(reading
       ? [LINK_KEY, 'supabaseConfig', 'windowstash-data-owner:v1', 'windowstash-data-revision:v1', 'windowstash-companion:auth-revision']
       : LINK_KEY)),
     instanceId(),
   ]);
   const link = state[LINK_KEY] as Link | undefined ?? null;
-  if (action === 'read') {
-    const key = JSON.stringify([revision, instance, link, state, extra]);
+  if (reading) {
+    const key = JSON.stringify([action, revision, instance, link, state, extra]);
     const existing = reads.get(key);
     if (existing) return existing;
     const task = sendAuth(action, extra, link, instance);
@@ -56,11 +57,13 @@ async function sendAuth(action: string, extra: Record<string, unknown>, link: Li
       invalid_project_config: '数据存储配置无法用于授权，请检查浏览器中的 Supabase 配置',
       network_unavailable: '暂时无法连接云端，请检查网络后重试',
       invalid_server_response: '云端返回了异常响应，请检查网络后重试',
-      session_refresh_failed: '登录已失效，请在浏览器中重新登录',
+      session_refresh_failed: '云端认证暂时不可用，本机授权和数据已保留',
+      authorization_revoked: '账号授权已被撤销，请重新登录',
       auth_store_unavailable: '无法保存登录状态，请重新打开 Companion 后重试',
       auth_store_corrupt: '无法读取已保存的登录状态，请重新打开 Companion',
       invalid_auth_request: '应用版本不匹配，请更新扩展和 Companion 后重试',
     };
+    if (code === 'authorization_revoked') await browser.storage.local.set({ 'windowstash-companion:auth-revision': crypto.randomUUID() });
     console.warn('WindowStash authorization failed:', code); // Fixed code only, never credentials.
     const message = messages[code] ?? '授权未完成，请重新打开 Companion 后重试';
     throw new NativeAuthError(code, message);

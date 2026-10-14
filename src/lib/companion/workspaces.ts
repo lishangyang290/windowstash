@@ -2,6 +2,19 @@ import { browser } from 'wxt/browser';
 import { authLink } from './auth';
 import { instanceId } from './connection';
 import { hex, NATIVE_HOST } from './protocol';
+import type { WorkspaceLocalRecord } from '@/types/workspace';
+
+async function nativeMessage(message: Record<string, unknown>, started: number): Promise<unknown> {
+  const remaining = 5_000 - (Date.now() - started);
+  if (remaining <= 0) throw new Error('本机工作区通道超时；原数据已保留，请重试');
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      browser.runtime.sendNativeMessage(NATIVE_HOST, message),
+      new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('本机工作区通道超时；原数据已保留，请重试')), remaining); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
 
 const PREFIX = 'windowstash-local-library:';
 export const libraryStateKey = (scope: string) => `${PREFIX}${scope}`;
@@ -62,20 +75,41 @@ export function publishNativeWorkspaces(scope: string, force = false): Promise<v
     const chunks = Math.max(1, Math.ceil(bytes.length / 16_384));
     const envelope = { version: 1, type: 'workspaces', instance_id: await instanceId(), capability: link.capability, project_url: config.url, user_id: owner[1], revision: snapshot.state.revision, chunks };
     for (let index = 0; index < chunks; index++) {
-      const remaining = 5_000 - (Date.now() - started);
-      if (remaining <= 0) throw new Error('本机工作区写入超时；保存数据已保留，请重试');
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        const reply = await Promise.race([
-          browser.runtime.sendNativeMessage(NATIVE_HOST, { ...envelope, index, part: hex(bytes.subarray(index * 16_384, (index + 1) * 16_384)) }),
-          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('本机工作区写入超时；保存数据已保留，请重试')), remaining); }),
-        ]) as { status?: string; revision?: number };
+        const reply = await nativeMessage({ ...envelope, index, part: hex(bytes.subarray(index * 16_384, (index + 1) * 16_384)) }, started) as { status?: string; revision?: number };
         if (reply?.status !== (index === chunks - 1 ? 'persisted' : 'staged') || reply.revision !== snapshot.state.revision) throw new Error('工作区已保存在扩展本地，但本机通道未确认写入，未关闭窗口；请重试');
-      } finally { clearTimeout(timer); }
     }
     await locked(key, async () => {
       const state = (await browser.storage.local.get(key))[key] as LibraryState;
       if (state.revision === snapshot.state.revision) await browser.storage.local.set({ [key]: { ...state, pending: false } });
     });
   });
+}
+
+export async function getNativeWorkspace(id: string, scope: string): Promise<WorkspaceLocalRecord | null> {
+  const link = await authLink();
+  if (!link) return null;
+  const started = Date.now();
+  const data = await browser.storage.local.get(['supabaseConfig', 'windowstash-data-owner:v1']);
+  const owner = scope.slice('workspaces:'.length);
+  if (!scope.startsWith('workspaces:[') || data['windowstash-data-owner:v1'] !== owner) throw new Error('账号已变化，请重新打开工作区');
+  const [project, userId] = JSON.parse(owner) as [string, string];
+  const config = data.supabaseConfig as { url: string };
+  if (new URL(config.url).href.replace(/\/+$/, '') !== project) throw new Error('账号配置已变化，请重新打开工作区');
+  const envelope = { version: 1, type: 'workspace_read', instance_id: await instanceId(), capability: link.capability, project_url: config.url, user_id: userId, id };
+  const parts: Uint8Array[] = [];
+  let chunks = 1, revision: number | undefined;
+  for (let index = 0; index < chunks; index++) {
+    const reply = await nativeMessage({ ...envelope, index, revision }, started) as { status?: string; id?: string; revision?: number; chunks?: number; index?: number; part?: string };
+    if (index === 0 && reply?.status === 'missing') return null;
+    if (reply?.status !== 'read' || reply.id !== id || reply.index !== index || !Number.isSafeInteger(reply.revision)
+      || (revision !== undefined && revision !== reply.revision) || !Number.isSafeInteger(reply.chunks) || reply.chunks! < 1 || reply.chunks! > 512
+      || (index > 0 && chunks !== reply.chunks) || typeof reply.part !== 'string' || reply.part.length > 32_768 || !/^(?:[a-f0-9]{2})*$/.test(reply.part)) throw new Error('本机恢复数据校验失败，原数据已保留');
+    chunks = reply.chunks!; revision = reply.revision;
+    parts.push(Uint8Array.from(reply.part.match(/../g) ?? [], pair => parseInt(pair, 16)));
+  }
+  const bytes = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let offset = 0; for (const part of parts) { bytes.set(part, offset); offset += part.length; }
+  const record = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as WorkspaceLocalRecord;
+  if (record.content?.id !== id || !record.sync) throw new Error('本机恢复数据校验失败，原数据已保留');
+  return { ...record, accountStorageKey: scope };
 }

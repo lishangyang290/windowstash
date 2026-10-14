@@ -14,7 +14,8 @@ const tombstoneMock = vi.hoisted(() => ({ add: vi.fn(), has: vi.fn() }));
 const workspaceMock = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), saveContent: vi.fn(), put: vi.fn(), remove: vi.fn() }));
 const syncMock = vi.hoisted(() => ({ syncAll: vi.fn() }));
 const nativeMock = vi.hoisted(() => vi.fn());
-vi.mock('@/lib/companion/workspaces', () => ({ publishNativeWorkspaces: nativeMock }));
+const nativeReadMock = vi.hoisted(() => vi.fn(async () => null as WorkspaceLocalRecord | null));
+vi.mock('@/lib/companion/workspaces', () => ({ publishNativeWorkspaces: nativeMock, getNativeWorkspace: nativeReadMock }));
 const lazyMock = vi.hoisted(() => ({
   list: vi.fn(), get: vi.fn(), put: vi.fn(), remove: vi.fn(), removeByTabId: vi.fn(), removeByWindowId: vi.fn(), removeMany: vi.fn(),
 }));
@@ -76,6 +77,7 @@ describe('workspaceService', () => {
     browserMock.windows.getAll.mockResolvedValue([]);
     syncMock.syncAll.mockResolvedValue(undefined);
     nativeMock.mockResolvedValue(undefined);
+    nativeReadMock.mockResolvedValue(null);
     lazyMock.get.mockResolvedValue(null);
     lazyMock.put.mockResolvedValue(undefined);
     lazyMock.remove.mockResolvedValue(undefined);
@@ -238,6 +240,18 @@ describe('workspaceService', () => {
     await expect(restoreSavedWorkspace('workspace-1')).resolves.toBe(99);
 
     expect(syncMock.syncAll).toHaveBeenCalledOnce();
+  });
+
+  it('restores full native data after extension cache expiry without cloud access', async () => {
+    workspaceMock.get.mockResolvedValueOnce(null).mockResolvedValue(localRecord);
+    nativeReadMock.mockResolvedValueOnce({ ...localRecord, accountStorageKey: 'workspaces' });
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+    browserMock.tabs.remove.mockResolvedValue(undefined);
+    await expect(restoreSavedWorkspace('workspace-1')).resolves.toBe(99);
+    expect(nativeReadMock).toHaveBeenCalledWith('workspace-1', 'workspaces');
+    expect(workspaceMock.put).toHaveBeenCalledWith(expect.objectContaining({ accountStorageKey: 'workspaces' }));
+    expect(syncMock.syncAll).not.toHaveBeenCalled();
   });
 
   it('restores only active position 4 directly and lazily restores the other eligible tabs', async () => {

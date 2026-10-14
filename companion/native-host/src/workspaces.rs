@@ -15,6 +15,12 @@ pub struct Request {
     version: u8, r#type: String, instance_id: String, capability: String,
     project_url: String, user_id: String, revision: u64, chunks: usize, index: usize, part: String,
 }
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReadRequest {
+    version: u8, r#type: String, instance_id: String, capability: String,
+    project_url: String, user_id: String, id: String, index: usize, revision: Option<u64>,
+}
 #[derive(Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct Tab {
@@ -177,6 +183,22 @@ pub fn desktop(root: &Path, route: &str) -> Result<Value> {
     })
 }
 
+pub fn read(root: &Path, origin: &str, request: ReadRequest) -> Result<Value> {
+    if request.version != 1 || request.r#type != "workspace_read" || !valid_workspace_id(&request.id) { return Err("invalid_workspace_request"); }
+    auth::with_local_grant(root, origin, &request.instance_id, &request.capability, |grant| {
+        if request.project_url != grant.config.url || request.user_id != user_id(grant)? { return Err("wrong_account"); }
+        let library = read_library(&location(root, grant)?)?;
+        if request.revision.is_some_and(|revision| revision != library.revision) { return Err("stale_workspace_revision"); }
+        let Some(record) = library.records.get(&request.id) else { return Ok(json!({"status":"missing"})); };
+        let bytes = serde_json::to_vec(record).map_err(|_| "local_store_corrupt")?;
+        let chunks = bytes.len().div_ceil(CHUNK_BYTES);
+        if request.index >= chunks { return Err("invalid_workspace_chunk"); }
+        let start = request.index * CHUNK_BYTES;
+        Ok(json!({"status":"read","id":request.id,"revision":library.revision,"chunks":chunks,"index":request.index,
+            "part":hex(&bytes[start..bytes.len().min(start + CHUNK_BYTES)])}))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +259,19 @@ mod tests {
         assert_eq!(list(root.path())["items"][0]["name"], "Existing workspace");
         publish(root.path(), json!({"records":[record("Without favicon")],"deleted":[]}), 2).unwrap();
         assert_eq!(list(root.path())["items"][0]["name"], "Without favicon");
+    }
+    #[test]
+    fn reads_complete_offline_restore_data_and_rejects_changed_versions() {
+        let root = setup();
+        publish(root.path(), json!({"records":[record("Offline restore")],"deleted":[]}), 1).unwrap();
+        let request = |revision| ReadRequest { version: 1, r#type: "workspace_read".into(), instance_id: "a".repeat(64), capability: "c".repeat(64), project_url: "https://fixture.supabase.co".into(), user_id: "user-A".into(), id: ID.into(), index: 0, revision };
+        let reply = read(root.path(), ORIGIN, request(None)).unwrap();
+        let restored: Record = serde_json::from_slice(&decode(reply["part"].as_str().unwrap()).unwrap()).unwrap();
+        assert_eq!(restored.content.tabs[0].url, "https://example.invalid");
+        assert_eq!(reply["revision"], 1);
+        publish(root.path(), json!({"records":[],"deleted":[ID]}), 2).unwrap();
+        assert_eq!(read(root.path(), ORIGIN, request(Some(1))).unwrap_err(), "stale_workspace_revision");
+        assert_eq!(read(root.path(), ORIGIN, request(None)).unwrap()["status"], "missing");
     }
     #[test]
     fn stale_and_conflicting_versions_cannot_overwrite_new_data() {

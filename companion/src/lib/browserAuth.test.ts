@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const invoke = vi.hoisted(() => vi.fn());
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
-import { acceptBrowserGrant, beginBrowserLogin, browserAccessToken, grantIdentity, type BrowserGrant } from './browserAuth';
+import { acceptBrowserGrant, beginBrowserLogin, browserAccessToken, readBrowserGrant, grantIdentity, type BrowserGrant } from './browserAuth';
 import { cache } from './cache';
 const grant = { instance_id: 'instance-A', revision: 1, config: { url: 'https://project1', publishable_key: 'fixture-key' }, session: { access_token: 'fixture-access', expires_at: 9999999999, user: { id: 'user-A' } } } as BrowserGrant;
 beforeEach(() => {
@@ -11,6 +11,13 @@ beforeEach(() => {
 });
 afterEach(() => { acceptBrowserGrant(null); cache.scope(''); vi.unstubAllGlobals(); });
 describe('browser-authorized desktop access', () => {
+  it('uses a local identity read for UI and a separate cloud read only for access tokens', async () => {
+    invoke.mockResolvedValue({ ...grant, session: { ...grant.session, expires_at: 0 } });
+    await readBrowserGrant();
+    expect(invoke).toHaveBeenLastCalledWith('desktop_auth');
+    await browserAccessToken(grantIdentity(grant));
+    expect(invoke).toHaveBeenLastCalledWith('desktop_cloud_auth');
+  });
   it('only supplies an access token for the exact active profile/project/account', async () => {
     invoke.mockResolvedValueOnce(grant);
     expect(await browserAccessToken(grantIdentity(grant))).toBe('fixture-access');
