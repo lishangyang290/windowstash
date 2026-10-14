@@ -286,7 +286,7 @@ function DiagnosticsDialog({ logs, onClose, onClear }: { logs: SyncLogEntry[]; o
   );
 }
 
-function WorkspaceRow({ record, recoveryMode, onRefresh }: { record: WorkspaceLocalRecord; recoveryMode: boolean; onRefresh: () => Promise<unknown> }) {
+function WorkspaceRow({ record, recoveryMode, onRefresh, onDeleted }: { record: WorkspaceLocalRecord; recoveryMode: boolean; onRefresh: () => Promise<unknown>; onDeleted: (name: string) => void }) {
   const { content } = record;
   const [busy, setBusy] = React.useState<'open' | 'update' | null>(null);
   const [overviewOpen, setOverviewOpen] = React.useState(false);
@@ -294,6 +294,9 @@ function WorkspaceRow({ record, recoveryMode, onRefresh }: { record: WorkspaceLo
   const [editing, setEditing] = React.useState(false);
   const [draftName, setDraftName] = React.useState(content.name);
   const [error, setError] = React.useState('');
+  const deleteDialog = React.useRef<HTMLDialogElement>(null);
+  const menuButton = React.useRef<HTMLButtonElement>(null);
+  const deleteTitle = React.useId();
 
   async function run(task: () => Promise<void>, action: 'open' | 'update' = 'update') {
     setBusy(action);
@@ -320,8 +323,18 @@ function WorkspaceRow({ record, recoveryMode, onRefresh }: { record: WorkspaceLo
   }
 
   function remove() {
+    if (busy) return;
     setMenuOpen(false);
-    if (window.confirm(`确定删除“${content.name}”？`)) void run(() => deleteWorkspace(content.id, record.accountStorageKey));
+    deleteDialog.current?.showModal();
+  }
+
+  function confirmDelete() {
+    if (!deleteDialog.current?.open || busy) return;
+    deleteDialog.current.close();
+    void run(async () => {
+      await deleteWorkspace(content.id, record.accountStorageKey);
+      onDeleted(content.name);
+    });
   }
 
   const archived = content.status === 'archived';
@@ -356,7 +369,7 @@ function WorkspaceRow({ record, recoveryMode, onRefresh }: { record: WorkspaceLo
           <button className="overview-button" onClick={() => setOverviewOpen(true)}>查看标签页</button>
           <button className="open-button" disabled={Boolean(busy)} onClick={() => void run(() => browser.runtime.sendMessage(openMessage).then(() => undefined), 'open')}>{busy === 'open' ? '正在恢复…' : recoveryMode ? '从保存版本恢复' : '打开'}</button>
           <div className="more-wrap">
-            <button className="more-button" aria-label={`更多操作：${content.name}`} aria-expanded={menuOpen} onClick={() => setMenuOpen((value) => !value)}>•••</button>
+            <button ref={menuButton} className="more-button" aria-label={`更多操作：${content.name}`} aria-expanded={menuOpen} onClick={() => setMenuOpen((value) => !value)}>•••</button>
             {menuOpen && <div className="more-menu">
               <button onClick={() => void run(() => updateWorkspace(content.id, { status: archived ? 'active' : 'archived' }, record.accountStorageKey))}>{archived ? '取消归档' : '归档'}</button>
               <span />
@@ -366,6 +379,13 @@ function WorkspaceRow({ record, recoveryMode, onRefresh }: { record: WorkspaceLo
         </div>
       </div>
       {overviewOpen && <TabOverview record={record} onClose={() => setOverviewOpen(false)} />}
+      <dialog ref={deleteDialog} className="dialog delete-dialog" aria-labelledby={deleteTitle} aria-describedby={`${deleteTitle}-description`} onClose={() => menuButton.current?.focus()}>
+        <div className="dialog-head"><div><h2 id={deleteTitle}>删除工作区？</h2><p id={`${deleteTitle}-description`}>确定删除“{content.name}”？此操作无法撤销。</p></div></div>
+        <div className="delete-dialog-actions">
+          <button className="button" autoFocus onClick={() => deleteDialog.current?.close()}>取消</button>
+          <button className="button button-primary" onClick={confirmDelete}>删除工作区</button>
+        </div>
+      </dialog>
     </article>
   );
 }
@@ -407,6 +427,7 @@ function Dashboard({ session, config, recoveryMode, onAuthChanged, onSignedOut }
   const [legacy, setLegacy] = React.useState({ workspaces: 0, tombstones: 0 });
   const [legacyError, setLegacyError] = React.useState('');
   const [manualSyncState, setManualSyncState] = React.useState<ManualSyncState>('idle');
+  const [deleted, setDeleted] = React.useState<{ name: string; key: number } | null>(null);
   const refreshRevision = React.useRef(0);
 
   const refresh = React.useCallback(async () => {
@@ -535,10 +556,10 @@ function Dashboard({ session, config, recoveryMode, onAuthChanged, onSignedOut }
         </nav>
 
         <section className="workspace-list" aria-live="polite">
-          {loading ? <div className="loading-list">{[0, 1, 2].map((item) => <div key={item}><span /><p /><button /></div>)}</div> : filtered.length ? filtered.map((record) => <WorkspaceRow key={record.content.id} record={record} recoveryMode={recoveryMode} onRefresh={refresh} />) : <div className="empty-state"><div className="empty-icon">□</div><h2>{query ? '没有找到工作区' : filter === 'archived' ? '没有已归档的工作区' : '还没有保存窗口'}</h2><p>{query ? '试试其他名称。' : filter === 'archived' ? '归档的工作区会显示在这里。' : '点击浏览器工具栏中的 WindowStash 开始保存。'}</p></div>}
+          {loading ? <div className="loading-list">{[0, 1, 2].map((item) => <div key={item}><span /><p /><button /></div>)}</div> : filtered.length ? filtered.map((record) => <WorkspaceRow key={record.content.id} record={record} recoveryMode={recoveryMode} onRefresh={refresh} onDeleted={(name) => setDeleted((previous) => ({ name, key: (previous?.key ?? 0) + 1 }))} />) : <div className="empty-state"><div className="empty-icon">□</div><h2>{query ? '没有找到工作区' : filter === 'archived' ? '没有已归档的工作区' : '还没有保存窗口'}</h2><p>{query ? '试试其他名称。' : filter === 'archived' ? '归档的工作区会显示在这里。' : '点击浏览器工具栏中的 WindowStash 开始保存。'}</p></div>}
         </section>
       </main>
-      {manualSyncState === 'success' ? <SuccessToast message="已同步到云端" onDismiss={() => setManualSyncState('idle')} /> : null}
+      {deleted ? <SuccessToast key={deleted.key} message={`「${deleted.name}」已删除`} onDismiss={() => setDeleted(null)} /> : manualSyncState === 'success' ? <SuccessToast message="已同步到云端" onDismiss={() => setManualSyncState('idle')} /> : null}
       {configOpen ? <div className="dialog-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setConfigOpen(false); }}>
         <div role="dialog" aria-modal="true" aria-label="数据存储">
           <SupabaseConfigForm settings initialConfig={config} onCancel={() => setConfigOpen(false)} onSaved={() => { setConfigOpen(false); void onAuthChanged(); }} />
