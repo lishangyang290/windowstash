@@ -7,7 +7,7 @@ import { workspaceRepository } from '@/lib/storage/workspaceRepository';
 import schema from '../../../supabase/schema.sql?raw';
 import popupHtml from '../popup/index.html?raw';
 import { browser } from 'wxt/browser';
-import { resolveWorkspaceStateForWindow, saveCurrentWindow } from '@/features/workspaces/workspaceService';
+import { deleteWorkspace, resolveWorkspaceStateForWindow, saveCurrentWindow } from '@/features/workspaces/workspaceService';
 import popupStyle from '../popup/style.css?raw';
 import { deletionNoticeKey } from '@/features/workspaces/remoteDeletion';
 
@@ -45,6 +45,7 @@ vi.mock('wxt/browser', () => {
 vi.mock('@/features/workspaces/workspaceService', () => ({
   resolveWorkspaceStateForWindow: vi.fn(async () => ({ status: 'unbound', record: null })),
   saveCurrentWindow: vi.fn(),
+  deleteWorkspace: vi.fn(async () => undefined),
 }));
 vi.mock('@/features/workspaces/lazyRestore', () => ({
   resolveLogicalTabs: vi.fn(async () => []), LazyTabResolutionError: class extends Error {},
@@ -659,6 +660,48 @@ function loggedIn(userId = 'A') {
   vi.mocked(authService.session).mockResolvedValue(session);
   return session;
 }
+
+it.each(['cancel', 'confirm', 'expired-session', 'delete-failed'] as const)('uses the custom delete dialog and preserves deletion guards: %s', async (action) => {
+  const session = loggedIn();
+  vi.mocked(authService.requireSession).mockResolvedValue(session);
+  const record: Awaited<ReturnType<typeof workspaceRepository.list>>[number] = {
+    accountStorageKey: 'workspaces:' + JSON.stringify([config.url, 'A']),
+    content: { id: 'delete-fixture', name: '待确认工作区', status: 'active', tabs: [], activeTabIndex: 0, createdAt: '', updatedAt: '' },
+    sync: { syncStatus: 'synced', lastSyncedAt: null, lastSyncedHash: null, lastSyncedCloudUpdatedAt: null, localExpiresAt: '', lastSyncError: null },
+  };
+  vi.mocked(workspaceRepository.list).mockResolvedValue([record]);
+  window.confirm = vi.fn();
+  await renderOptions();
+  const dialog = container.querySelector<HTMLDialogElement>('.delete-dialog')!;
+  // linkedom lacks the browser's dialog methods; model only opening and closing.
+  Object.assign(dialog, { open: false, showModal() { this.open = true; }, close() { this.open = false; } });
+  await act(async () => container.querySelector<HTMLButtonElement>('.more-button')!.click());
+  await click('删除');
+  expect(dialog.open).toBe(true);
+  expect(dialog.textContent).toContain('确定删除“待确认工作区”？');
+  expect(window.confirm).not.toHaveBeenCalled();
+  expect(deleteWorkspace).not.toHaveBeenCalled();
+  if (action === 'expired-session') vi.mocked(authService.requireSession).mockRejectedValueOnce(new Error('请重新登录'));
+  if (action === 'delete-failed') vi.mocked(deleteWorkspace).mockRejectedValueOnce(new Error('删除失败，请重试'));
+  if (action === 'confirm') {
+    vi.mocked(deleteWorkspace).mockImplementationOnce(async () => { vi.mocked(workspaceRepository.list).mockResolvedValue([]); });
+    await act(async () => { const confirm = button('删除工作区'); confirm.click(); confirm.click(); });
+    expect(deleteWorkspace).toHaveBeenCalledExactlyOnceWith(record.content.id, record.accountStorageKey);
+    expect(container.querySelector('.workspace-row')).toBeNull();
+    expect(container.querySelector('.success-toast')?.textContent).toBe('「待确认工作区」已删除');
+  } else {
+    await click(action === 'cancel' ? '取消' : '删除工作区');
+    if (action === 'delete-failed') expect(deleteWorkspace).toHaveBeenCalledExactlyOnceWith(record.content.id, record.accountStorageKey);
+    else expect(deleteWorkspace).not.toHaveBeenCalled();
+    expect(container.querySelector('.success-toast')).toBeNull();
+    if (action === 'expired-session') expect(container.querySelector('.row-error')?.textContent).toBe('请重新登录');
+    if (action === 'delete-failed') {
+      expect(container.querySelector('.row-error')?.textContent).toBe('删除失败，请重试');
+      expect(container.querySelector('.workspace-row')).not.toBeNull();
+    }
+  }
+  expect(dialog.open).toBe(false);
+});
 
 it('preserves manager DOM and search during repeated focus/pageshow checks and same-user auth events', async () => {
   const session = loggedIn();
