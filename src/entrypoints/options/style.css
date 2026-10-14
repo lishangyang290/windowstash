@@ -82,6 +82,7 @@ body { min-height: 100vh; }
 @media (max-width: 480px) { .overview-backdrop { padding: 12px; }.tab-overview { max-height: 78vh; }.overview-grid { grid-template-columns: minmax(0, 1fr); }.overview-header { padding-left: 16px; padding-right: 16px; }.diagnostics-list > div { grid-template-columns: 1fr; gap: 4px; } }
 
 .delete-dialog::backdrop { background: rgba(24,24,27,.28); }
+.dialog-head .close-button { display: grid; place-items: center; flex-shrink: 0; padding: 0; line-height: 1; }
 .delete-dialog .dialog-head p { overflow-wrap: anywhere; line-height: 1.6; }
 .delete-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
 

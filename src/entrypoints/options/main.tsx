@@ -227,7 +227,7 @@ function AccountDialog({
         {/* Companion 的详细说明暂时隐藏，管理器原有弹窗保持显示。 */}
         {!companion && <div className="dialog-head">
           <div><h2 id="account-title">{session ? '修改密码' : companion ? authMode === 'login' ? '登录到 Companion' : '创建账号' : authMode === 'login' ? '登录' : '注册'}</h2><p>{session ? '修改当前 WindowStash 账号的登录密码。' : companion ? authMode === 'login' ? '使用 WindowStash 账号登录，继续桌面端授权。' : '创建账号后，继续登录 Companion。' : authMode === 'login' ? '登录后可在其他设备使用已保存的窗口。' : '创建用于 WindowStash 同步的账号。'}</p></div>
-          <button className="close-button" onClick={onClose} aria-label="关闭">×</button>
+          <button className="close-button" onClick={onClose} aria-label="关闭"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
         </div>}
         {session ? (
           <div className="account-settings">
@@ -275,7 +275,7 @@ function DiagnosticsDialog({ logs, onClose, onClear }: { logs: SyncLogEntry[]; o
       <section className="dialog diagnostics-dialog" role="dialog" aria-modal="true" aria-labelledby="diagnostics-title">
         <div className="dialog-head">
           <div><h2 id="diagnostics-title">诊断日志</h2><p>用于排查 Workspace 同步问题。</p></div>
-          <button className="close-button" onClick={onClose} aria-label="关闭">×</button>
+          <button className="close-button" onClick={onClose} aria-label="关闭"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
         </div>
         <div className="diagnostics-head"><span>最近 {logs.length} 条记录</span>{logs.length > 0 && <button onClick={() => void onClear()}>清空日志</button>}</div>
         <div className="diagnostics-list">
