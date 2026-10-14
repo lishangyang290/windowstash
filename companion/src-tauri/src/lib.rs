@@ -351,7 +351,13 @@ pub fn run() {
         ])
         .setup(|app| {
             // Register the bundled helper at user level; credentials are never accepted.
-            let _ = chrome_connection();
+            let host_error = match chrome_connection() {
+                Ok(connection) => connection.host_error,
+                Err(error) => Some(error),
+            };
+            if let Some(error) = &host_error {
+                eprintln!("Native Host registration failed: {error}");
+            }
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -408,6 +414,19 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            if host_error.is_some() {
+                display_popover(app.handle());
+            }
+            // Native timers keep working when macOS suspends the hidden WebView.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                let error = match chrome_connection() {
+                    Ok(connection) => connection.host_error,
+                    Err(error) => Some(error),
+                };
+                let _ = handle.emit("native-host-status", error);
+            });
             Ok(())
         })
         .on_window_event(|window, event| match event {

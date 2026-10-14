@@ -46,7 +46,7 @@ export function ChromeConnectionPanel({ compact = false, onManage }: { compact?:
         {connection.targets.map((target, i) => <option key={`${target.profile}:${target.extension_id}`} value={i}>{profileName(target.profile)}{connection.targets.filter((item) => item.profile === target.profile).length > 1 ? ` · 实例 ${i + 1}` : ''}</option>)}
       </select></label> : <p>{connection ? '请先在 Chrome 中安装并启用 WindowStash。' : error ? '无法识别浏览器，请重试。' : '正在识别浏览器…'}</p>}
       {saved ? <p role="status">已保存浏览器选择</p> : null}
-      {(error || connection?.error) && <p className="chrome-error" role="alert">{error || connection?.error}</p>}
+      {(error || connection?.host_error || connection?.error) && <p className="chrome-error" role="alert">{error || connection?.host_error || connection?.error}</p>}
       <button className="text-button" disabled={busy} onClick={() => void refresh()}>重新识别浏览器</button>
     </div>
   </section>;

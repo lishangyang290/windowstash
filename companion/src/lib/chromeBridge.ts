@@ -12,6 +12,7 @@ export interface ChromeConnection {
 async function connection() { return invoke<ChromeConnection>('discover_chrome_targets'); }
 async function open(page: 'launcher' | 'options', workspaceId: string | null) {
   const status = await connection();
+  if (status.host_error) throw new Error(status.host_error);
   if (!status.selected) throw new Error(status.error ?? '请先选择 Chrome Profile');
   const target = status.selected.target;
   await invoke('open_chrome_page', { extensionId: target.extension_id, profile: target.profile, page, workspaceId });

@@ -7,7 +7,7 @@ use std::{
 };
 use windowstash_native_host::bridge::{self, DesktopStatus, Receipt};
 #[cfg(target_os = "windows")]
-use winreg::{enums::HKEY_CURRENT_USER, RegKey};
+use winreg::{enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, KEY_WOW64_32KEY, KEY_WOW64_64KEY}, RegKey};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Selection {
@@ -24,27 +24,33 @@ pub struct Connection {
     pub host_error: Option<String>,
 }
 
-fn write_manifest(path: &Path, executable: &Path, targets: &[Target]) -> Result<(), String> {
+fn write_manifest(path: &Path, executable: &Path, targets: Option<&[Target]>) -> Result<(), String> {
     if !executable.is_file() {
         return Err("本机通信组件缺失，请重新安装 Companion".into());
     }
-    let origins: std::collections::BTreeSet<_> = targets
-        .iter()
-        .map(|target| format!("chrome-extension://{}/", target.extension_id))
-        .collect();
+    let previous = fs::read(path).ok().and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let origins: std::collections::BTreeSet<String> = match targets {
+        Some(targets) => targets.iter().filter(|target| chrome::valid_extension_id(&target.extension_id))
+            .map(|target| format!("chrome-extension://{}/", target.extension_id)).collect(),
+        // A temporarily unreadable Profile must not prevent repairing an old executable path.
+        // Retain only exact, valid origins; never infer new authorization from a failed scan.
+        None => previous.as_ref().and_then(|value| value["allowed_origins"].as_array())
+            .into_iter().flatten().filter_map(|value| value.as_str())
+            .filter(|origin| origin.strip_prefix("chrome-extension://").and_then(|id| id.strip_suffix('/'))
+                .is_some_and(chrome::valid_extension_id)).map(str::to_owned).collect(),
+    };
     // No wildcard origins. An unpacked extension's ID is discovered after installation.
-    bridge::write_json(
-        path,
-        &serde_json::json!({
+    let manifest = serde_json::json!({
             "name": bridge::HOST_NAME, "description": "WindowStash Companion status bridge",
             "path": executable, "type": "stdio", "allowed_origins": origins,
-        }),
-    )
-    .map_err(|_| "无法注册本机组件，请检查 Chrome 目录权限".into())
+        });
+    if previous.as_ref() == Some(&manifest) { return Ok(()); }
+    bridge::write_json(path, &manifest)
+        .map_err(|_| format!("无法更新本机通信组件注册：{}。请检查目录是否可写，或重新安装 Companion", path.display()))
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn register(chrome_root: &Path, executable: &Path, targets: &[Target]) -> Result<(), String> {
+pub fn register(chrome_root: &Path, executable: &Path, targets: Option<&[Target]>) -> Result<(), String> {
     write_manifest(
         &chrome_root
             .join("NativeMessagingHosts")
@@ -63,17 +69,29 @@ fn windows_registry_key() -> String {
 }
 
 #[cfg(target_os = "windows")]
-pub fn register(_chrome_root: &Path, executable: &Path, targets: &[Target]) -> Result<(), String> {
+pub fn register(_chrome_root: &Path, executable: &Path, targets: Option<&[Target]>) -> Result<(), String> {
     let manifest = bridge::directory()
         .map_err(str::to_string)?
         .join("native-messaging")
         .join(format!("{}.json", bridge::HOST_NAME));
     write_manifest(&manifest, executable, targets)?;
-    let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
-        .create_subkey(windows_registry_key())
-        .map_err(|_| "无法注册本机组件，请检查当前用户注册表权限".to_string())?;
-    key.set_value("", &manifest.to_string_lossy().into_owned())
-        .map_err(|_| "无法注册本机组件，请检查当前用户注册表权限".to_string())
+    register_windows(&manifest, &windows_registry_key())
+}
+
+#[cfg(target_os = "windows")]
+fn register_windows(manifest: &Path, subkey: &str) -> Result<(), String> {
+    // Chrome checks the 32-bit view first. An old entry there can shadow the new 64-bit entry.
+    for view in [KEY_WOW64_32KEY, KEY_WOW64_64KEY] {
+        let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey_with_flags(subkey, KEY_READ | KEY_WRITE | view)
+            .map_err(|error| format!("无法注册本机通信组件（当前用户注册表视图 {view:#x}）：{error}"))?;
+        let path = manifest.to_string_lossy().into_owned();
+        if key.get_value::<String, _>("").ok().as_ref() != Some(&path) {
+            key.set_value("", &path)
+                .map_err(|error| format!("无法更新本机通信组件注册（当前用户注册表视图 {view:#x}）：{error}"))?;
+        }
+    }
+    Ok(())
 }
 
 pub fn helper() -> Result<PathBuf, String> {
@@ -114,8 +132,13 @@ pub fn choose(root: &Path, targets: &[Target], target: Target) -> Result<Selecti
 }
 
 pub fn inspect(chrome_root: &Path, root: &Path, executable: &Path) -> Result<Connection, String> {
-    let targets = chrome::discover(chrome_root)?;
-    let host_error = register(chrome_root, executable, &targets).err();
+    inspect_with(chrome_root, root, |targets| register(chrome_root, executable, targets))
+}
+
+fn inspect_with(chrome_root: &Path, root: &Path, register: impl FnOnce(Option<&[Target]>) -> Result<(), String>) -> Result<Connection, String> {
+    let discovered = chrome::discover(chrome_root);
+    let host_error = register(discovered.as_ref().ok().map(Vec::as_slice)).err()
+        .or_else(|| discovered.as_ref().err().cloned());
     bridge::write_json(
         &root.join("desktop.json"),
         &DesktopStatus {
@@ -123,6 +146,10 @@ pub fn inspect(chrome_root: &Path, root: &Path, executable: &Path) -> Result<Con
         },
     )
     .map_err(str::to_string)?;
+    let targets = match discovered {
+        Ok(targets) => targets,
+        Err(error) => return Ok(Connection { targets: vec![], selected: None, error: Some(error), last_received_at: None, host_error }),
+    };
     let selection = saved(root);
     let mut error = selection.as_ref().err().cloned();
     let mut selected = selection.unwrap_or(None);
@@ -179,6 +206,13 @@ pub fn inspect(chrome_root: &Path, root: &Path, executable: &Path) -> Result<Con
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Keep regression tests isolated from the production Windows registry.
+    fn manifest(chrome: &Path) -> PathBuf {
+        chrome.join("NativeMessagingHosts/app.windowstash.companion.json")
+    }
+    fn inspect(chrome: &Path, root: &Path, executable: &Path) -> Result<Connection, String> {
+        inspect_with(chrome, root, |targets| write_manifest(&manifest(chrome), executable, targets))
+    }
     fn target(profile: &str) -> Target {
         Target {
             profile: profile.into(),
@@ -186,7 +220,6 @@ mod tests {
         }
     }
     #[test]
-    #[cfg(not(target_os = "windows"))]
     fn fresh_install_update_and_app_move_reregister_without_resetting_saved_data() {
         let temp = tempfile::tempdir().unwrap();
         let chrome = temp.path().join("Chrome");
@@ -230,6 +263,8 @@ mod tests {
             "Updated/WindowStash Companion.app",
         ] {
             let executable = helper(location);
+            let old: serde_json::Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+            fs::remove_dir_all(Path::new(old["path"].as_str().unwrap()).parent().unwrap()).unwrap();
             let connection = inspect(&chrome, &root, &executable).unwrap();
             assert!(connection.host_error.is_none());
             assert_eq!(connection.selected.unwrap().route_id, selected.route_id);
@@ -254,13 +289,16 @@ mod tests {
         }
     }
     #[test]
-    #[cfg(not(target_os = "windows"))]
     fn registration_and_profile_selection_use_only_isolated_files() {
         let root = tempfile::tempdir().unwrap();
         let executable = root.path().join("host");
         fs::write(&executable, "fixture").unwrap();
         let targets = vec![target("Default"), target("Profile 1")];
-        register(root.path(), &executable, &targets).unwrap();
+        let other_host = root.path().join("NativeMessagingHosts/app.other.extension.json");
+        bridge::write_json(&other_host, &serde_json::json!({"path":"other-host","allowed_origins":["chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/"]})).unwrap();
+        let preserved = fs::read(&other_host).unwrap();
+        write_manifest(&manifest(root.path()), &executable, Some(&targets)).unwrap();
+        assert_eq!(fs::read(&other_host).unwrap(), preserved);
         let manifest: serde_json::Value = serde_json::from_slice(
             &fs::read(
                 root.path()
@@ -278,7 +316,57 @@ mod tests {
         assert!(choose(root.path(), &targets, target("Profile 2")).is_err());
     }
     #[test]
-    #[cfg(not(target_os = "windows"))]
+    fn corrupt_profile_does_not_block_path_repair_or_expand_origins() {
+        let temp = tempfile::tempdir().unwrap();
+        let chrome = temp.path().join("Chrome");
+        let root = temp.path().join("bridge");
+        let executable = temp.path().join("new-host");
+        fs::write(&executable, "fixture").unwrap();
+        let preferences = chrome.join("Default/Preferences");
+        bridge::write_json(&preferences, &serde_json::json!({})).unwrap();
+        fs::write(&preferences, "partial Chrome write").unwrap();
+        bridge::write_json(&manifest(&chrome), &serde_json::json!({"path":"deleted/old-host","allowed_origins":["chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/","chrome-extension://*/","https://example.com/"]})).unwrap();
+        let failed = inspect(&chrome, &root, &executable).unwrap();
+        assert!(failed.host_error.as_ref().unwrap().contains("损坏"));
+        let registered: serde_json::Value = serde_json::from_slice(&fs::read(manifest(&chrome)).unwrap()).unwrap();
+        assert_eq!(registered["path"], executable.to_string_lossy().as_ref());
+        assert_eq!(registered["allowed_origins"], serde_json::json!(["chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"]));
+        bridge::write_json(&preferences, &serde_json::json!({})).unwrap();
+        assert!(inspect(&chrome, &root, &executable).unwrap().host_error.is_none());
+    }
+    #[test]
+    fn failed_registration_is_visible_and_recovers_without_touching_account_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let chrome = temp.path().join("Chrome");
+        let root = temp.path().join("bridge");
+        let executable = temp.path().join("host");
+        fs::write(&executable, "fixture").unwrap();
+        bridge::write_json(&chrome.join("Default/Preferences"), &serde_json::json!({})).unwrap();
+        bridge::write_json(&root.join("accounts/fixture.json"), &serde_json::json!({"session":"preserve"})).unwrap();
+        let preserved = fs::read(root.join("accounts/fixture.json")).unwrap();
+        fs::write(chrome.join("NativeMessagingHosts"), "blocked directory").unwrap();
+        assert!(inspect(&chrome, &root, &executable).unwrap().host_error.unwrap().contains("无法更新"));
+        fs::remove_file(chrome.join("NativeMessagingHosts")).unwrap();
+        assert!(inspect(&chrome, &root, &executable).unwrap().host_error.is_none());
+        assert_eq!(fs::read(root.join("accounts/fixture.json")).unwrap(), preserved);
+        let path = manifest(&chrome);
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        inspect(&chrome, &root, &executable).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+    }
+    #[test]
+    fn first_install_before_chrome_creates_a_safe_registration_and_retries() {
+        let temp = tempfile::tempdir().unwrap();
+        let chrome = temp.path().join("Chrome");
+        let root = temp.path().join("bridge");
+        let executable = temp.path().join("host");
+        fs::write(&executable, "fixture").unwrap();
+        assert!(inspect(&chrome, &root, &executable).unwrap().host_error.is_some());
+        let registered: serde_json::Value = serde_json::from_slice(&fs::read(manifest(&chrome)).unwrap()).unwrap();
+        assert_eq!(registered["allowed_origins"], serde_json::json!([]));
+        assert!(inspect(&chrome, &root, &executable).unwrap().host_error.is_none());
+    }
+    #[test]
     fn two_profiles_link_only_the_explicitly_selected_instance_and_keep_it_after_restart() {
         let temp = tempfile::tempdir().unwrap();
         let chrome = temp.path().join("Chrome");
@@ -360,12 +448,41 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    fn windows_upgrade_repairs_both_registry_views_without_the_old_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let subkey = format!(r"Software\WindowStashNativeHostTests-{}", bridge::random_id());
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                for view in [KEY_WOW64_32KEY, KEY_WOW64_64KEY] {
+                    if let Ok(software) = RegKey::predef(HKEY_CURRENT_USER)
+                        .open_subkey_with_flags("Software", KEY_READ | KEY_WRITE | view) {
+                        let _ = software.delete_subkey_all(self.0.strip_prefix(r"Software\").unwrap());
+                    }
+                }
+            }
+        }
+        let _cleanup = Cleanup(subkey.clone());
+        let old = temp.path().join("old.json");
+        fs::write(&old, "old installation").unwrap();
+        register_windows(&old, &subkey).unwrap();
+        fs::remove_file(&old).unwrap();
+        let new = temp.path().join("new.json");
+        fs::write(&new, "new installation").unwrap();
+        register_windows(&new, &subkey).unwrap();
+        for view in [KEY_WOW64_32KEY, KEY_WOW64_64KEY] {
+            let key = RegKey::predef(HKEY_CURRENT_USER).open_subkey_with_flags(&subkey, KEY_READ | view).unwrap();
+            assert_eq!(key.get_value::<String, _>("").unwrap(), new.to_string_lossy());
+        }
+    }
+    #[cfg(target_os = "windows")]
+    #[test]
     fn windows_manifest_and_registry_are_current_user_scoped() {
         let temp = tempfile::tempdir().unwrap();
         let executable = temp.path().join("windowstash-native-host.exe");
         fs::write(&executable, "fixture").unwrap();
         let manifest = temp.path().join("host.json");
-        write_manifest(&manifest, &executable, &[target("Default")]).unwrap();
+        write_manifest(&manifest, &executable, Some(&[target("Default")])).unwrap();
         let value: serde_json::Value =
             serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap();
         assert_eq!(value["path"], executable.to_string_lossy().as_ref());
