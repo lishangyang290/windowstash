@@ -39,12 +39,6 @@ const CHANGE_LABELS: Record<TabChangeKind, string> = {
   updated: '会更新',
 };
 
-const CHANGE_DESCRIPTIONS: Record<TabChangeKind, string> = {
-  added: '这些标签页现在在当前窗口中，但上次没有保存。',
-  removed: '这些标签页存在于上次保存中，但当前窗口里已经没有了。',
-  updated: '这些标签页仍然存在，但保存内容发生了变化。',
-};
-
 function PopupPreparing({ error, onRetry }: { error: string; onRetry: () => void }) {
   return <main className="popup-shell popup-main-shell" data-popup-state="preparing" aria-busy={!error}>
     <header className="popup-header"><Logo /></header>
@@ -385,17 +379,13 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
           ))}
         </nav>
         <section className="detail-list">
-          <p className="change-description">{CHANGE_DESCRIPTIONS[activeKind]}</p>
           <div className="change-list">
             {activeChanges.map((change, index) => change.kind === 'updated'
               ? <UpdatedItem key={`updated-${change.tabId}-${change.position}`} change={change} onOpen={(item) => void openChange(item)} />
               : <ChangeItem key={`${change.kind}-${change.url}-${change.position}-${index}`} change={change} busy={reopening === `${change.url}-${change.position}`} onOpen={(item) => void openChange(item)} />)}
           </div>
         </section>
-        <footer className="detail-footer">
-          {error ? <div className="inline-error" role="alert">{error}</div> : null}
-          {buttons}
-        </footer>
+        {error ? <div className="detail-footer"><div className="inline-error" role="alert">{error}</div></div> : null}
       </main></>
     );
   }
@@ -413,6 +403,8 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
           <div className="unchanged-state">无法可靠识别当前工作区，请从已保存工作区列表中选择恢复。</div>
         ) : isBound ? (
           <div className="bound-summary">
+            <div className="bound-header">
+            <div className="bound-info">
             {editingName ? (
               <input
                 ref={renameInputRef}
@@ -446,6 +438,9 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
             )}
             {renameError ? <div className="rename-error" role="alert">{renameError}</div> : null}
             <p>当前窗口 · {tabs.length} 个标签页</p>
+            </div>
+            {React.cloneElement(buttons, { variant: 'reopen' })}
+            </div>
           </div>
         ) : (
           <>
@@ -460,22 +455,19 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
           <div className="unchanged-state"><span>✓</span> 当前窗口与上次保存一致</div>
         ) : (
           <section className="save-preview">
-            <h2>本次保存会更新工作区</h2>
-            <dl className="snapshot-counts">
-              <div><dt>上次保存</dt><dd>{record.content.tabs.length} 个标签页</dd></div>
-              <div><dt>当前窗口</dt><dd>{tabs.length} 个标签页</dd></div>
-            </dl>
-            <ul className="change-summary">
-              {availableKinds.map((kind) => <li key={kind} className={`change-${kind}`}><span aria-hidden="true" />{CHANGE_LABELS[kind]} <b>{counts[kind]}</b> 个</li>)}
-            </ul>
             <button className="view-changes" onClick={() => { setActiveKind(availableKinds[0] ?? 'added'); setPage('details'); }}>
-              查看本次变更 <span>›</span>
+              <span className="change-row-label">{totalChanges} 项变更</span>
+              <span className="change-row-counts">
+                {counts.added > 0 && <span className="tab-delta added" aria-label={`新增 ${counts.added} 个标签页`}>+{counts.added}</span>}
+                {counts.removed > 0 && <span className="tab-delta removed" aria-label={`移除 ${counts.removed} 个标签页`}>−{counts.removed}</span>}
+              </span>
+              <span className="change-row-arrow" aria-hidden="true">›</span>
             </button>
           </section>
         ) : null}
 
         {error ? <div className="inline-error" role="alert">{error}</div> : null}
-        {buttons}
+        {isBound ? React.cloneElement(buttons, { variant: 'save' }) : buttons}
       </section>
       <button className="manager-link" onClick={() => void browser.runtime.openOptionsPage()}>管理工作区 <span>→</span></button>
     </main>

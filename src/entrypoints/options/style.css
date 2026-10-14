@@ -149,3 +149,43 @@ body { min-height: 100vh; }
 .manager-page .account-button{max-width:200px;font-size:14px;color:#525252}
 .manager-page .account-button>svg{flex-shrink:0}
 @media(max-width:720px){.manager-page .dashboard-heading{gap:12px}.manager-page .dashboard-heading>.search-wrap{flex:auto;max-width:none}.manager-page .header-actions{flex-wrap:wrap}.manager-page .account-wrap{margin-left:auto;padding-left:10px}.manager-page .account-button{padding:0 4px}}
+
+/* Authorization deliberately retains its existing typography. */
+body:not(.authorization-page) { --type-caption: 12px; --type-body: 14px; --type-title: 16px; --type-heading: 18px; font-size: var(--type-body); line-height: 1.5; }
+body:not(.authorization-page) :is(.avatar, .filterbar button span, .workspace-meta,
+  .tab-favicon, .account-email span, .overview-header p) { font-size: var(--type-caption); }
+body:not(.authorization-page) :is(.title-block p, .search-wrap input, .header-sync-button,
+  .account-button, .account-menu button, .quiet-notice p, .notice-button, .notice-action strong,
+  .sync-issues p, .sync-issues-head > button, .sync-issue-row strong, .sync-issue-row .button,
+  .row-error, .overview-button, .open-button, .more-menu button,
+  .empty-state p, .dialog-head p, .auth-switch,
+  .dialog-message, .account-email strong, .password-requirements, .password-requirements strong,
+  .diagnostics-head, .diagnostics-head button, .diagnostics-list > div, .diagnostics-list p,
+  .field, .field input, .field select, input.control, select.control, .button,
+  .config-heading p, .config-tutorial, .config-secondary button, .config-full-guide,
+  .config-modes button, .config-steps button, .config-guide, .config-help, .config-code,
+  .config-task-heading p, .config-field-task > label, .config-external) { font-size: var(--type-body); }
+body:not(.authorization-page) :is(.workspace-name, .rename-input) { font-size: var(--type-body); }
+body:not(.authorization-page) .filterbar button { font-size: var(--type-title); }
+body:not(.authorization-page) :is(.sync-issues h2,
+  .overview-header h2, .empty-state h2, .config-guide h4, .config-task-heading h4) { font-size: var(--type-title); }
+body:not(.authorization-page) :is(.dialog h2, .config-guide h3) { font-size: var(--type-heading); }
+body:not(.authorization-page) :is(.title-block .brand, .config-heading h1, .supabase-config .config-heading h2) { font-size: 24px; }
+body:not(.authorization-page) .sync-badge > span { font-size: var(--type-caption); }
+body:not(.authorization-page) .account-menu, body:not(.authorization-page) .more-menu { width: 156px; }
+body:not(.authorization-page) .overview-tab { min-height: 40px; height: auto; }
+body:not(.authorization-page) .overview-tab > span:last-child { font-size: 13px; font-weight: 400; }
+
+/* Ordinary content and controls use regular weight; headings retain emphasis. */
+body:not(.authorization-page) :is(button, input, select, label, .workspace-name,
+  .workspace-icon, .avatar, .notice-action strong,
+  .sync-issue-row strong, .account-email strong, .password-requirements strong,
+  .success-toast, .config-security th) { font-weight: 400; }
+body:not(.authorization-page) .manager-page .account-wrap { flex-shrink: 0; }
+body:not(.authorization-page) :is(.workspace-name, .rename-input, .filterbar button) { font-weight: 600; }
+body:not(.authorization-page) .manager-page .account-button { min-width: 156px; max-width: 200px; }
+body:not(.authorization-page) .account-button > span:nth-child(2) { min-width: 0; max-width: 128px; }
+body:not(.authorization-page) .manager-page .account-menu { left: 14px; right: 0; width: auto; }
+@media(max-width:720px) {
+  body:not(.authorization-page) .manager-page .account-menu { left: 10px; }
+}

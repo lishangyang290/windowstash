@@ -871,10 +871,12 @@ it.each(['resolved', 'unbound'] as const)('keeps normal popup actions without ma
   expect(container.querySelector('.reopen-workspace') !== null).toBe(status === 'resolved');
   if (status === 'resolved') {
     expect(button('Existing workspace').getAttribute('aria-label')).toContain('重命名');
-    await click('查看本次变更 ›');
+    expect(container.querySelector('.view-changes')?.textContent).toContain('项变更');
+    await act(async () => container.querySelector<HTMLButtonElement>('.view-changes')!.click());
     expect(container.textContent).toContain('本次保存的变更');
     await click('← 返回');
-    await click('重新打开工作区');
+    expect(container.querySelector('.reopen-workspace')?.getAttribute('aria-label')).toBe('重新打开工作区');
+    await click('重新打开');
     expect(browser.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'REOPEN_WORKSPACE', workspaceId: record.content.id, sourceWindowId: 1 }));
   } else await enter(0, 'New workspace');
   const name = status === 'resolved' ? record.content.name : 'New workspace';
