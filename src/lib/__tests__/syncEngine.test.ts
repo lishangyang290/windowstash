@@ -4,7 +4,7 @@ import type { WorkspaceLocalRecord } from '@/types/workspace';
 
 const workspaceMock = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), put: vi.fn(), remove: vi.fn() }));
 const remoteMock = vi.hoisted(() => ({ isAuthenticated: vi.fn(), get: vi.fn(), upsert: vi.fn(), list: vi.fn(), remove: vi.fn() }));
-const tombstoneMock = vi.hoisted(() => ({ list: vi.fn(), remove: vi.fn(), has: vi.fn() }));
+const tombstoneMock = vi.hoisted(() => ({ list: vi.fn(), add: vi.fn(), remove: vi.fn(), has: vi.fn() }));
 const logMock = vi.hoisted(() => ({ add: vi.fn() }));
 const browserMock = vi.hoisted(() => ({ windows: { getAll: vi.fn() } }));
 const bindingMock = vi.hoisted(() => ({ get: vi.fn() }));
@@ -50,6 +50,7 @@ describe('syncEngine.syncAll', () => {
     remoteMock.get.mockResolvedValue(null);
     remoteMock.list.mockResolvedValue([]);
     tombstoneMock.list.mockResolvedValue([]);
+    tombstoneMock.has.mockResolvedValue(false);
     browserMock.windows.getAll.mockResolvedValue([]);
     bindingMock.get.mockResolvedValue(null);
     logMock.add.mockResolvedValue(undefined);

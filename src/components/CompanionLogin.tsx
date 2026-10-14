@@ -2,9 +2,9 @@ import React from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { SetupFlow, useSetupNavigation } from './SetupFlow';
 import { PageShell } from './PageShell';
-import { authorizeCompanion, nativeAuth } from '@/lib/companion/auth';
+import { authorizeCompanion, nativeAuth, NativeAuthError } from '@/lib/companion/auth';
 import { authService } from '@/lib/supabase/authService';
-import { getSupabaseConfig, type SupabaseConfig } from '@/lib/supabase/client';
+import { getSupabaseConfig, resetMissingCompanionLink, type SupabaseConfig } from '@/lib/supabase/client';
 
 export function CompanionLogin({ login }: { login: (refresh: () => Promise<void>, previous?: () => void, onBusyChange?: (busy: boolean) => void, showTitle?: boolean) => React.ReactNode }) {
   const navigation = useSetupNavigation();
@@ -18,17 +18,25 @@ export function CompanionLogin({ login }: { login: (refresh: () => Promise<void>
   const [seconds, setSeconds] = React.useState(3);
   const [expired, setExpired] = React.useState(!valid);
   const [relogin, setRelogin] = React.useState(false);
+  const [missingLink, setMissingLink] = React.useState(false);
   const busy = React.useRef(false);
   const mounted = React.useRef(true);
   const refresh = React.useCallback(async () => {
     try {
       const nextConfig = await getSupabaseConfig();
       const nextSession = nextConfig ? await authService.session() : null;
-      if (mounted.current) { setConfig(nextConfig); setSession(nextSession); setRelogin(false); }
+      if (mounted.current) { setConfig(nextConfig); setSession(nextSession); setRelogin(false); setMissingLink(false); setState('ready'); setMessage(''); }
     } catch (error) {
-      if (mounted.current) { setState('failed'); setMessage(error instanceof Error ? error.message : '无法读取浏览器登录，请重试'); }
+      if (mounted.current) { setMissingLink(error instanceof NativeAuthError && error.code === 'not_linked'); setState('failed'); setMessage(error instanceof Error ? error.message : '无法读取浏览器登录，请重试'); }
     }
   }, []);
+  async function restartLogin() {
+    if (busy.current) return;
+    busy.current = true;
+    try { await resetMissingCompanionLink(); await refresh(); }
+    catch (error) { if (mounted.current) setMessage(error instanceof Error ? error.message : '无法重新登录，请重试'); }
+    finally { busy.current = false; }
+  }
   React.useEffect(() => { mounted.current = true; void refresh(); return () => { mounted.current = false; }; }, [refresh]);
   React.useEffect(() => {
     if (state !== 'done') return;
@@ -65,7 +73,7 @@ export function CompanionLogin({ login }: { login: (refresh: () => Promise<void>
   return <PageShell><div className="authorization-shell"><div className="authorization-content">
     <section className="authorization-task" aria-label="Companion 登录">
     {!valid || expired ? <><div className="authorization-heading"><h1>重新开始登录</h1><p>此次登录请求已失效。</p></div><p className="authorization-feedback">请返回 Companion，重新点击「在浏览器中登录」。</p></>
-    : config === undefined ? <><div className="authorization-heading"><h1>准备登录</h1><p>正在读取浏览器中的登录状态…</p></div>{message && <p className="authorization-feedback" role="alert">{message}</p>}{state === 'failed' && <button className="button" onClick={() => void refresh()}>重试</button>}</>
+    : config === undefined ? <><div className="authorization-heading"><h1>准备登录</h1><p>正在读取浏览器中的登录状态…</p></div>{message && <p className="authorization-feedback" role="alert">{message}</p>}{state === 'failed' && <button className="button" onClick={() => void (missingLink ? restartLogin() : refresh())}>{missingLink ? '重新登录' : '重试'}</button>}</>
     : <>
       <div className="authorization-heading">
         {state === 'done' && <svg className="authorization-check" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" /><path d="m10 16 4 4 8-8" /></svg>}

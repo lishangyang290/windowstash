@@ -2,13 +2,14 @@ import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ native: vi.fn(), transfer: vi.fn(), replace: vi.fn(), session: vi.fn(), config: vi.fn() }));
-vi.mock('@/lib/companion/auth', () => ({ nativeAuth: mocks.native, authorizeCompanion: mocks.transfer }));
+const mocks = vi.hoisted(() => ({ native: vi.fn(), transfer: vi.fn(), replace: vi.fn(), session: vi.fn(), config: vi.fn(), resetLink: vi.fn() }));
+vi.mock('@/lib/companion/auth', async (original) => ({ ...await original<typeof import('@/lib/companion/auth')>(), nativeAuth: mocks.native, authorizeCompanion: mocks.transfer }));
 vi.mock('@/lib/supabase/authService', () => ({ authService: { session: mocks.session } }));
-vi.mock('@/lib/supabase/client', () => ({ getSupabaseConfig: mocks.config }));
+vi.mock('@/lib/supabase/client', () => ({ getSupabaseConfig: mocks.config, resetMissingCompanionLink: mocks.resetLink }));
 vi.mock('wxt/browser', () => ({ browser: { runtime: { getURL: (path: string) => path } } }));
 vi.mock('@/components/SupabaseConfigForm', () => ({ getSetupMode: () => undefined, SupabaseConfigForm: ({ onSaved }: { onSaved: () => void }) => <button onClick={() => { mocks.config.mockResolvedValue({ url: 'https://new.invalid', publishableKey: 'new-key' }); onSaved(); }}>保存配置</button> }));
 import { CompanionLogin } from '../CompanionLogin';
+import { NativeAuthError } from '@/lib/companion/auth';
 let root: ReturnType<typeof createRoot>;
 let container: HTMLElement;
 beforeEach(async () => {
@@ -30,6 +31,31 @@ beforeEach(async () => {
 });
 afterEach(async () => { await act(async () => root.unmount()); vi.useRealTimers(); vi.unstubAllGlobals(); });
 async function confirm() { await act(async () => container.querySelector('button')!.click()); }
+
+it('offers fresh login for a missing grant and completes the same authorization request', async () => {
+  mocks.session.mockRejectedValueOnce(new NativeAuthError('not_linked', '关联已失效'));
+  mocks.resetLink.mockResolvedValue(undefined);
+  await act(async () => root.render(<CompanionLogin key="missing-link" login={(refresh) => <button onClick={() => { mocks.session.mockResolvedValue({ user: { id: 'Fresh', email: 'fresh@example.invalid' } }); void refresh(); }}>完成登录</button>} />));
+  expect(container.textContent).toContain('重新登录');
+  mocks.session.mockResolvedValue(null);
+  await confirm();
+  expect(mocks.resetLink).toHaveBeenCalledOnce();
+  expect(container.textContent).toContain('完成登录');
+  await act(async () => [...container.querySelectorAll('button')].find((button) => button.textContent === '完成登录')!.click());
+  mocks.native.mockResolvedValue({ completed: true });
+  await confirm();
+  expect(mocks.transfer).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ user: expect.objectContaining({ id: 'Fresh' }) }), 'a'.repeat(64), 'b'.repeat(64));
+  expect(container.textContent).toContain('登录已完成');
+});
+
+it('offers retry without resetting linkage after a network error', async () => {
+  mocks.session.mockRejectedValueOnce(new NativeAuthError('network_unavailable', '网络不可用'));
+  await act(async () => root.render(<CompanionLogin key="offline" login={() => null} />));
+  expect(container.textContent).toContain('重试');
+  expect(container.textContent).not.toContain('重新登录');
+  await confirm();
+  expect(mocks.resetLink).not.toHaveBeenCalled();
+});
 describe('authorization success navigation', () => {
   it('waits for desktop completion, counts down, and replaces the task with the clean manager URL', async () => {
     mocks.native.mockResolvedValue({ completed: true });

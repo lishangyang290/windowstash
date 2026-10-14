@@ -24,8 +24,45 @@ beforeEach(() => {
   acceptBrowserGrant(null);
   server = new SupabaseMemory(); vi.stubGlobal('fetch', server.fetch);
 });
-afterEach(() => { acceptBrowserGrant(null); vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); acceptBrowserGrant(null); vi.unstubAllGlobals(); });
 describe('Companion with real SDK and simulated project/account transport', () => {
+  it('does not let a delayed older refresh replace newly synced workspaces', async () => {
+    login(0);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let first = true;
+    vi.stubGlobal('fetch', async (input: RequestInfo | URL, init?: RequestInit) => {
+      const hold = first; first = false;
+      const response = await server.fetch(input, init);
+      if (hold) await gate;
+      return response;
+    });
+    const older = workspaceService.refresh();
+    const settled = older.catch(() => undefined);
+    await vi.waitFor(() => expect(server.requests).toHaveLength(1));
+    const identity = identities[0];
+    server.account(identity.url, identity.userId).set('new', { id: 'new', user_id: identity.userId, name: 'Newly synced', tabs: [], status: 'active', updated_at: '2026-10-13' });
+    expect((await workspaceService.refresh())[0]?.id).toBe('new');
+    release(); await settled;
+    expect(workspaceService.cached()[0]?.id).toBe('new');
+  });
+
+  it('preserves offline cache and fetches new cloud records without opening the manager', async () => {
+    login(0);
+    cache.saveWorkspaces([{ id: 'cached', name: 'Offline cache', tabCount: 1, updatedAt: '2026-01-01' }]);
+    server.offline = true;
+    vi.useFakeTimers();
+    const failed = expect(workspaceService.refresh()).rejects.toThrow();
+    await vi.runAllTimersAsync();
+    await failed;
+    vi.useRealTimers();
+    expect(workspaceService.cached()[0]?.id).toBe('cached');
+    server.offline = false;
+    const identity = identities[0];
+    server.account(identity.url, identity.userId).set('new', { id: 'new', user_id: identity.userId, name: 'Newly synced', tabs: [], status: 'active', updated_at: '2026-10-13' });
+    expect((await workspaceService.refresh())[0]?.id).toBe('new');
+    expect(server.requests.every((request) => request.method === 'GET')).toBe(true);
+  });
   it('isolates visible cache and recent history through A1 → A2 → B1 → A1', async () => {
     for (const [index, name] of ['A1', 'A2', 'B1'].entries()) {
       const identity = identities[index]!;

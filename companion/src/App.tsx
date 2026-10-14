@@ -1,5 +1,6 @@
 import { confirmBrowserLogin, acceptBrowserGrant, beginBrowserLogin, grantIdentity, readBrowserGrant, type BrowserGrant } from './lib/browserAuth';
 import React from 'react';
+import { NativeHostStatus } from './NativeHostStatus';
 import type { Session } from '@supabase/supabase-js';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -173,12 +174,12 @@ function Settings({ config, onBack, onConfigChange, onSignOut, browserLogin }: {
         {!browserLogin && <button className="setting-row" onClick={() => setConnectionOpen(true)}><span><b>Supabase</b><small>连接设置</small></span><span className="row-chevron">›</span></button>}
         {canSwitchChrome && <button className="setting-row" onClick={() => setChromeOpen(true)}><span><b>切换 Chrome 用户</b><small>选择打开工作区的浏览器</small></span><span className="row-chevron">›</span></button>}
       </section>
-      <footer className="settings-footer">{browserLogin ? <button onClick={() => void chromeBridge.openManager()}>在浏览器中管理账号</button> : <button onClick={onSignOut}>退出登录</button>}</footer>
+      <footer className="settings-footer">{browserLogin ? <button className="account-manager" onClick={() => void chromeBridge.openManager()}>在浏览器中管理账号</button> : <button onClick={onSignOut}>退出登录</button>}</footer>
     </main>
   );
 }
 
-function Launcher({ config, session, onConfigChange, onSignOut, browserLogin = false }: { config: SupabaseConfig; session: Pick<Session, 'user'>; onConfigChange: (config: SupabaseConfig) => void; onSignOut: () => void; browserLogin?: boolean }) {
+export function Launcher({ config, session, onConfigChange, onSignOut, browserLogin = false }: { config: SupabaseConfig; session: Pick<Session, 'user'>; onConfigChange: (config: SupabaseConfig) => void; onSignOut: () => void; browserLogin?: boolean }) {
   const [chromeOpen, setChromeOpen] = React.useState(false);
   const [view, setView] = React.useState<View>('launcher');
   const [items, setItems] = React.useState<WorkspaceSummary[]>(() => workspaceService.cached());
@@ -188,18 +189,25 @@ function Launcher({ config, session, onConfigChange, onSignOut, browserLogin = f
   const [failedId, setFailedId] = React.useState('');
   const [error, setError] = React.useState('');
   const searchRef = React.useRef<HTMLInputElement>(null);
+  const refreshRevision = React.useRef(0);
 
   const refresh = React.useCallback(async () => {
+    const revision = ++refreshRevision.current;
+    const scope = cache.currentScope();
     try {
-      setItems(await workspaceService.refresh());
+      const next = await workspaceService.refresh();
+      if (revision !== refreshRevision.current || scope !== cache.currentScope()) return;
+      setItems(next);
       setError('');
     } catch (caught) {
+      if (revision !== refreshRevision.current || scope !== cache.currentScope()) return;
       if (!cache.workspaces().length) setError(caught instanceof Error ? caught.message : '暂时无法刷新工作区');
     }
   }, []);
 
   React.useEffect(() => {
     void refresh();
+    let followup: number | undefined;
     const timer = window.setInterval(() => void refresh(), REFRESH_INTERVAL);
     const unlisten = listen('popover-opened', () => {
       setQuery('');
@@ -207,9 +215,11 @@ function Launcher({ config, session, onConfigChange, onSignOut, browserLogin = f
       setOpening('');
       searchRef.current?.focus();
       void refresh();
+      window.clearTimeout(followup);
+      followup = window.setTimeout(() => void refresh(), 2_000);
     });
     searchRef.current?.focus();
-    return () => { window.clearInterval(timer); void unlisten.then((stop) => stop()); };
+    return () => { refreshRevision.current++; window.clearTimeout(followup); window.clearInterval(timer); void unlisten.then((stop) => stop()); };
   }, [refresh, session.user.id]);
 
   const filtered = React.useMemo(() => {
@@ -279,12 +289,6 @@ function Launcher({ config, session, onConfigChange, onSignOut, browserLogin = f
 }
 
 function LegacyApp() {
-  React.useEffect(() => {
-    const update = () => void chromeBridge.connection().catch(() => undefined);
-    update();
-    const timer = window.setInterval(update, 10_000);
-    return () => window.clearInterval(timer);
-  }, []);
   const [config, setConfig] = React.useState<SupabaseConfig | null | undefined>(undefined);
   const [session, setSession] = React.useState<Session | null | undefined>(undefined);
 
@@ -349,7 +353,7 @@ function BrowserLogin({ externalError = '' }: { externalError?: string }) {
   return <main className="auth-shell browser-login-shell"><div className="brand"><LogoMark /><span>WindowStash</span></div><section className="login-form"><h1>登录 WindowStash</h1><p>在浏览器中登录，即可在这里快速打开工作区。</p><button className="primary-button" disabled={busy} onClick={() => void login()}>{busy ? '正在打开浏览器…' : '在浏览器中登录'}</button>{waiting && <p role="status">请在 Chrome 中完成登录，授权后会自动进入。</p>}{(error || externalError) && <p className="form-error" role="alert">{error || externalError}</p>}</section></main>;
 }
 
-export default function App() {
+function AccountApp() {
   const [grant, setGrant] = React.useState<BrowserGrant | null | undefined>(undefined);
   const [error, setError] = React.useState('');
   const [legacy, setLegacy] = React.useState(false);
@@ -398,4 +402,8 @@ export default function App() {
   const config = { url: grant.config.url, publishableKey: grant.config.publishable_key };
   // Launcher uses only user identity; no refresh token ever reaches the WebView.
   return <Launcher key={grantIdentity(grant)} browserLogin config={config} session={grant.session} onConfigChange={() => {}} onSignOut={() => {}} />;
+}
+
+export default function App() {
+  return <NativeHostStatus><AccountApp /></NativeHostStatus>;
 }

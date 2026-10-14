@@ -3,13 +3,14 @@ vi.mock('@/lib/storage/accountScope', () => ({ accountStorageKey: accountKey, re
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const browserMock = vi.hoisted(() => ({
+  alarms: { create: vi.fn().mockResolvedValue(undefined), get: vi.fn().mockResolvedValue(undefined) },
   windows: { get: vi.fn(), getAll: vi.fn(), remove: vi.fn(), create: vi.fn(), update: vi.fn() },
   tabs: { create: vi.fn(), get: vi.fn(), remove: vi.fn(), update: vi.fn() },
   runtime: { sendMessage: vi.fn().mockResolvedValue(undefined), getURL: vi.fn((path: string) => `chrome-extension://test${path}`) },
 }));
-const bindingMock = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), suppress: vi.fn(), isSuppressed: vi.fn(), remove: vi.fn() }));
+const bindingMock = vi.hoisted(() => ({ get: vi.fn(), set: vi.fn(), suppress: vi.fn(), suppressWorkspace: vi.fn(), isSuppressed: vi.fn(), remove: vi.fn() }));
 const logMock = vi.hoisted(() => ({ add: vi.fn() }));
-const tombstoneMock = vi.hoisted(() => ({ add: vi.fn() }));
+const tombstoneMock = vi.hoisted(() => ({ add: vi.fn(), has: vi.fn() }));
 const workspaceMock = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), saveContent: vi.fn(), put: vi.fn(), remove: vi.fn() }));
 const syncMock = vi.hoisted(() => ({ syncAll: vi.fn() }));
 const lazyMock = vi.hoisted(() => ({
@@ -60,6 +61,7 @@ describe('workspaceService', () => {
     vi.clearAllMocks();
     accountKey.mockImplementation(async (key: string) => key);
     bindingMock.get.mockResolvedValue(null);
+    tombstoneMock.has.mockResolvedValue(false);
     bindingMock.set.mockResolvedValue(undefined);
     bindingMock.suppress.mockResolvedValue(undefined);
     bindingMock.isSuppressed.mockResolvedValue(false);
@@ -93,8 +95,12 @@ describe('workspaceService', () => {
     expect(browserMock.windows.get).toHaveBeenCalledWith(22, { populate: true });
     expect(result.tabs.map((tab) => tab.title)).toEqual(['B1', 'B2']);
     expect(result.activeTabIndex).toBe(1);
+    expect(result.id).not.toBe(localRecord.content.id);
+    expect(bindingMock.set).toHaveBeenCalledWith(22, result.id);
     expect(browserMock.windows.remove).toHaveBeenCalledWith(22);
     expect(workspaceMock.saveContent.mock.invocationCallOrder[0]).toBeLessThan(browserMock.windows.remove.mock.invocationCallOrder[0]!);
+    expect(browserMock.alarms.create).toHaveBeenCalledWith('windowstash-pending-sync', expect.objectContaining({ when: expect.any(Number) }));
+    expect(browserMock.alarms.create.mock.invocationCallOrder[0]).toBeLessThan(browserMock.windows.remove.mock.invocationCallOrder[0]!);
   });
 
   it('never closes the window when local persistence fails', async () => {
@@ -105,6 +111,29 @@ describe('workspaceService', () => {
     workspaceMock.saveContent.mockRejectedValueOnce(new Error('Quota exceeded'));
 
     await expect(saveCurrentWindow({ windowId: 22, name: '窗口 B', status: 'active', closeAfterSave: true })).rejects.toThrow('Quota exceeded');
+    expect(browserMock.windows.remove).not.toHaveBeenCalled();
+  });
+
+  it('closes after durable scheduling even when the message channel disappears or cloud sync is slow', async () => {
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs: [{ index: 0, url: 'https://example.invalid' }] });
+    browserMock.runtime.sendMessage.mockRejectedValueOnce(new Error('Popup closed'));
+    await expect(saveCurrentWindow({ windowId: 22, name: 'Offline', status: 'active', closeAfterSave: true })).resolves.toHaveProperty('id');
+    expect(browserMock.windows.remove).toHaveBeenCalledWith(22);
+    expect(browserMock.alarms.create).toHaveBeenCalledOnce();
+    browserMock.runtime.sendMessage.mockImplementationOnce(() => new Promise(() => {}));
+    await expect(saveCurrentWindow({ windowId: 22, name: 'Slow', status: 'active', closeAfterSave: true })).resolves.toHaveProperty('id');
+  });
+
+  it('updates the bound workspace instead of creating a new identity on a normal save', async () => {
+    bindingMock.get.mockResolvedValue(localRecord.content.id);
+    workspaceMock.get.mockResolvedValue(localRecord);
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs: [{ id: 1, title: 'Current', url: 'https://current.example', index: 0, active: true, pinned: true }] });
+
+    const result = await saveCurrentWindow({ windowId: 22, name: localRecord.content.name, status: 'active', closeAfterSave: false });
+
+    expect(result.id).toBe(localRecord.content.id);
+    expect(result.createdAt).toBe(localRecord.content.createdAt);
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: localRecord.content.id, tabs: [expect.objectContaining({ url: 'https://current.example', pinned: true })], activeTabIndex: 0 }), 'workspaces');
     expect(browserMock.windows.remove).not.toHaveBeenCalled();
   });
 
@@ -397,6 +426,33 @@ describe('workspaceService', () => {
     expect(result).toEqual({ status: 'unavailable', workspaceId: 'workspace-1', record: null, source: 'binding' });
     expect(syncMock.syncAll).toHaveBeenCalledOnce();
     expect(workspaceMock.list).not.toHaveBeenCalled();
+  });
+
+  it('clears a tombstoned identity without syncing or matching another workspace', async () => {
+    bindingMock.get.mockResolvedValue('workspace-1');
+    tombstoneMock.has.mockResolvedValue(true);
+    workspaceMock.get.mockResolvedValue(null);
+    workspaceMock.list.mockResolvedValue([localRecord]);
+    await expect(resolveWorkspaceStateForWindow(22, [])).resolves.toEqual({ status: 'unbound', workspaceId: null, record: null, source: null });
+    expect(bindingMock.suppress).toHaveBeenCalledWith(22, 'workspaces');
+    expect(syncMock.syncAll).not.toHaveBeenCalled();
+    expect(workspaceMock.list).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a network failure as a deleted workspace', async () => {
+    bindingMock.get.mockResolvedValue('workspace-1');
+    workspaceMock.get.mockResolvedValue(null);
+    syncMock.syncAll.mockRejectedValueOnce(new Error('offline'));
+    expect((await resolveWorkspaceStateForWindow(22, [])).status).toBe('unavailable');
+    expect(bindingMock.suppress).not.toHaveBeenCalled();
+  });
+
+  it('refuses a stale save of an explicitly deleted identity', async () => {
+    bindingMock.get.mockResolvedValue('workspace-1');
+    tombstoneMock.has.mockResolvedValue(true);
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs: [{ index: 0, url: 'https://example.invalid' }] });
+    await expect(saveCurrentWindow({ windowId: 22, name: 'Deleted', status: 'active', closeAfterSave: false })).rejects.toThrow('工作区已删除');
+    expect(workspaceMock.saveContent).not.toHaveBeenCalled();
   });
 
   it('does not create a new workspace when bound local data is temporarily unavailable', async () => {

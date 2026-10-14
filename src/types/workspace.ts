@@ -45,6 +45,7 @@ export interface SyncLogEntry {
 }
 
 export interface DeleteTombstone {
+  cloudDeletedAt?: string;
   accountStorageKey?: string;
   workspaceId: string;
   workspaceName: string;

@@ -14,9 +14,7 @@ import {
   type UpdatedTabChange,
 } from '@/features/workspaces/tabDiff';
 import {
-  associateExistingWorkspace,
   focusWindowTab,
-  listWorkspacesForAssociation,
   reopenSavedTab,
   saveCurrentWindow,
   updateWorkspace,
@@ -41,12 +39,6 @@ const CHANGE_LABELS: Record<TabChangeKind, string> = {
   updated: '会更新',
 };
 
-const CHANGE_DESCRIPTIONS: Record<TabChangeKind, string> = {
-  added: '这些标签页现在在当前窗口中，但上次没有保存。',
-  removed: '这些标签页存在于上次保存中，但当前窗口里已经没有了。',
-  updated: '这些标签页仍然存在，但保存内容发生了变化。',
-};
-
 function PopupPreparing({ error, onRetry }: { error: string; onRetry: () => void }) {
   return <main className="popup-shell popup-main-shell" data-popup-state="preparing" aria-busy={!error}>
     <header className="popup-header"><Logo /></header>
@@ -57,7 +49,6 @@ function PopupPreparing({ error, onRetry }: { error: string; onRetry: () => void
       </div>
       <div className="unchanged-state" role={error ? 'alert' : 'status'}>{error || '正在准备当前工作区…'}</div>
       {error ? <button className="button" onClick={onRetry}>重试</button> : null}
-      <button className="associate-link" disabled>关联已有工作区</button>
       <WorkspaceActions action={null} phase="idle" saveBlocked reopenBlocked reopenLabel="重新打开工作区" reopeningWorkspace={false} showReopen onSave={() => {}} onReopen={() => {}} />
     </section>
     <button className="manager-link" disabled>管理工作区 <span>→</span></button>
@@ -142,7 +133,7 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
   const [resolution, setResolution] = React.useState<WorkspaceWindowResolution | null>(initial.resolution);
   const [name, setName] = React.useState(initial.resolution.record?.content.name ?? '');
   const [status, setStatus] = React.useState<WorkspaceStatus>(initial.resolution.record?.content.status ?? 'active');
-  const [page, setPage] = React.useState<'main' | 'details' | 'associate'>('main');
+  const [page, setPage] = React.useState<'main' | 'details'>('main');
   const [activeKind, setActiveKind] = React.useState<TabChangeKind>('added');
   const [reopening, setReopening] = React.useState('');
   const [reopeningWorkspace, setReopeningWorkspace] = React.useState(false);
@@ -155,8 +146,6 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
   const [renameError, setRenameError] = React.useState('');
   const [renaming, setRenaming] = React.useState(false);
   const [success, setSuccess] = React.useState('');
-  const [associationOptions, setAssociationOptions] = React.useState<WorkspaceLocalRecord[]>([]);
-  const [associating, setAssociating] = React.useState('');
   const [refreshing, setRefreshing] = React.useState(false);
   const windowIdRef = React.useRef<number | null>(initial.windowId);
   const renameInputRef = React.useRef<HTMLInputElement>(null);
@@ -315,32 +304,6 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
     }
   }
 
-  async function openAssociationPicker() {
-    setError('');
-    try {
-      setAssociationOptions(await listWorkspacesForAssociation());
-      setPage('associate');
-    } catch {
-      setError('无法读取已保存工作区，请重试');
-    }
-  }
-
-  async function associate(workspaceId: string) {
-    if (refreshing || windowId == null) return;
-    setAssociating(workspaceId);
-    setError('');
-    try {
-      await associateExistingWorkspace(windowId, workspaceId, tabs, accountKey);
-      await refresh(windowId);
-      setPage('main');
-      setSuccess('已关联工作区');
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '关联失败，请重试');
-    } finally {
-      setAssociating('');
-    }
-  }
-
   function startRename() {
     if (!record || renaming) return;
     setDraftName(name);
@@ -398,31 +361,6 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
   />;
   const successToast = success ? <SuccessToast message={success} onDismiss={() => setSuccess('')} /> : null;
 
-  if (page === 'associate') {
-    return (
-      <main className="popup-shell association-shell">
-        <header className="detail-header">
-          <button className="back-button" onClick={() => { setPage('main'); setError(''); }} aria-label="返回">← <span>返回</span></button>
-          <h1>关联已有工作区</h1>
-          <span className="header-spacer" />
-        </header>
-        <section className="association-content">
-          <p>保留当前窗口和全部标签页，只恢复工作区身份。</p>
-          <div className="association-list">
-            {associationOptions.map((option) => (
-              <button key={option.content.id} disabled={Boolean(associating)} onClick={() => void associate(option.content.id)}>
-                <span><strong>{option.content.name}</strong><small>{option.content.tabs.length} 个已保存标签页</small></span>
-                <b>{associating === option.content.id ? '关联中…' : '关联'}</b>
-              </button>
-            ))}
-            {!associationOptions.length ? <div className="unchanged-state">暂无已保存工作区</div> : null}
-          </div>
-          {error ? <div className="inline-error" role="alert">{error}</div> : null}
-        </section>
-      </main>
-    );
-  }
-
   if (page === 'details' && isBound) {
     const activeChanges = activeKind === 'added' ? diff.added : activeKind === 'removed' ? diff.removed : diff.updated;
     return (
@@ -441,17 +379,13 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
           ))}
         </nav>
         <section className="detail-list">
-          <p className="change-description">{CHANGE_DESCRIPTIONS[activeKind]}</p>
           <div className="change-list">
             {activeChanges.map((change, index) => change.kind === 'updated'
               ? <UpdatedItem key={`updated-${change.tabId}-${change.position}`} change={change} onOpen={(item) => void openChange(item)} />
               : <ChangeItem key={`${change.kind}-${change.url}-${change.position}-${index}`} change={change} busy={reopening === `${change.url}-${change.position}`} onOpen={(item) => void openChange(item)} />)}
           </div>
         </section>
-        <footer className="detail-footer">
-          {error ? <div className="inline-error" role="alert">{error}</div> : null}
-          {buttons}
-        </footer>
+        {error ? <div className="detail-footer"><div className="inline-error" role="alert">{error}</div></div> : null}
       </main></>
     );
   }
@@ -464,11 +398,13 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
         {resolution == null ? (
           <div className="unchanged-state">正在识别当前工作区…</div>
         ) : isUnavailable ? (
-          <div className="unchanged-state">暂时无法读取此工作区，请稍后重试</div>
+          <div className="unchanged-state">暂时无法读取此工作区，请稍后重试<button className="button" disabled={refreshing} onClick={() => void refresh(windowId ?? undefined)}>重试</button></div>
         ) : isUnresolved ? (
           <div className="unchanged-state">无法可靠识别当前工作区，请从已保存工作区列表中选择恢复。</div>
         ) : isBound ? (
           <div className="bound-summary">
+            <div className="bound-header">
+            <div className="bound-info">
             {editingName ? (
               <input
                 ref={renameInputRef}
@@ -502,6 +438,9 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
             )}
             {renameError ? <div className="rename-error" role="alert">{renameError}</div> : null}
             <p>当前窗口 · {tabs.length} 个标签页</p>
+            </div>
+            {React.cloneElement(buttons, { variant: 'reopen' })}
+            </div>
           </div>
         ) : (
           <>
@@ -516,25 +455,19 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
           <div className="unchanged-state"><span>✓</span> 当前窗口与上次保存一致</div>
         ) : (
           <section className="save-preview">
-            <h2>本次保存会更新工作区</h2>
-            <dl className="snapshot-counts">
-              <div><dt>上次保存</dt><dd>{record.content.tabs.length} 个标签页</dd></div>
-              <div><dt>当前窗口</dt><dd>{tabs.length} 个标签页</dd></div>
-            </dl>
-            <ul className="change-summary">
-              {availableKinds.map((kind) => <li key={kind} className={`change-${kind}`}><span aria-hidden="true" />{CHANGE_LABELS[kind]} <b>{counts[kind]}</b> 个</li>)}
-            </ul>
             <button className="view-changes" onClick={() => { setActiveKind(availableKinds[0] ?? 'added'); setPage('details'); }}>
-              查看本次变更 <span>›</span>
+              <span className="change-row-label">{totalChanges} 项变更</span>
+              <span className="change-row-counts">
+                {counts.added > 0 && <span className="tab-delta added" aria-label={`新增 ${counts.added} 个标签页`}>+{counts.added}</span>}
+                {counts.removed > 0 && <span className="tab-delta removed" aria-label={`移除 ${counts.removed} 个标签页`}>−{counts.removed}</span>}
+              </span>
+              <span className="change-row-arrow" aria-hidden="true">›</span>
             </button>
           </section>
         ) : null}
 
         {error ? <div className="inline-error" role="alert">{error}</div> : null}
-        {!isBound && !isUnavailable && !isUnresolved ? (
-          <button className="associate-link" onClick={() => void openAssociationPicker()}>关联已有工作区</button>
-        ) : null}
-        {buttons}
+        {isBound ? React.cloneElement(buttons, { variant: 'save' }) : buttons}
       </section>
       <button className="manager-link" onClick={() => void browser.runtime.openOptionsPage()}>管理工作区 <span>→</span></button>
     </main>
@@ -548,13 +481,16 @@ export function PopupRoot() {
   const [attempt, setAttempt] = React.useState(0);
   const windowRead = React.useRef<Promise<Browser.windows.Window> | null>(null);
   const windowRevision = React.useRef(0);
+  const scopedKey = React.useRef('');
+  const currentWindowId = React.useRef<number | undefined>(undefined);
   React.useEffect(() => {
     // Browser metadata is independent of identity; no workspace data is read here.
     windowRead.current = readPopupWindow();
     void windowRead.current.catch(() => {});
     const invalidate = () => { windowRevision.current++; windowRead.current = null; };
     const storageChanged = (changes: Record<string, unknown>) => {
-      if (Object.keys(changes).some((key) => /^(workspaces:|windowBinding|lazyRestoreEntries:|persistentWindowAssociation:)/.test(key))) invalidate();
+      const scope = scopedKey.current;
+      if (scope && Object.keys(changes).some((key) => [scope, scope.replace(/^workspaces/, 'deleteTombstones'), scope.replace(/^workspaces/, 'lazyRestoreEntries'), scope.replace(/^workspaces/, `windowBinding:${currentWindowId.current}`), scope.replace(/^workspaces/, `windowBindingSuppressed:${currentWindowId.current}`)].includes(key))) invalidate();
     };
     browser.tabs.onCreated.addListener(invalidate);
     browser.tabs.onRemoved.addListener(invalidate);
@@ -576,23 +512,26 @@ export function PopupRoot() {
   const config = access?.config;
   const userId = access?.session?.user.id;
   const key = config && userId ? `workspaces:${accountOwner(config.url, userId)}` : '';
+  scopedKey.current = key;
   React.useEffect(() => {
     let active = true;
     setSnapshot(undefined);
     setSetupError('');
     if (key) {
       void (async () => {
-        while (active) {
+        for (let retry = 0; active && retry < 3; retry++) {
           const revision = windowRevision.current;
           const read = windowRead.current ?? readPopupWindow();
           windowRead.current = null;
           const current = await read;
+          currentWindowId.current = current.id;
           const value = await loadPopupWindow(key, current);
           if (!active) return;
           if (revision !== windowRevision.current) continue;
           setSnapshot({ key, value });
           return;
         }
+        if (active) throw new Error('当前窗口持续变化，请稍后重试');
       })().catch((error) => { if (active) setSetupError(error instanceof Error ? error.message : '暂时无法读取当前窗口'); });
     }
     return () => { active = false; };

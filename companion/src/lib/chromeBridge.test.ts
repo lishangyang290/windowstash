@@ -9,6 +9,11 @@ const connected: ChromeConnection = {
 };
 describe('Chrome routing', () => {
   beforeEach(() => vi.resetAllMocks());
+  it('reports host registration failures before launching Chrome', async () => {
+    mocks.invoke.mockResolvedValueOnce({ ...connected, host_error: '无法注册本机组件' });
+    await expect(chromeBridge.openWorkspace('workspace-1')).rejects.toThrow('无法注册本机组件');
+    expect(mocks.invoke).toHaveBeenCalledOnce();
+  });
   it('revalidates discovery instead of trusting an old cached extension', async () => {
     mocks.invoke.mockResolvedValueOnce(connected).mockResolvedValueOnce(undefined);
     await chromeBridge.openWorkspace('workspace-1');

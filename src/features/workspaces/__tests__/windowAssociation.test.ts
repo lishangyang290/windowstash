@@ -34,7 +34,6 @@ vi.mock('@/lib/storage/syncLogRepository', () => ({ syncLogRepository: logMock }
 vi.mock('@/features/workspaces/lazyRestore', () => ({ resolveLogicalTabs: vi.fn(async (tabs) => tabs) }));
 
 import {
-  associateExistingWorkspace,
   maintainWindowAssociations,
   refreshBoundWindowAssociation,
   restorePersistentWindowAssociations,
@@ -238,19 +237,6 @@ describe('persistent window association recovery', () => {
     await expect(restorePersistentWindowAssociations()).resolves.toBe(0);
     await expect(restorePersistentWindowAssociations()).resolves.toBe(1);
     expect(bindings.get(61)).toBe('retry');
-  });
-
-  it('manual association binds in place and blocks a workspace claimed by another window', async () => {
-    workspaceMock.get.mockResolvedValue(workspace('manual'));
-    browserMock.windows.getAll.mockResolvedValue([{ id: 10 }, { id: 20 }]);
-
-    await associateExistingWorkspace(10, 'manual', tabs(['https://current.example']));
-    expect(bindings.get(10)).toBe('manual');
-    expect(browserMock.windows.create).not.toHaveBeenCalled();
-    expect(browserMock.windows.remove).not.toHaveBeenCalled();
-
-    await expect(associateExistingWorkspace(20, 'manual', tabs(['https://other.example']))).rejects.toThrow('该工作区已关联另一个窗口');
-    expect(bindings.get(20)).toBeUndefined();
   });
 
   it('never trusts a reused old numeric window id when its tabs do not match', async () => {

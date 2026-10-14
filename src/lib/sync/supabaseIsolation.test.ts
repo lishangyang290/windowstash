@@ -1,13 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { identities, ownerOf, SupabaseMemory } from '../../../tests/support/supabaseMemory';
 import type { Session } from '@supabase/supabase-js';
-const state = vi.hoisted(() => ({ local: new Map<string, unknown>(), session: new Map<string, unknown>(), config: null as { url: string; publishableKey: string } | null, auth: null as Session | null }));
+const state = vi.hoisted(() => ({ local: new Map<string, unknown>(), session: new Map<string, unknown>(), config: null as { url: string; publishableKey: string } | null, auth: null as Session | null, alarm: vi.fn(async () => {}), getAlarm: vi.fn(async (): Promise<{ name: string; scheduledTime: number } | undefined> => undefined), close: vi.fn(async () => {}), message: vi.fn(async () => { throw new Error('Popup closed'); }) }));
 function storage(values: Map<string, unknown>) { return {
   get: async (keys: string | string[] | null) => Object.fromEntries((keys === null ? [...values.keys()] : Array.isArray(keys) ? keys : [keys]).map((key) => [key, structuredClone(values.get(key))])),
   set: async (items: Record<string, unknown>) => { for (const [key, value] of Object.entries(items)) values.set(key, structuredClone(value)); },
   remove: async (keys: string | string[]) => { for (const key of Array.isArray(keys) ? keys : [keys]) values.delete(key); },
 }; }
-vi.mock('wxt/browser', () => ({ browser: { storage: { local: storage(state.local), session: storage(state.session) }, windows: { getAll: async () => [] } } }));
+vi.mock('wxt/browser', () => ({ browser: {
+  storage: { local: storage(state.local), session: storage(state.session) },
+  alarms: { create: state.alarm, get: state.getAlarm },
+  runtime: { sendMessage: state.message, getURL: (path: string) => `chrome-extension://fixture${path}` },
+  windows: { getAll: async () => [], get: async (id: number) => ({ id, tabs: [{ id: 1, index: 0, title: 'Fixture', url: 'https://example.invalid', active: true, pinned: false }] }), remove: state.close },
+} }));
 vi.mock('@/lib/supabase/client', () => ({ getSupabaseConfig: async () => state.config, getSupabaseClient: async () => ({ auth: { getSession: async () => ({ data: { session: state.auth }, error: null }) } }), friendlySupabaseError: (error: unknown) => error }));
 import { selectDataAccount } from '@/lib/storage/accountScope';
 import { workspaceRepository } from '@/lib/storage/workspaceRepository';
@@ -15,6 +20,8 @@ import { tombstoneRepository } from '@/lib/storage/tombstoneRepository';
 import { syncLogRepository } from '@/lib/storage/syncLogRepository';
 import { workspaceRemoteRepository } from '@/lib/supabase/workspaceRemoteRepository';
 import { syncEngine } from './syncEngine';
+import { schedulePendingSync, syncPendingWorkspaces } from './pendingSync';
+import { saveCurrentWindow } from '@/features/workspaces/workspaceService';
 const content = { id: 'shared-id', name: '', status: 'active' as const, tabs: [], activeTabIndex: 0, createdAt: '2026-01-01', updatedAt: '2026-01-01' };
 let server: SupabaseMemory;
 async function login(index: number) {
@@ -28,10 +35,53 @@ async function login(index: number) {
 }
 beforeEach(() => {
   state.local.clear(); state.session.clear(); state.config = null; state.auth = null;
+  vi.clearAllMocks();
   server = new SupabaseMemory(); vi.stubGlobal('fetch', server.fetch);
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 describe('real sync engine and real Supabase SDK against simulated projects/users', () => {
+  it('does not postpone a newly saved workspace behind an older retry', async () => {
+    state.getAlarm.mockResolvedValueOnce({ name: 'windowstash-pending-sync', scheduledTime: Date.now() + 1_000 });
+    await schedulePendingSync(5 * 60_000);
+    expect(state.alarm).not.toHaveBeenCalled();
+  });
+  it('syncs a saved and closed window through the durable queue despite a lost popup message', async () => {
+    const scope = await login(0);
+    const saved = await saveCurrentWindow({ windowId: 7, name: 'Saved before close', status: 'active', closeAfterSave: true });
+    expect(state.close).toHaveBeenCalledWith(7);
+    expect(state.alarm.mock.invocationCallOrder[0]!).toBeLessThan(state.close.mock.invocationCallOrder[0]!);
+    expect((await workspaceRepository.get(saved.id, scope))?.sync.syncStatus).toBe('pending');
+    expect(server.requests).toEqual([]);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    server.beforeRequest = () => gate;
+    const sync = syncPendingWorkspaces();
+    await vi.waitFor(() => expect(server.requests.length).toBeGreaterThan(0));
+    expect(state.close).toHaveBeenCalledOnce();
+    expect((await workspaceRepository.get(saved.id, scope))?.content.tabs).toHaveLength(1);
+    release(); await sync;
+    expect((await workspaceRepository.get(saved.id, scope))?.sync.syncStatus).toBe('synced');
+    expect(server.account(identities[0].url, identities[0].userId).get(saved.id)?.name).toBe('Saved before close');
+  });
+
+  it('keeps offline saves and retries without displaying or uploading them for a different account', async () => {
+    const scope = await login(0);
+    const saved = await saveCurrentWindow({ windowId: 7, name: 'Offline save', status: 'active', closeAfterSave: true });
+    server.offline = true;
+    vi.useFakeTimers();
+    const sync = syncPendingWorkspaces();
+    await vi.runAllTimersAsync(); await sync;
+    vi.useRealTimers();
+    expect((await workspaceRepository.get(saved.id, scope))?.sync.syncStatus).toBe('failed');
+    expect(state.alarm).toHaveBeenLastCalledWith('windowstash-pending-sync', { when: expect.any(Number) });
+    await login(1); server.offline = false; server.requests.length = 0;
+    await syncPendingWorkspaces();
+    expect(await workspaceRepository.list()).toEqual([]);
+    expect(server.requests).toEqual([]);
+    await login(0); await syncPendingWorkspaces();
+    expect((await workspaceRepository.get(saved.id))?.sync.syncStatus).toBe('synced');
+    expect(server.requests.every((request) => request.owner === ownerOf(identities[0].url, identities[0].userId))).toBe(true);
+  });
   it('restores every offline queue through A1 → A2 → B1 → A1 and syncs only its owner', async () => {
     vi.useFakeTimers();
     for (const [index, name] of ['A1', 'A2', 'B1'].entries()) {
@@ -55,7 +105,8 @@ describe('real sync engine and real Supabase SDK against simulated projects/user
     await syncEngine.syncAll();
     expect(server.requests.every((request) => request.owner === ownerOf(identities[0].url, identities[0].userId))).toBe(true);
     expect(server.account(identities[0].url, identities[0].userId).get(content.id)?.name).toBe('A1');
-    expect(await tombstoneRepository.has('deleted-id')).toBe(false);
+    expect(await tombstoneRepository.has('deleted-id')).toBe(true);
+    expect((await tombstoneRepository.list()).find((item) => item.workspaceId === 'deleted-id')?.cloudDeletedAt).toBeTruthy();
     for (const [index, name] of [[1, 'A2'], [2, 'B1']] as const) {
       await login(index);
       expect((await workspaceRepository.get(content.id))?.content.name).toBe(name);

@@ -271,18 +271,3 @@ export async function maintainWindowAssociations(): Promise<number> {
   }));
   return restorePersistentWindowAssociations();
 }
-
-export async function associateExistingWorkspace(
-  windowId: number,
-  workspaceId: string,
-  tabs?: MatchableTab[],
-): Promise<void> {
-  if (!await workspaceRepository.get(workspaceId)) throw new Error('工作区不存在');
-  const windows = await browser.windows.getAll({ populate: false });
-  for (const window of windows) {
-    if (window.id != null && window.id !== windowId && await bindingRepository.get(window.id) === workspaceId) {
-      throw new Error('该工作区已关联另一个窗口');
-    }
-  }
-  await bindWindow(windowId, workspaceId, tabs);
-}

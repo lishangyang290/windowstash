@@ -4,6 +4,7 @@ const listeners = vi.hoisted(() => ({
   onMessage: undefined as ((message: unknown, sender: unknown) => unknown) | undefined,
   onInstalled: undefined as (() => void) | undefined,
   onStartup: undefined as (() => void) | undefined,
+  onAlarm: undefined as ((alarm: { name: string }) => void) | undefined,
   onCreated: undefined as ((tab: { windowId: number }) => void) | undefined,
   onRemoved: undefined as ((tabId: number, info: { windowId: number; isWindowClosing: boolean }) => void) | undefined,
   onMoved: undefined as ((tabId: number, info: { windowId: number }) => void) | undefined,
@@ -15,11 +16,13 @@ const reopenMock = vi.hoisted(() => vi.fn());
 const recoverMock = vi.hoisted(() => vi.fn());
 const restoreSavedMock = vi.hoisted(() => vi.fn());
 const refreshAssociationMock = vi.hoisted(() => vi.fn());
+const pendingSyncMock = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock('@/lib/sync/pendingSync', () => ({ PENDING_SYNC_ALARM: 'windowstash-pending-sync', syncPendingWorkspaces: pendingSyncMock }));
 
 const browserMock = vi.hoisted(() => {
   const event = () => ({ addListener: vi.fn() });
   return {
-    alarms: { create: vi.fn(), onAlarm: event() },
+    alarms: { create: vi.fn(), onAlarm: { addListener: vi.fn((listener) => { listeners.onAlarm = listener; }) } },
     runtime: {
       onInstalled: { addListener: vi.fn((listener) => { listeners.onInstalled = listener; }) },
       onStartup: { addListener: vi.fn((listener) => { listeners.onStartup = listener; }) },
@@ -73,6 +76,10 @@ beforeAll(async () => {
 });
 
 describe('background messages', () => {
+  it('drains the durable queue from an alarm without a popup or manager sender', async () => {
+    listeners.onAlarm?.({ name: 'windowstash-pending-sync' });
+    expect(pendingSyncMock).toHaveBeenCalledOnce();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     refreshAssociationMock.mockResolvedValue(true);

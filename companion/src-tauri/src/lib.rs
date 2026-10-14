@@ -151,6 +151,12 @@ fn begin_browser_login() -> Result<(), String> {
     )
 }
 
+fn spawn_browser(mut command: Command) -> Result<std::process::Child, String> {
+    command
+        .spawn()
+        .map_err(|_| "无法打开 Chrome，请确认已安装".into())
+}
+
 fn launch_options(target: &chrome::Target, query: &str) -> Result<(), String> {
     let url = format!(
         "chrome-extension://{}/{}{}",
@@ -164,20 +170,20 @@ fn launch_options(target: &chrome::Target, query: &str) -> Result<(), String> {
     );
     let profile = format!("--profile-directory={}", target.profile);
     #[cfg(target_os = "macos")]
-    let result = Command::new("open")
-        .args(["-na", "Google Chrome", "--args", &profile, &url])
-        .status();
+    let command = {
+        let mut command = Command::new("open");
+        command.args(["-na", "Google Chrome", "--args", &profile, &url]);
+        command
+    };
     #[cfg(target_os = "windows")]
-    let result = windows_chrome(&[&profile, &url]).status();
+    let command = windows_chrome(&[&profile, &url]);
     #[cfg(target_os = "linux")]
-    let result = Command::new("google-chrome")
-        .args([&profile, &url])
-        .status();
-    result
-        .map_err(|_| "无法打开 Chrome，请确认已安装")?
-        .success()
-        .then_some(())
-        .ok_or_else(|| "无法打开 Chrome，请重试".into())
+    let command = {
+        let mut command = Command::new("google-chrome");
+        command.args([&profile, &url]);
+        command
+    };
+    spawn_browser(command).map(|_| ())
 }
 
 #[cfg(target_os = "windows")]
@@ -345,7 +351,13 @@ pub fn run() {
         ])
         .setup(|app| {
             // Register the bundled helper at user level; credentials are never accepted.
-            let _ = chrome_connection();
+            let host_error = match chrome_connection() {
+                Ok(connection) => connection.host_error,
+                Err(error) => Some(error),
+            };
+            if let Some(error) = &host_error {
+                eprintln!("Native Host registration failed: {error}");
+            }
             #[cfg(target_os = "macos")]
             {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
@@ -402,6 +414,19 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+            if host_error.is_some() {
+                display_popover(app.handle());
+            }
+            // Native timers keep working when macOS suspends the hidden WebView.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_secs(10));
+                let error = match chrome_connection() {
+                    Ok(connection) => connection.host_error,
+                    Err(error) => Some(error),
+                };
+                let _ = handle.emit("native-host-status", error);
+            });
             Ok(())
         })
         .on_window_event(|window, event| match event {
@@ -430,6 +455,39 @@ fn display_popover(app: &tauri::AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_launch_returns_while_the_child_is_still_running() {
+        #[cfg(target_os = "windows")]
+        let command = {
+            use std::os::windows::process::CommandExt;
+            let mut command = Command::new("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ]);
+            command.creation_flags(0x08000000);
+            command
+        };
+        #[cfg(not(target_os = "windows"))]
+        let command = {
+            let mut command = Command::new("sleep");
+            command.arg("30");
+            command
+        };
+        let mut child = spawn_browser(command).unwrap();
+        let running = child.try_wait().unwrap().is_none();
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(running);
+    }
+
+    #[test]
+    fn browser_launch_failure_is_reported() {
+        assert!(spawn_browser(Command::new("windowstash-missing-browser-fixture")).is_err());
+    }
 
     #[cfg(target_os = "windows")]
     #[test]

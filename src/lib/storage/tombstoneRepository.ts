@@ -4,6 +4,13 @@ import { STORAGE_KEYS } from '@/lib/constants';
 import type { DeleteTombstone } from '@/types/workspace';
 
 type TombstoneMap = Record<string, DeleteTombstone>;
+let writes = Promise.resolve();
+function write(storageKey: string, task: () => Promise<void>): Promise<void> {
+  if (globalThis.navigator?.locks) return navigator.locks.request(`windowstash-tombstones:${storageKey}`, task).then(() => undefined);
+  const result = writes.then(task, task);
+  writes = result.catch(() => undefined);
+  return result;
+}
 
 async function read(storageKey: string): Promise<TombstoneMap> {
   const result = await browser.storage.local.get(storageKey);
@@ -21,14 +28,18 @@ export const tombstoneRepository = {
   },
   async add(tombstone: DeleteTombstone): Promise<void> {
     const storageKey = tombstone.accountStorageKey ?? await accountStorageKey(STORAGE_KEYS.tombstones);
-    const items = await read(storageKey);
-    items[tombstone.workspaceId] = tombstone;
-    await browser.storage.local.set({ [storageKey]: items });
+    await write(storageKey, async () => {
+      const items = await read(storageKey);
+      items[tombstone.workspaceId] = tombstone;
+      await browser.storage.local.set({ [storageKey]: items });
+    });
   },
   async remove(id: string, requestedKey?: string): Promise<void> {
     const storageKey = requestedKey ?? await accountStorageKey(STORAGE_KEYS.tombstones);
-    const items = await read(storageKey);
-    delete items[id];
-    await browser.storage.local.set({ [storageKey]: items });
+    await write(storageKey, async () => {
+      const items = await read(storageKey);
+      delete items[id];
+      await browser.storage.local.set({ [storageKey]: items });
+    });
   },
 };
