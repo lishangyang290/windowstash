@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { identities, ownerOf, SupabaseMemory } from '../../../tests/support/supabaseMemory';
 import type { BrowserGrant } from '../lib/browserAuth';
 const state = vi.hoisted(() => ({ grant: null as BrowserGrant | null, storage: new Map<string, string>() }));
-vi.mock('@tauri-apps/api/core', () => ({ invoke: async () => state.grant }));
+vi.mock('@tauri-apps/api/core', () => ({ invoke: async (command: string) => command === 'local_workspaces' ? null : state.grant }));
 import { acceptBrowserGrant } from '../lib/browserAuth';
 import { cache } from '../lib/cache';
 import { workspaceService } from './workspaces';

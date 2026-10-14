@@ -10,7 +10,9 @@ const storageArea = (values: Map<string, unknown>) => ({
 vi.mock('wxt/browser', () => ({ browser: {
   alarms: { create: vi.fn(async () => {}), get: vi.fn(async () => undefined) },
   storage: { local: storageArea(fixture.local), session: storageArea(fixture.session), onChanged: events },
-  runtime: { sendNativeMessage: vi.fn(async () => structuredClone(fixture.nativeReply)), sendMessage: vi.fn(async () => undefined), getURL: (path: string) => `chrome-extension://fixture${path}` },
+  runtime: { sendNativeMessage: vi.fn(async (_host: string, message: { type: string; index?: number; chunks?: number; revision?: number }) => message.type === 'workspaces'
+    ? { status: message.index === (message.chunks ?? 0) - 1 ? 'persisted' : 'staged', revision: message.revision }
+    : structuredClone(fixture.nativeReply)), sendMessage: vi.fn(async () => undefined), getURL: (path: string) => `chrome-extension://fixture${path}` },
   windows: { getCurrent: vi.fn(async () => structuredClone(fixture.current)), getAll: vi.fn(async () => []) },
 } }));
 

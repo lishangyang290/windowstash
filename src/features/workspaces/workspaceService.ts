@@ -9,6 +9,7 @@ import type { BackgroundMessage } from '@/types/messages';
 import type { StoredTab, WorkspaceContent, WorkspaceLocalRecord, WorkspaceStatus } from '@/types/workspace';
 import { syncEngine } from '@/lib/sync/syncEngine';
 import { schedulePendingSync } from '@/lib/sync/pendingSync';
+import { publishNativeWorkspaces } from '@/lib/companion/workspaces';
 import { matchWorkspace, MIN_CANDIDATE_GAP, scoreWorkspaceMatch, type MatchableTab } from './workspaceMatcher';
 import {
   canLazyRestore,
@@ -24,8 +25,8 @@ import {
   restorePersistentWindowAssociations,
 } from './windowAssociation';
 
-function requestSync(message: BackgroundMessage): void {
-  void browser.runtime.sendMessage(message).catch(() => undefined);
+function requestSync(message: BackgroundMessage): Promise<void> {
+  return browser.runtime.sendMessage(message).then(() => undefined, () => undefined);
 }
 
 async function recordLog(
@@ -165,6 +166,7 @@ export async function saveCurrentWindow(input: {
     catch { await recordLog(content.id, content.name, 'sync-queue', 'failed', 'Background retry could not be scheduled; local save retained', storageKey); }
   });
   requestSync({ type: 'SYNC_WORKSPACE', workspaceId: content.id, accountStorageKey: storageKey });
+  await publishNativeWorkspaces(storageKey);
   if (input.closeAfterSave) await withDataAccount(account, () => browser.windows.remove(input.windowId));
   return content;
 }
@@ -483,6 +485,7 @@ export async function updateWorkspace(
     await workspaceRepository.saveContent({ ...record.content, ...patch, updatedAt: new Date().toISOString() }, account.storageKey);
     requestSync({ type: 'SYNC_WORKSPACE', workspaceId, accountStorageKey: account.storageKey });
   });
+  await publishNativeWorkspaces(account.storageKey);
 }
 
 export async function deleteWorkspace(workspaceId: string, expectedKey?: string): Promise<void> {
@@ -497,4 +500,5 @@ export async function deleteWorkspace(workspaceId: string, expectedKey?: string)
     await windowAssociationRepository.removeForWorkspace(workspaceId, account.storageKey).catch(() => undefined);
     requestSync({ type: 'SYNC_ALL', accountStorageKey: account.storageKey });
   });
+  await publishNativeWorkspaces(account.storageKey);
 }

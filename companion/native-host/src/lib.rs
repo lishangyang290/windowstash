@@ -20,6 +20,7 @@ compile_error!("insecure-test-store is forbidden in production builds");
 pub mod auth;
 pub mod bridge;
 pub mod storage;
+pub mod workspaces;
 use storage::StateStorage;
 
 pub fn random_id() -> String {

@@ -1,6 +1,7 @@
 import type { WorkspaceSummary } from '../types';
 import { accountOwner, cache, sortByRecent } from '../lib/cache';
 import { currentBrowserGrant } from '../lib/browserAuth';
+import { readLocalWorkspaces } from '../lib/localWorkspaces';
 import { friendlySupabaseError, getSupabaseClient, getSupabaseConfig, getAccountClient } from '../lib/supabase';
 
 interface WorkspaceRow {
@@ -16,6 +17,15 @@ export const workspaceService = {
   async refresh(): Promise<WorkspaceSummary[]> {
     const revision = ++refreshRevision;
     const scope = cache.currentScope();
+    const local = await readLocalWorkspaces();
+    if (local) {
+      const grant = currentBrowserGrant();
+      if (!grant || local.instance_id !== grant.instance_id || accountOwner(local.project_url, local.user_id) !== scope
+        || scope !== cache.currentScope() || revision !== refreshRevision) throw new Error('账号或工作区列表已变化，请重试');
+      cache.saveWorkspaces(local.items);
+      return sortByRecent(local.items);
+    }
+    // Upgrade compatibility only: until the first local snapshot has been imported.
     const config = getSupabaseConfig();
     const supabase = getSupabaseClient();
     if (!supabase) throw new Error('请先连接 Supabase');

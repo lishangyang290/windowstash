@@ -209,6 +209,7 @@ export function Launcher({ config, session, onConfigChange, onSignOut, browserLo
     void refresh();
     let followup: number | undefined;
     const timer = window.setInterval(() => void refresh(), REFRESH_INTERVAL);
+    const unlistenLocal = listen('local-workspaces-changed', () => void refresh());
     const unlisten = listen('popover-opened', () => {
       setQuery('');
       setSelected(0);
@@ -219,7 +220,7 @@ export function Launcher({ config, session, onConfigChange, onSignOut, browserLo
       followup = window.setTimeout(() => void refresh(), 2_000);
     });
     searchRef.current?.focus();
-    return () => { refreshRevision.current++; window.clearTimeout(followup); window.clearInterval(timer); void unlisten.then((stop) => stop()); };
+    return () => { refreshRevision.current++; window.clearTimeout(followup); window.clearInterval(timer); void unlisten.then((stop) => stop()); void unlistenLocal.then((stop) => stop()); };
   }, [refresh, session.user.id]);
 
   const filtered = React.useMemo(() => {

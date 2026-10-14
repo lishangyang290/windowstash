@@ -3,6 +3,7 @@ import { browser } from 'wxt/browser';
 import { nextLocalExpiry, STORAGE_KEYS } from '@/lib/constants';
 import type { WorkspaceContent, WorkspaceLocalRecord } from '@/types/workspace';
 import { tombstoneRepository } from './tombstoneRepository';
+import { persistLibraryChange } from '@/lib/companion/workspaces';
 
 type WorkspaceMap = Record<string, WorkspaceLocalRecord>;
 let writes = Promise.resolve();
@@ -21,7 +22,7 @@ async function readMap(storageKey = STORAGE_KEYS.workspaces as string): Promise<
 }
 
 async function writeMap(records: WorkspaceMap, storageKey: string): Promise<void> {
-  await browser.storage.local.set({ [storageKey]: records });
+  await persistLibraryChange(storageKey, { [storageKey]: records });
 }
 
 export const workspaceRepository = {

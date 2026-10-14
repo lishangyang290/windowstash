@@ -97,6 +97,20 @@ async fn desktop_auth() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+async fn local_workspaces() -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let root = windowstash_native_host::bridge::directory().map_err(str::to_string)?;
+        let bytes = match fs::read(root.join("selection.json")) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(serde_json::Value::Null),
+            Err(_) => return Err("无法读取浏览器关联，请重试".into()),
+        };
+        let selected: connection::Selection = serde_json::from_slice(&bytes).map_err(|_| "浏览器关联损坏，请重新选择".to_string())?;
+        windowstash_native_host::workspaces::desktop(&root, &selected.route_id).map_err(|_| "无法读取本机工作区，已有缓存已保留".to_string())
+    }).await.map_err(|_| "本机工作区查询失败".to_string())?
+}
+
+#[tauri::command]
 async fn confirm_browser_login(
     app: tauri::AppHandle,
     instance_id: String,
@@ -345,6 +359,7 @@ pub fn run() {
             begin_browser_login,
             confirm_browser_login,
             desktop_auth,
+            local_workspaces,
             hide_popover,
             show_popover,
             quit_app
@@ -426,6 +441,21 @@ pub fn run() {
                     Err(error) => Some(error),
                 };
                 let _ = handle.emit("native-host-status", error);
+            });
+            // Local revision notifications do not depend on Chrome, Supabase or WebView timers.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                let Ok(root) = windowstash_native_host::bridge::directory() else { return; };
+                let path = root.join("workspace-library/change.json");
+                let mut previous = None;
+                loop {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let current = fs::read(&path).ok();
+                    if current != previous {
+                        previous = current;
+                        let _ = handle.emit("local-workspaces-changed", ());
+                    }
+                }
             });
             Ok(())
         })

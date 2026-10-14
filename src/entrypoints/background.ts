@@ -1,4 +1,6 @@
 import { requireDataAccount } from '@/lib/storage/accountScope';
+import { accountStorageKey } from '@/lib/storage/accountScope';
+import { isLibraryChange, libraryScope, publishNativeWorkspaces } from '@/lib/companion/workspaces';
 import { authService } from '@/lib/supabase/authService';
 import { browser } from 'wxt/browser';
 import { CLEANUP_ALARM, LAZY_RECONCILIATION_ALARM, SYNC_ALARM, WINDOW_ASSOCIATION_ALARM } from '@/lib/constants';
@@ -29,6 +31,17 @@ import {
 } from '@/features/workspaces/windowAssociation';
 
 export default defineBackground(() => {
+  const LOCAL_LIBRARY_ALARM = 'windowstash-local-library-retry';
+  const publishLocal = (scope: string, force = false) => publishNativeWorkspaces(scope, force)
+    .catch(() => browser.alarms.create(LOCAL_LIBRARY_ALARM, { delayInMinutes: 1 }));
+  const publishCurrent = () => accountStorageKey('workspaces').then((scope) => publishLocal(scope, true)).catch(() => undefined);
+  browser.storage?.onChanged?.addListener((changes, area) => {
+    if (area !== 'local') return;
+    for (const [key, change] of Object.entries(changes)) {
+      if (isLibraryChange(key, change.newValue)) void publishLocal(libraryScope(key));
+    }
+    if (changes['windowstash-companion:auth-link:v1'] || changes['windowstash-data-owner:v1']) void publishCurrent();
+  });
   const ensureAlarms = async () => {
     await browser.alarms.create(SYNC_ALARM, { periodInMinutes: 30 });
     await browser.alarms.create(CLEANUP_ALARM, { periodInMinutes: 24 * 60 });
@@ -52,6 +65,7 @@ export default defineBackground(() => {
     void scheduleAssociationMaintenance(5_000);
   });
   browser.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === LOCAL_LIBRARY_ALARM) void publishCurrent();
     if (alarm.name === PENDING_SYNC_ALARM) void syncPendingWorkspaces().catch(() => undefined);
     if (alarm.name === SYNC_ALARM) void syncEngine.syncAll();
     if (alarm.name === CLEANUP_ALARM) {
@@ -116,6 +130,7 @@ export default defineBackground(() => {
   });
 
   void ensureAlarms();
+  void publishCurrent();
   void syncPendingWorkspaces().catch(() => undefined);
   void maintainWindowAssociations();
   void scheduleAssociationMaintenance();

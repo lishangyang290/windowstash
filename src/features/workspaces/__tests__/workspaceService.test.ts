@@ -13,6 +13,8 @@ const logMock = vi.hoisted(() => ({ add: vi.fn() }));
 const tombstoneMock = vi.hoisted(() => ({ add: vi.fn(), has: vi.fn() }));
 const workspaceMock = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), saveContent: vi.fn(), put: vi.fn(), remove: vi.fn() }));
 const syncMock = vi.hoisted(() => ({ syncAll: vi.fn() }));
+const nativeMock = vi.hoisted(() => vi.fn());
+vi.mock('@/lib/companion/workspaces', () => ({ publishNativeWorkspaces: nativeMock }));
 const lazyMock = vi.hoisted(() => ({
   list: vi.fn(), get: vi.fn(), put: vi.fn(), remove: vi.fn(), removeByTabId: vi.fn(), removeByWindowId: vi.fn(), removeMany: vi.fn(),
 }));
@@ -73,6 +75,7 @@ describe('workspaceService', () => {
     browserMock.runtime.sendMessage.mockResolvedValue(undefined);
     browserMock.windows.getAll.mockResolvedValue([]);
     syncMock.syncAll.mockResolvedValue(undefined);
+    nativeMock.mockResolvedValue(undefined);
     lazyMock.get.mockResolvedValue(null);
     lazyMock.put.mockResolvedValue(undefined);
     lazyMock.remove.mockResolvedValue(undefined);
@@ -114,14 +117,47 @@ describe('workspaceService', () => {
     expect(browserMock.windows.remove).not.toHaveBeenCalled();
   });
 
-  it('closes after durable scheduling even when the message channel disappears or cloud sync is slow', async () => {
+  it('waits for local persistence before closing, without waiting for cloud sync', async () => {
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs: [{ index: 0, url: 'https://example.invalid' }] });
+    let finishSync!: () => void;
+    browserMock.runtime.sendMessage.mockImplementationOnce(() => new Promise(() => {}));
+    nativeMock.mockImplementationOnce(() => new Promise<void>((resolve) => { finishSync = resolve; }));
+    const saving = saveCurrentWindow({ windowId: 22, name: 'Online', status: 'active', closeAfterSave: true });
+    await vi.waitFor(() => expect(nativeMock).toHaveBeenCalledWith('workspaces'));
+    try {
+      expect(workspaceMock.saveContent).toHaveBeenCalledOnce();
+      expect(browserMock.windows.remove).not.toHaveBeenCalled();
+      expect(browserMock.runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'SYNC_WORKSPACE', accountStorageKey: 'workspaces' }));
+    } finally {
+      finishSync();
+      await saving;
+    }
+    expect(browserMock.windows.remove).toHaveBeenCalledWith(22);
+  });
+
+  it('keeps the local save and retry alarm when the sync message fails', async () => {
     browserMock.windows.get.mockResolvedValue({ id: 22, tabs: [{ index: 0, url: 'https://example.invalid' }] });
     browserMock.runtime.sendMessage.mockRejectedValueOnce(new Error('Popup closed'));
     await expect(saveCurrentWindow({ windowId: 22, name: 'Offline', status: 'active', closeAfterSave: true })).resolves.toHaveProperty('id');
     expect(browserMock.windows.remove).toHaveBeenCalledWith(22);
     expect(browserMock.alarms.create).toHaveBeenCalledOnce();
-    browserMock.runtime.sendMessage.mockImplementationOnce(() => new Promise(() => {}));
-    await expect(saveCurrentWindow({ windowId: 22, name: 'Slow', status: 'active', closeAfterSave: true })).resolves.toHaveProperty('id');
+    expect(workspaceMock.remove).not.toHaveBeenCalled();
+  });
+
+  it('retains the local save and window when local persistence times out', async () => {
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs: [{ index: 0, url: 'https://example.invalid' }] });
+    nativeMock.mockRejectedValueOnce(new Error('本机工作区写入超时'));
+    await expect(saveCurrentWindow({ windowId: 22, name: 'Slow', status: 'active', closeAfterSave: true })).rejects.toThrow('本机工作区写入超时');
+    expect(browserMock.windows.remove).not.toHaveBeenCalled();
+    expect(workspaceMock.remove).not.toHaveBeenCalled();
+    expect(browserMock.alarms.create).toHaveBeenCalledOnce();
+  });
+
+  it('does not close a window if the account changes while waiting for sync', async () => {
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs: [{ index: 0, url: 'https://example.invalid' }] });
+    nativeMock.mockImplementationOnce(async () => { accountKey.mockImplementation(async (key: string) => `${key}:other`); });
+    await expect(saveCurrentWindow({ windowId: 22, name: 'Account switch', status: 'active', closeAfterSave: true })).rejects.toThrow('账号已变化');
+    expect(browserMock.windows.remove).not.toHaveBeenCalled();
   });
 
   it('updates the bound workspace instead of creating a new identity on a normal save', async () => {

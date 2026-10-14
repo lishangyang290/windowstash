@@ -2,6 +2,7 @@ import { accountStorageKey } from './accountScope';
 import { browser } from 'wxt/browser';
 import { STORAGE_KEYS } from '@/lib/constants';
 import type { DeleteTombstone } from '@/types/workspace';
+import { persistLibraryChange } from '@/lib/companion/workspaces';
 
 type TombstoneMap = Record<string, DeleteTombstone>;
 let writes = Promise.resolve();
@@ -31,7 +32,7 @@ export const tombstoneRepository = {
     await write(storageKey, async () => {
       const items = await read(storageKey);
       items[tombstone.workspaceId] = tombstone;
-      await browser.storage.local.set({ [storageKey]: items });
+      await persistLibraryChange(storageKey.replace(/^deleteTombstones/, 'workspaces'), { [storageKey]: items });
     });
   },
   async remove(id: string, requestedKey?: string): Promise<void> {
@@ -39,7 +40,7 @@ export const tombstoneRepository = {
     await write(storageKey, async () => {
       const items = await read(storageKey);
       delete items[id];
-      await browser.storage.local.set({ [storageKey]: items });
+      await persistLibraryChange(storageKey.replace(/^deleteTombstones/, 'workspaces'), { [storageKey]: items });
     });
   },
 };

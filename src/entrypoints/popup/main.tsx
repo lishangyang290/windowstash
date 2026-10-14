@@ -272,10 +272,10 @@ function Popup({ accountKey, initial }: { accountKey: string; initial: PopupSnap
       setSavePhase('idle');
       setSaveAction(null);
       setSuccess('已保存');
-    } catch {
+    } catch (reason) {
       setSavePhase('idle');
       setSaveAction(null);
-      setError('保存失败，请重试');
+      setError(reason instanceof Error ? reason.message : '保存失败，请重试');
     }
   }
 

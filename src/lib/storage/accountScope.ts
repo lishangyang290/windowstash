@@ -1,6 +1,7 @@
 import { authLink, nativeAuth } from '@/lib/companion/auth';
 import { browser } from 'wxt/browser';
 import { STORAGE_KEYS } from '@/lib/constants';
+import { persistLibraryChange } from '@/lib/companion/workspaces';
 const OWNER = 'windowstash-data-owner:v1';
 const REVISION = 'windowstash-data-revision:v1';
 const MIGRATED = 'windowstash-data-migrated:v1';
@@ -86,7 +87,7 @@ async function select(url: string, userId: string, migrate = false, recoverUnown
         : { ...(legacy as object), ...(existing as object | undefined) };
     }
     if (Object.keys(preserved).length || !state[MIGRATED] || state[OWNER] !== owner) {
-      await browser.storage.local.set({ ...preserved, [MIGRATED]: owner, [OWNER]: owner, ...(state[OWNER] !== owner ? { [REVISION]: crypto.randomUUID() } : {}) });
+      await persistLibraryChange(`${STORAGE_KEYS.workspaces}:${owner}`, { ...preserved, [MIGRATED]: owner, [OWNER]: owner, ...(state[OWNER] !== owner ? { [REVISION]: crypto.randomUUID() } : {}) });
     }
   } else if (state[OWNER] !== owner) await browser.storage.local.set({ [OWNER]: owner, [REVISION]: crypto.randomUUID() });
   if (recoverUnowned) {
@@ -101,7 +102,7 @@ async function select(url: string, userId: string, migrate = false, recoverUnown
           ? [...(existing as unknown[] ?? []), ...(source as unknown[])]
           : { ...(source as object), ...(existing as object ?? {}) };
       }
-      if (Object.keys(copies).length) await browser.storage.local.set({ ...copies, [RECOVERED]: owner });
+      if (Object.keys(copies).length) await persistLibraryChange(`${STORAGE_KEYS.workspaces}:${owner}`, { ...copies, [RECOVERED]: owner });
     }
   }
   const legacyOwner = state[MIGRATED] ?? (migrate ? owner : null);

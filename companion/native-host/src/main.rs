@@ -32,7 +32,10 @@ fn run() -> windowstash_native_host::Result<()> {
     }
     let bytes = read_frame(&mut io::stdin()).map_err(|_| "trusted_bootstrap_unavailable")?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|_| "invalid_request")?;
-    let response = if value.get("type").and_then(|v| v.as_str()) == Some("auth") {
+    let response = if value.get("type").and_then(|v| v.as_str()) == Some("workspaces") {
+        let request = serde_json::from_value(value).map_err(|_| "invalid_workspace_request")?;
+        windowstash_native_host::workspaces::dispatch(&bridge::directory()?, &origin, request)?
+    } else if value.get("type").and_then(|v| v.as_str()) == Some("auth") {
         let request = serde_json::from_value(value).map_err(|_| "invalid_auth_request")?;
         windowstash_native_host::auth::dispatch(&bridge::directory()?, &origin, request)?
     } else {

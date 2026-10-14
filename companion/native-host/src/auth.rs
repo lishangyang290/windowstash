@@ -150,6 +150,32 @@ fn load(root: &Path, instance: &str) -> Result<Option<Grant>, &'static str> {
         Err(_) => Err("auth_store_unavailable"),
     }
 }
+/// Local data authorization never refreshes a token or contacts Supabase.
+pub fn with_local_grant<T>(root: &Path, origin: &str, instance: &str, capability: &str, task: impl FnOnce(&Grant) -> Result<T, &'static str>) -> Result<T, &'static str> {
+    if !valid_id(instance) || !crate::valid_origin(origin) { return Err("unauthorized_instance"); }
+    locked(root, || {
+        let grant = load(root, instance)?.ok_or("not_linked")?;
+        if grant.origin != origin || grant.capability != capability || grant.session.is_null() { return Err("unauthorized_instance"); }
+        task(&grant)
+    })
+}
+
+pub fn with_local_desktop<T>(root: &Path, route: &str, task: impl FnOnce(Option<&Grant>) -> Result<T, &'static str>) -> Result<T, &'static str> {
+    if !valid_id(route) { return Err("unauthorized_instance"); }
+    locked(root, || {
+        let mut selected = None;
+        for entry in fs::read_dir(root.join("accounts")).map_err(|_| "auth_store_unavailable")? {
+            let entry = entry.map_err(|_| "auth_store_unavailable")?;
+            if entry.path().extension().and_then(|e| e.to_str()) != Some("json") { continue; }
+            let grant: Grant = serde_json::from_slice(&fs::read(entry.path()).map_err(|_| "auth_store_unavailable")?).map_err(|_| "auth_store_corrupt")?;
+            if grant.route_id == route {
+                if selected.is_some() { return Err("ambiguous_account"); }
+                selected = Some(grant);
+            }
+        }
+        task(selected.as_ref().filter(|grant| !grant.session.is_null()))
+    })
+}
 fn locked<T>(
     root: &Path,
     task: impl FnOnce() -> Result<T, &'static str>,
