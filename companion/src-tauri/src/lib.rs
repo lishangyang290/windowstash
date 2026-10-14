@@ -131,7 +131,6 @@ async fn workspace_sync(instance: String, project: String, user: String, action:
 
 #[tauri::command]
 async fn confirm_browser_login(
-    app: tauri::AppHandle,
     instance_id: String,
     revision: u64,
     request: String,
@@ -153,9 +152,6 @@ async fn confirm_browser_login(
         }),
     )
     .map_err(str::to_string)?;
-    if completed {
-        display_popover(&app);
-    }
     Ok(())
 }
 
