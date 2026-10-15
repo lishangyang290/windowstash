@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { workspaceHash, type NativeLibrary } from '../../../shared/workspaceSync';
 const f = vi.hoisted(() => ({ grant: { instance_id: 'instance-A', login_request: 'login-A', config: { url: 'https://fixture.test' }, session: { user: { id: 'user-A' } } } as { instance_id: string; login_request: string; config: { url: string }; session: { user: { id: string } } } | null,
-  invoke: vi.fn(), rpc: vi.fn(), channel: vi.fn(), remove: vi.fn(), filters: [] as unknown[], ready: null as ((status: string) => void) | null, hint: null as (() => void) | null }));
+  invoke: vi.fn(), rpc: vi.fn(), channel: vi.fn(), remove: vi.fn(), filters: [] as unknown[], ready: null as ((status: string) => void) | null, hint: null as (() => void) | null,
+  system: null as ((payload: { extension: string; status: string }) => void) | null }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: f.invoke }));
 vi.mock('../lib/browserAuth', () => ({ currentBrowserGrant: () => f.grant, grantIdentity: (grant: NonNullable<typeof f.grant>) => JSON.stringify([grant.instance_id, grant.config.url, grant.session.user.id]) }));
 vi.mock('../lib/supabase', () => ({ getSupabaseClient: () => ({ rpc: f.rpc, channel: f.channel, removeChannel: f.remove }) }));
@@ -9,10 +10,15 @@ import { startWorkspaceSync } from './sync';
 const id = '11111111-1111-4111-8111-111111111111', stamp = '2026-10-14T00:00:00Z';
 let state: NativeLibrary;
 beforeEach(() => {
-  vi.clearAllMocks(); f.filters = []; f.hint = null; f.ready = null;
+  vi.clearAllMocks(); f.filters = []; f.hint = null; f.ready = null; f.system = null;
+  f.remove.mockResolvedValue('ok');
   f.grant = { instance_id: 'instance-A', login_request: 'login-A', config: { url: 'https://fixture.test' }, session: { user: { id: 'user-A' } } };
   state = { generation: 0, revision: 1, digest: 'fixture', records: {}, deleted: [], remote_deleted: {}, delete_ack: [], conflicts: {} };
-  const channel = { on: vi.fn((_event, filter, hint) => { f.filters.push(filter); f.hint = hint; return channel; }), subscribe: vi.fn(ready => { f.ready = ready; return channel; }) };
+  const channel = { on: vi.fn((event, filter, hint) => {
+    if (event === 'system') f.system = hint;
+    else { f.filters.push(filter); f.hint = hint; }
+    return channel;
+  }), subscribe: vi.fn(ready => { f.ready = ready; return channel; }) };
   f.channel.mockReturnValue(channel);
   let lease = '', parts = '';
   f.invoke.mockImplementation(async (_command, request) => {
@@ -38,8 +44,43 @@ describe('Companion independent cloud synchronization (mock RPC/native transport
     const sync = startWorkspaceSync()!;
     await vi.waitFor(() => expect(state.records[id]?.content.tabs).toEqual(content.tabs));
     expect(f.channel).toHaveBeenCalledOnce(); expect(f.filters).toHaveLength(3);
+    expect(f.channel).toHaveBeenCalledWith(expect.stringMatching(/^windowstash-sync:user-A:/), {
+      config: { postgres_changes_options: { wait: true, timeout: 20_000 } },
+    });
     expect(f.filters).toContainEqual({ event: 'INSERT', schema: 'public', table: 'workspace_tombstones', filter: 'user_id=eq.user-A' });
     sync.stop(); expect(f.remove).toHaveBeenCalledOnce();
+  });
+  it('calibrates changes missed before database readiness and after replication recovery or wake', async () => {
+    let deleted = false;
+    const content = { id, name: 'Created in subscription gap', status: 'active' as const, tabs: [], activeTabIndex: 0, createdAt: stamp, updatedAt: stamp };
+    const row = { ...content, active_tab_index: 0, created_at: stamp, updated_at: stamp, content_hash: await workspaceHash(content), user_id: 'user-A' };
+    let records: unknown[] = [];
+    f.rpc.mockImplementation(() => ({ abortSignal: async () => ({ error: null, data: {
+      protocol: 1, user_id: 'user-A', records,
+      deleted: deleted ? [{ workspace_id: id, user_id: 'user-A', deleted_at: stamp }] : [],
+    } }) }));
+    const sync = startWorkspaceSync()!;
+    await vi.waitFor(() => expect(f.invoke.mock.calls.some(([, request]) => request.action === 'release')).toBe(true));
+    expect(state.records[id]).toBeUndefined();
+    // Startup snapshot completed, but the replication subscription was not yet active.
+    // Simulate an older server's early channel join; a later database-ready signal
+    // must still cause a new snapshot, even when no row event was received.
+    f.ready!('SUBSCRIBED');
+    await vi.waitFor(() => expect(f.rpc.mock.calls).toHaveLength(2));
+    records = [row]; f.system!({ extension: 'postgres_changes', status: 'ok' });
+    await vi.waitFor(() => expect(state.records[id]?.content.name).toBe(content.name));
+    // Channel stays joined while server replication recovers; no row hint was delivered.
+    records = []; deleted = true;
+    f.system!({ extension: 'postgres_changes', status: 'ok' });
+    await vi.waitFor(() => expect(state.remote_deleted[id]).toBe(stamp));
+    expect(state.records[id]).toBeUndefined();
+    // Existing online/resume handling requests a snapshot even before reconnect finishes.
+    sync.kick();
+    await vi.waitFor(() => expect(f.rpc.mock.calls.length).toBeGreaterThanOrEqual(5));
+    sync.stop();
+    const calls = f.rpc.mock.calls.length;
+    f.ready!('SUBSCRIBED'); f.system!({ extension: 'postgres_changes', status: 'ok' }); f.hint!();
+    await Promise.resolve(); expect(f.rpc.mock.calls).toHaveLength(calls);
   });
   it('uploads a durable pending record without calling any Chrome API', async () => {
     const content = { id, name: 'Pending after Chrome exit', status: 'active' as const, tabs: [], activeTabIndex: 0, createdAt: stamp, updatedAt: stamp };
