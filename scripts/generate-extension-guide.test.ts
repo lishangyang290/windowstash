@@ -2,7 +2,10 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { describe, expect, it, vi } from 'vitest';
-import { applySetupResources, externalizeGuideScript } from './generate-extension-guide';
+import { applySetupResources, externalizeGuideScript, generateExtensionGuide } from './generate-extension-guide';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 describe('externalizeGuideScript', () => {
   it('moves the guide JavaScript into an external file', () => {
@@ -88,4 +91,22 @@ it('keeps the standalone guide SQL and project settings aligned with shared setu
   expect(applySetupResources(source, schema)).toBe(source);
   const stale = source.replace('create extension if not exists pgcrypto;', 'outdated SQL');
   expect(applySetupResources(stale, schema)).toBe(source);
+});
+
+it('ships the complete initialization and separate upgrade instructions through both guide entrances', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'windowstash-guide-'));
+  try {
+    const source = await readFile('public/开始使用.html', 'utf8');
+    await generateExtensionGuide('public/开始使用.html', directory);
+    const generated = await readFile(join(directory, '开始使用.html'), 'utf8');
+    const schema = await readFile('supabase/schema.sql', 'utf8');
+    for (const html of [source, generated]) {
+      const { document } = parseHTML(html);
+      expect(document.querySelector('#schema-code')?.textContent).toBe(schema.trimEnd());
+      expect(document.body.textContent).toContain('20261014_workspace_sync_v1.sql');
+      expect(document.body.textContent).toContain('verify_workspace_sync_v1.sql');
+      expect(document.body.textContent).toContain('不要重新初始化项目');
+    }
+    expect(generated).toBe(externalizeGuideScript(source).html);
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });

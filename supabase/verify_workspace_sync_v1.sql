@@ -1,5 +1,6 @@
--- Read-only post-migration checks. Run only in the dedicated TEST project.
+-- Read-only post-initialization/upgrade checks, including production after approval.
 -- Every result must be true; this does not replace behavioral/API tests.
+begin read only;
 with functions as (
   select p.*, pg_catalog.pg_get_functiondef(p.oid) as definition
   from pg_catalog.pg_proc p
@@ -70,9 +71,13 @@ select 'realtime_tables', count(*) = 2 from pg_catalog.pg_publication_tables
 where pubname = 'supabase_realtime' and schemaname = 'public'
   and tablename in ('workspaces', 'workspace_tombstones')
 union all
+select 'realtime_events', count(*) = 1 and bool_and(pubinsert and pubupdate)
+from pg_catalog.pg_publication where pubname = 'supabase_realtime'
+union all
 select 'required_indexes', count(*) = 5 from pg_catalog.pg_indexes
 where schemaname = 'public' and indexname in (
   'workspaces_pkey', 'workspaces_user_id_idx', 'workspaces_updated_at_idx',
   'workspace_tombstones_pkey', 'workspace_tombstones_user_idx'
 )
 order by check_name;
+commit;

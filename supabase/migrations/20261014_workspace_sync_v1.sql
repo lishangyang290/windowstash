@@ -50,6 +50,10 @@ begin
   return NEW;
 end $$;
 
+drop trigger if exists workspaces_set_updated_at on public.workspaces;
+create trigger workspaces_set_updated_at before update on public.workspaces
+for each row execute function public.set_updated_at();
+
 create or replace function public.windowstash_snapshot_v1()
 returns jsonb language sql stable security invoker set search_path = '' as $$
 select jsonb_build_object('protocol', 1, 'user_id', auth.uid(),
@@ -111,7 +115,13 @@ grant execute on function public.windowstash_snapshot_v1(), public.windowstash_p
 -- Publish INSERT/UPDATE signals, including tombstone INSERTs. Clients never trust DELETE payloads.
 do $$
 begin
-  if exists(select 1 from pg_catalog.pg_publication where pubname = 'supabase_realtime') then
+  if not exists(select 1 from pg_catalog.pg_publication where pubname = 'supabase_realtime') then
+    create publication supabase_realtime;
+  end if;
+  if exists(select 1 from pg_catalog.pg_publication where pubname = 'supabase_realtime' and (not pubinsert or not pubupdate)) then
+    raise exception 'supabase_realtime must publish INSERT and UPDATE; review publication settings before retrying';
+  end if;
+  if not exists(select 1 from pg_catalog.pg_publication where pubname = 'supabase_realtime' and puballtables) then
     if not exists(select 1 from pg_catalog.pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='workspaces') then
       alter publication supabase_realtime add table public.workspaces;
     end if;

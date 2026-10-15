@@ -170,6 +170,40 @@ describe('runtime Supabase client', () => {
     const { friendlySupabaseError } = await import('../client');
     expect(friendlySupabaseError({ code: '42P01', message: 'relation workspaces does not exist' })).toEqual(expect.objectContaining({ message: expect.stringContaining('开始使用.html') }));
   });
+it.each([true, false])('keeps test queues and unowned backups out of production when the previous session exists: %s', async (hasSession) => {
+  const { workspaceRepository } = await import('@/lib/storage/workspaceRepository');
+  const { accountOwner, selectDataAccount, initializeDataAccount } = await import('@/lib/storage/accountScope');
+  const { saveSupabaseConfig } = await import('../client');
+  const test = { url: 'https://test-project.supabase.co', publishableKey: 'test-fixture' };
+  const production = { url: 'https://production-project.supabase.co', publishableKey: 'production-fixture' };
+  const content = { id: 'same-id', name: 'Test pending', tabs: [], status: 'active' as const, activeTabIndex: 0, createdAt: '2026-01-01', updatedAt: '2026-01-01' };
+  const testScope = `workspaces:${accountOwner(test.url, 'same-user')}`;
+  const productionScope = `workspaces:${accountOwner(production.url, 'same-user')}`;
+  mocks.storage.set('supabaseConfig', test);
+  mocks.storage.set('windowstash-auth:sb-test-project-auth-token', JSON.stringify({ user: { id: 'same-user' } }));
+  await selectDataAccount(test.url, 'same-user');
+  const pending = await workspaceRepository.saveContent(content);
+  const legacy = { legacy: { ...pending, content: { ...content, id: 'legacy' } } };
+  const unowned = { unowned: { ...pending, content: { ...content, id: 'unowned' } } };
+  mocks.storage.set('workspaces', legacy);
+  mocks.storage.set('workspaces:signed-out', unowned);
+  mocks.storage.set('deleteTombstones:signed-out', { deleted: { workspaceId: 'same-id', deletedAt: '2026-01-01' } });
+  mocks.storage.set(productionScope, { [content.id]: { ...pending, accountStorageKey: productionScope, content: { ...content, name: 'Production original' } } });
+  const original = structuredClone(mocks.storage.get(productionScope));
+  if (!hasSession) mocks.storage.delete('windowstash-auth:sb-test-project-auth-token');
+  await saveSupabaseConfig(production);
+  mocks.storage.set('windowstash-auth:sb-production-project-auth-token', JSON.stringify({ user: { id: 'same-user' } }));
+  await initializeDataAccount(production.url, 'same-user');
+  await selectDataAccount(production.url, 'same-user');
+  expect((await workspaceRepository.list()).map(record => record.content.name)).toEqual(['Production original']);
+  expect(mocks.storage.get(productionScope)).toEqual(original);
+  expect(mocks.storage.get(testScope)).toHaveProperty(content.id);
+  expect(mocks.storage.get('workspaces')).toEqual(legacy);
+  expect(mocks.storage.get('workspaces:signed-out')).toEqual(unowned);
+  expect(mocks.storage.has(productionScope.replace(/^workspaces/, 'deleteTombstones'))).toBe(false);
+  expect(mocks.storage.get('windowstash-unowned-recovered:v1')).not.toBe(accountOwner(production.url, 'same-user'));
+});
+
 it('preserves pending workspaces through the actual project-save flow A → B → A', async () => {
   mocks.storage.clear();
   const { workspaceRepository } = await import('@/lib/storage/workspaceRepository');

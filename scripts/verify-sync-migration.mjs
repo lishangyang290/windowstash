@@ -31,6 +31,14 @@ export function checkMigration(sql) {
   assert(/expected_updated_at is not null then raise exception/.test(source), 'missing synced rows must not be recreated');
   assert(/workspace_deleted/.test(source) && /pg_advisory_xact_lock/.test(source));
   assert(/t\.user_id <> auth\.uid\(\)/.test(source) && /w\.user_id <> auth\.uid\(\)/.test(source), 'definer delete must check both owners');
+  assert(/greatest\(clock_timestamp\(\), OLD\.updated_at \+ interval '1 microsecond'\)/.test(source), 'timestamps must stay monotonic');
+  assert(/create trigger workspaces_set_updated_at before update on public\.workspaces\s+for each row execute function public\.set_updated_at\(\)/.test(source), 'timestamp trigger must be installed');
+  assert(/if not exists\([^;]*pubname = 'supabase_realtime'\) then\s+create publication supabase_realtime;/.test(source), 'missing publication must not be silently skipped');
+  assert(/not pubinsert or not pubupdate/.test(source) && /raise exception 'supabase_realtime must publish INSERT and UPDATE/.test(source), 'incompatible publication must fail atomically');
+  assert(/puballtables/.test(source), 'all-tables publications must not receive duplicate table membership');
+  for (const table of ['workspaces', 'workspace_tombstones']) {
+    assert(new RegExp(`if not exists\\([^;]*tablename='${table}'\\) then\\s+alter publication supabase_realtime add table public\\.${table};`).test(source), `missing idempotent publication membership: ${table}`);
+  }
   return true;
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

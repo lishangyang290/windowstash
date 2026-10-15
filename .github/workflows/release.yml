@@ -90,6 +90,7 @@ jobs:
           npm run lint -- --ignore-pattern 'companion/**'
           npm test -- --exclude 'companion/**'
           npm run test:release
+          node --test scripts/sync-migration-tests.mjs
           npm run typecheck
           npm run build
       - name: Validate Companion frontend
