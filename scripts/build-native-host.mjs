@@ -3,6 +3,7 @@ import { chmod, copyFile, mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, URL } from 'node:url';
 import { homedir } from 'node:os';
+import { nativeHostTarget as target, nativeHostBinary as source } from './native-host-paths.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 function run(program, args, options = {}) {
@@ -11,19 +12,14 @@ function run(program, args, options = {}) {
   if (result.status !== 0) throw new Error(`${program} failed: ${result.stderr ?? ''}`);
   return result.stdout;
 }
-const requestedTarget = process.env.TAURI_ENV_TARGET_TRIPLE;
-const target = requestedTarget || run('rustc', ['-vV']).match(/^host: (.+)$/m)?.[1];
-if (!target) throw new Error('无法识别 Rust 构建平台');
 const targetDirectory = resolve(root, 'companion/native-host/target');
-run('cargo', ['build', '--release', '--locked',
-  ...(requestedTarget ? ['--target', target] : []),
+run('cargo', ['build', '--release', '--locked', '--target', target,
   '--manifest-path', 'companion/native-host/Cargo.toml'], {
   stdio: 'inherit',
   env: { ...process.env, CARGO_TARGET_DIR: targetDirectory,
     RUSTFLAGS: `${process.env.RUSTFLAGS ?? ''} --remap-path-prefix=${homedir()}=/workspace` },
 });
-const suffix = process.platform === 'win32' ? '.exe' : '';
-const source = resolve(targetDirectory, `${requestedTarget ? `${target}/` : ''}release/windowstash-native-host${suffix}`);
+const suffix = target.includes('windows') ? '.exe' : '';
 for (const destination of [
   `companion/src-tauri/binaries/windowstash-native-host-${target}${suffix}`,
   `companion/src-tauri/target/debug/windowstash-native-host${suffix}`,

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Readable, Writable } from 'node:stream';
+import { spawnSync } from 'node:child_process';
 import { command, npmInvocation, parseRelease, validateInput, planFiles, applyFiles, restoreFiles, saveJournal, recoverPrepared, preflight, runChecks, publish } from './release-core.mjs';
 import { terminalUI, presentedCommand, workflowProgress, liveProgress } from './release-ui.mjs';
 import { inputLines, editRelease, showResult } from './release.mjs';
@@ -13,6 +14,20 @@ const root = resolve(import.meta.dirname, '..');
 const standard = '当前版本：v0.3.0\n目标版本：0.4.0\n\n更新内容：\n- 修复重启后关联丢失\n- 新增教程入口\n\nmain HEAD：\n56b8e2fe30517972e54cfe9a5ba4befd822f924c\n测试：\n224 项通过';
 const silent = new Writable({ write(chunk, encoding, done) { done(); } });
 const releaseAssets = () => ['macOS-arm64.zip', 'Windows-x64.zip', 'Windows-x64-setup.exe'].map((suffix) => ({ name: `WindowStash-v0.4.0-${suffix}`, size: 100, url: 'https://example.test/download.zip' }));
+
+for (const target of ['', 'aarch64-apple-darwin', 'x86_64-pc-windows-msvc']) {
+  test(`正式 Host 路径使用目标架构，避免读取默认目录中的旧程序：${target || '本机默认'}`, () => {
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e',
+      'import { nativeHostTarget, nativeHostBinary } from "./scripts/native-host-paths.mjs"; console.log(JSON.stringify({ target: nativeHostTarget, binary: nativeHostBinary }))'],
+    { cwd: root, encoding: 'utf8', env: { ...process.env, TAURI_ENV_TARGET_TRIPLE: target } });
+    assert.equal(result.status, 0, result.stderr);
+    const actual = JSON.parse(result.stdout);
+    const expected = target || spawnSync('rustc', ['-vV'], { encoding: 'utf8' }).stdout.match(/^host: (.+)$/m)?.[1];
+    assert.ok(expected);
+    assert.equal(actual.target, expected);
+    assert.equal(actual.binary, resolve(root, 'companion/native-host/target', expected, 'release', `windowstash-native-host${expected.includes('windows') ? '.exe' : ''}`));
+  });
+}
 
 async function processMock(directory, hash, scenario = '') {
   // Mock only child processes in the isolated fixture, identically on both OSes.
