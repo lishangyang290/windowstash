@@ -68,6 +68,8 @@ async function weakHint(window: Browser.windows.Window) {
     } });
   } catch {
     // The icon belongs to this tab/window; no permission escalation or global notification.
+    await browser.action.setBadgeBackgroundColor({ tabId: tab.id, color: '#FBBF24' }).catch(() => undefined);
+    await browser.action.setBadgeTextColor({ tabId: tab.id, color: '#212224' }).catch(() => undefined);
     await browser.action.setBadgeText({ tabId: tab.id, text: '!' }).catch(() => undefined);
     await browser.action.setTitle({ tabId: tab.id, title: '工作区已在其他设备删除\n当前窗口及标签页不会受到影响。' }).catch(() => undefined);
     setTimeout(() => { void browser.action.setBadgeText({ tabId: tab.id!, text: '' }).catch(() => undefined); }, 5_000);

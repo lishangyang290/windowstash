@@ -10,7 +10,7 @@ vi.mock('wxt/browser', () => {
   });
   return { browser: { storage: { local: store(f.local), session: store(f.session) },
     windows: { getAll: async () => structuredClone(f.windows), get: async (id: number) => structuredClone(f.windows.find(w => w.id === id)), remove: f.removeWindow },
-    tabs: { remove: f.removeTab }, action: { setBadgeText: f.badge, setTitle: f.title }, permissions: { contains: f.permission }, scripting: { executeScript: f.inject } } };
+    tabs: { remove: f.removeTab }, action: { setBadgeBackgroundColor: vi.fn().mockResolvedValue(undefined), setBadgeTextColor: vi.fn().mockResolvedValue(undefined), setBadgeText: f.badge, setTitle: f.title }, permissions: { contains: f.permission }, scripting: { executeScript: f.inject } } };
 });
 vi.mock('@/lib/storage/accountScope', () => ({ requireDataAccount: async (scope: string) => { if (scope !== f.active) throw new Error('account changed'); return { storageKey: scope }; }, withDataAccount: async (_account: unknown, task: () => Promise<unknown>) => task() }));
 import { bindingRepository } from '@/lib/storage/bindingRepository';
