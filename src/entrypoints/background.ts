@@ -1,3 +1,4 @@
+import { initializeDiagnostics } from '@/lib/storage/diagnostics';
 import { requireDataAccount } from '@/lib/storage/accountScope';
 import { accountStorageKey } from '@/lib/storage/accountScope';
 import { isLibraryChange, libraryScope, publishNativeWorkspaces } from '@/lib/companion/workspaces';
@@ -33,6 +34,7 @@ import {
 } from '@/features/workspaces/windowAssociation';
 
 export default defineBackground(() => {
+  initializeDiagnostics();
   const LOCAL_LIBRARY_ALARM = 'windowstash-local-library-retry';
   const synchronize = () => syncEngine.syncAll().catch(() => schedulePendingSync(5 * 60_000));
   const publishLocal = (scope: string, force = false) => publishNativeWorkspaces(scope, force)

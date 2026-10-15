@@ -1,10 +1,10 @@
 //! Durable, account-scoped local projection. No network and no credentials in replies.
 use crate::{auth::{self, Grant}, bridge, hex, Result};
-use fs2::FileExt;
+use crate::diagnostics;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::{collections::{BTreeMap, BTreeSet}, fs::{self, OpenOptions}, path::{Path, PathBuf}};
+use std::{collections::{BTreeMap, BTreeSet}, fs::{self}, path::{Path, PathBuf}};
 
 const MAX_BYTES: usize = 8 * 1024 * 1024;
 const CHUNK_BYTES: usize = 16_384;
@@ -14,6 +14,8 @@ const CHUNK_BYTES: usize = 16_384;
 pub struct Request {
     version: u8, r#type: String, instance_id: String, capability: String,
     project_url: String, user_id: String, revision: u64, chunks: usize, index: usize, part: String,
+    #[serde(default)] diagnostic: Value,
+    #[serde(default)] diagnostic_operations: BTreeMap<String, Value>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -52,6 +54,7 @@ struct Library {
     #[serde(default)] remote_deleted: BTreeMap<String, String>,
     #[serde(default)] delete_ack: BTreeSet<String>,
     #[serde(default)] conflicts: BTreeMap<String, Vec<Record>>,
+    #[serde(default, skip_serializing_if="BTreeMap::is_empty")] diagnostics: BTreeMap<String, Value>,
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -129,8 +132,7 @@ pub fn dispatch(root: &Path, origin: &str, request: Request) -> Result<Value> {
         let directory = location(root, grant)?;
         private_directory(&root.join("workspace-library"))?;
         private_directory(&directory)?;
-        let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(directory.join("lock")).map_err(|_| "local_store_unavailable")?;
-        lock.lock_exclusive().map_err(|_| "local_store_unavailable")?;
+        let _lock = diagnostics::ObservedLock::acquire(&directory, &request.diagnostic)?;
         let mut library = read_library(&directory)?;
         if request.revision < library.revision { return Err("stale_workspace_revision"); }
         let stage_path = directory.join("stage.json");
@@ -195,11 +197,18 @@ pub fn dispatch(root: &Path, origin: &str, request: Request) -> Result<Value> {
             }
         }
         library.records.retain(|id, _| !library.deleted.contains(id));
+        for (id, trace) in &request.diagnostic_operations {
+            if valid_workspace_id(id) && diagnostics::valid_id(trace["operationId"].as_str().unwrap_or("")) && request.diagnostic_operations.len() <= 64 {
+                library.diagnostics.insert(id.clone(), json!({"operationId":trace["operationId"], "parentEventId":trace["parentEventId"], "trigger":"native-change"}));
+            }
+        }
+        while library.diagnostics.len() > 1024 { library.diagnostics.pop_first(); }
         library.revision = request.revision;
         library.digest = digest;
         library.generation = library.generation.checked_add(1).filter(|g| *g <= 9_007_199_254_740_991).ok_or("workspace_revision_exhausted")?;
         if serde_json::to_vec(&library).map_err(|_| "local_store_unavailable")?.len() > MAX_BYTES * 2 { return Err("local_store_full"); }
         write(&directory.join("library.json"), &library)?;
+        diagnostics::append(&directory, &diagnostics::event("native.persisted", &request.diagnostic, "success", None, json!({"revision":library.revision,"generation":library.generation})));
         write(&root.join("workspace-library").join("change.json"), &bridge::random_id())?;
         // Staging is disposable; failure to remove it does not undo the committed library.
         let _ = fs::remove_file(stage_path);
@@ -209,6 +218,7 @@ pub fn dispatch(root: &Path, origin: &str, request: Request) -> Result<Value> {
 }
 
 pub fn desktop(root: &Path, route: &str) -> Result<Value> {
+    let _context = diagnostics::desktop_context();
     auth::with_local_desktop(root, route, |grant| {
         let Some(grant) = grant else { return Ok(Value::Null); };
         let library = read_library(&location(root, grant)?)?;
@@ -254,6 +264,7 @@ pub struct SyncRequest {
     #[serde(default)] index: usize,
     #[serde(default)] chunks: usize,
     #[serde(default)] part: String,
+    #[serde(default)] diagnostic: Value,
 }
 #[derive(Serialize, Deserialize)]
 struct Lease { token: String, login_request: String, expires_at: u64 }
@@ -263,11 +274,12 @@ pub fn sync(root: &Path, origin: &str, request: SyncRequest) -> Result<Value> {
         || (request.r#type == "workspace_watch" && request.action != "signal") { return Err("invalid_workspace_request"); }
     auth::with_local_grant(root, origin, &request.instance_id, &request.capability, |grant| {
         if request.project_url != grant.config.url || request.user_id != user_id(grant)? { return Err("wrong_account"); }
-        sync_action(root, grant, &request.action, json!({"token":request.token,"generation":request.generation,"index":request.index,"chunks":request.chunks,"part":request.part}))
+        sync_action(root, grant, &request.action, json!({"token":request.token,"generation":request.generation,"index":request.index,"chunks":request.chunks,"part":request.part,"diagnostic":request.diagnostic}))
     })
 }
 
 pub fn desktop_sync(root: &Path, route: &str, instance: &str, project: &str, user: &str, action: &str, payload: Value) -> Result<Value> {
+    let _context = diagnostics::desktop_context();
     auth::with_local_desktop(root, route, |grant| {
         let grant = grant.ok_or("authorization_required")?;
         if grant.instance_id != instance || grant.config.url != project || user_id(grant)? != user { return Err("wrong_account"); }
@@ -275,12 +287,36 @@ pub fn desktop_sync(root: &Path, route: &str, instance: &str, project: &str, use
     })
 }
 
+pub fn desktop_diagnostics(root: &Path, route: &str, instance: &str, project: &str, user: &str, entries: Vec<Value>) -> Result<Value> {
+    auth::with_local_desktop(root, route, |grant| {
+        let grant = grant.ok_or("authorization_required")?;
+        if grant.instance_id != instance || grant.config.url != project || user_id(grant)? != user { return Err("wrong_account"); }
+        let directory = location(root, grant)?;
+        private_directory(&root.join("workspace-library"))?; private_directory(&directory)?;
+        let reading = entries.is_empty();
+        let mut dropped = 0;
+        if entries.len() > 128 { return Err("invalid_workspace_request"); }
+        for entry in entries {
+            if let Some(safe) = diagnostics::sanitize_frontend(entry) { if !diagnostics::append(&directory, &safe) { dropped += 1; } }
+            else { dropped += 1; }
+        }
+        Ok(json!({"events":if reading {diagnostics::read(&directory)?} else {Vec::new()}, "dropped":dropped, "nativeDropped":diagnostics::dropped()}))
+    })
+}
+
 fn sync_action(root: &Path, grant: &Grant, action: &str, payload: Value) -> Result<Value> {
     let directory = location(root, grant)?;
     private_directory(&root.join("workspace-library"))?;
     private_directory(&directory)?;
-    let lock = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(directory.join("lock")).map_err(|_| "local_store_unavailable")?;
-    lock.lock_exclusive().map_err(|_| "local_store_unavailable")?;
+    if action == "diagnostics" {
+        let events = diagnostics::read(&directory)?;
+        let index = payload["index"].as_u64().unwrap_or(0) as usize;
+        if index > 400 { return Err("invalid_workspace_request"); }
+        let chunks = events.len().div_ceil(8).max(1);
+        return Ok(json!({"status":"diagnostics","index":index,"chunks":chunks,"events":events.into_iter().skip(index*8).take(8).collect::<Vec<_>>()}));
+    }
+    let trace = payload["diagnostic"].clone();
+    let _lock = diagnostics::ObservedLock::acquire(&directory, &trace)?;
     let mut library = read_library(&directory)?;
     if action == "signal" { return Ok(json!({"status":"changed","generation":library.generation})); }
     if action == "read" {
@@ -297,13 +333,17 @@ fn sync_action(root: &Path, grant: &Grant, action: &str, payload: Value) -> Resu
     let token = payload["token"].as_str().unwrap_or("");
     let current = lease.as_ref().is_some_and(|l| l.expires_at > bridge::now() && l.login_request == grant.login_request);
     if action == "acquire" {
-        if current { return Ok(json!({"status":"busy"})); }
+        if current {
+            diagnostics::append(&directory, &diagnostics::event("lease.busy", &trace, "waiting", None, json!({"leaseRemainingMs":lease.as_ref().map(|l|l.expires_at.saturating_sub(bridge::now())*1000)})));
+            return Ok(json!({"status":"busy"}));
+        }
+        diagnostics::append(&directory, &diagnostics::event("lease.acquired", &trace, "success", None, json!({"reason":if lease.is_some() {"retry"} else {"startup"}})));
         let next = Lease { token: bridge::random_id(), login_request: grant.login_request.clone(), expires_at: bridge::now()+60 };
         write(&lease_path, &next)?;
         return Ok(json!({"status":"acquired","token":next.token}));
     }
     if !current || lease.as_ref().is_none_or(|l| l.token != token) { return Err("sync_lease_expired"); }
-    if action == "release" { fs::remove_file(lease_path).map_err(|_| "local_store_unavailable")?; return Ok(json!({"status":"released"})); }
+    if action == "release" { fs::remove_file(lease_path).map_err(|_| "local_store_unavailable")?; diagnostics::append(&directory, &diagnostics::event("lease.released", &trace, "success", None, json!({}))); return Ok(json!({"status":"released"})); }
     if action == "renew" {
         let active = lease.as_mut().ok_or("sync_lease_expired")?;
         active.expires_at = bridge::now()+60; write(&lease_path, active)?;
@@ -335,6 +375,7 @@ fn sync_action(root: &Path, grant: &Grant, action: &str, payload: Value) -> Resu
         || next.remote_deleted.keys().any(|id| !next.deleted.contains(id)) || !next.delete_ack.is_subset(&next.deleted) {
         return Err("invalid_workspace_snapshot");
     }
+    next.diagnostics = library.diagnostics.clone();
     // Preserve conflict versions even if a caller forgot them, and back up unsent remote deletions.
     for (id, records) in &library.conflicts { for record in records { remember_conflict(&mut next.conflicts, id, record)?; } }
     for (id, record) in &library.records {
@@ -344,6 +385,7 @@ fn sync_action(root: &Path, grant: &Grant, action: &str, payload: Value) -> Resu
     if serde_json::to_vec(&next).map_err(|_| "local_store_unavailable")?.len() > MAX_BYTES*2 { return Err("local_store_full"); }
     std::mem::swap(&mut library, &mut next);
     write(&directory.join("library.json"), &library)?;
+    diagnostics::append(&directory, &diagnostics::event("native.persisted", &trace, "success", None, json!({"revision":library.revision,"generation":library.generation})));
     write(&root.join("workspace-library").join("change.json"), &bridge::random_id())?;
     let _ = fs::remove_file(stage_path);
     Ok(json!({"status":"persisted","generation":library.generation}))
@@ -374,7 +416,7 @@ mod tests {
         let chunks = bytes.len().div_ceil(CHUNK_BYTES);
         bytes.chunks(CHUNK_BYTES).enumerate().map(|(index, part)| Request {
             version: 1, r#type: "workspaces".into(), instance_id: "a".repeat(64), capability: "c".repeat(64),
-            project_url: "https://fixture.supabase.co".into(), user_id: "user-A".into(), revision, chunks, index, part: hex(part),
+            project_url: "https://fixture.supabase.co".into(), user_id: "user-A".into(), revision, chunks, index, part: hex(part), diagnostic:Value::Null, diagnostic_operations:BTreeMap::new(),
         }).collect()
     }
     fn publish(root: &Path, snapshot: Value, revision: u64) -> Result<Value> {
@@ -482,6 +524,36 @@ mod tests {
     }
     fn local_action(root: &Path, action: &str, payload: Value) -> Result<Value> {
         desktop_sync(root, &"b".repeat(64), &"a".repeat(64), "https://fixture.supabase.co", "user-A", action, payload)
+    }
+    #[test]
+    fn diagnostics_export_works_without_chrome_and_remains_account_authorized() {
+        let root = setup();
+        publish(root.path(), json!({"records":[record("PRIVATE CONTENT")],"deleted":[]}), 1).unwrap();
+        let read = || desktop_diagnostics(root.path(), &"b".repeat(64), &"a".repeat(64), "https://fixture.supabase.co", "user-A", vec![]);
+        let exported = read().unwrap();
+        assert!(!exported["events"].as_array().unwrap().is_empty());
+        assert!(!exported.to_string().contains("PRIVATE CONTENT"));
+        assert!(desktop_diagnostics(root.path(), &"b".repeat(64), &"a".repeat(64), "https://fixture.supabase.co", "user-B", vec![]).is_err());
+        let path = root.path().join("accounts").join(format!("{}.json", "a".repeat(64)));
+        let mut grant: Grant = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap(); grant.session = Value::Null;
+        bridge::write_json(&path, &grant).unwrap(); assert!(read().is_err());
+    }
+    #[test]
+    fn abandoned_process_lease_recovery_is_observed_without_losing_pending_deletion() {
+        let root = setup();
+        publish(root.path(), json!({"records":[],"deleted":[ID]}), 1).unwrap();
+        local_action(root.path(), "acquire", json!({})).unwrap();
+        // Simulate a process dying without release, then lease expiry in the isolated fixture.
+        auth::with_local_desktop(root.path(), &"b".repeat(64), |grant| {
+            let directory = location(root.path(), grant.unwrap())?;
+            let path = directory.join("sync-lease.json");
+            let mut lease: Lease = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap(); lease.expires_at = 0;
+            write(&path, &lease)
+        }).unwrap();
+        assert_eq!(local_action(root.path(), "acquire", json!({})).unwrap()["status"], "acquired");
+        assert_eq!(full_library(root.path())["deleted"], json!([ID]));
+        let result = desktop_diagnostics(root.path(), &"b".repeat(64), &"a".repeat(64), "https://fixture.supabase.co", "user-A", vec![]).unwrap();
+        assert!(result["events"].as_array().unwrap().iter().any(|e|e["event"]=="lease.acquired" && e["state"]["reason"]=="retry"));
     }
     fn full_library(root: &Path) -> Value {
         let reply = local_action(root, "read", json!({"index":0})).unwrap();

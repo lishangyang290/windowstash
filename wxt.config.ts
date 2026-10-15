@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { defineConfig } from 'wxt';
 import { resolve } from 'node:path';
 import { generateExtensionGuide } from './scripts/generate-extension-guide';
@@ -15,6 +16,7 @@ function supabaseHostPermissions(): string[] {
 
 export default defineConfig({
   srcDir: 'src',
+  vite: () => ({ define: { __WINDOWSTASH_BUILD_ID__: JSON.stringify(execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()) } }),
   modules: ['@wxt-dev/module-react'],
   manifestVersion: 3,
   manifest: ({ mode }) => ({

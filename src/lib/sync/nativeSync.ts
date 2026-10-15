@@ -7,6 +7,7 @@ import { nativeLibraryExchange, publishNativeWorkspaces } from '@/lib/companion/
 import { importNativeLibrary } from './nativeImport';
 import { syncCloud } from '../../../shared/syncCloud';
 import { synchronize, resolveSynchronizedConflict } from '../../../shared/workspaceSync';
+import { syncFailure, syncTrace } from '../../../shared/syncDiagnostics';
 
 /** Paired clients use the same native lease as Companion; standalone sync is unchanged. */
 async function nativeContext(scope: string) {
@@ -29,12 +30,21 @@ async function nativeContext(scope: string) {
   return { exchange, cloud: syncCloud(client), user };
 }
 export async function syncNative(scope: string): Promise<boolean> {
-  const context = await nativeContext(scope); if (!context) return false;
-  await synchronize(context.exchange, context.cloud, context.user);
-  await importNativeLibrary(scope, context.exchange);
-  // Keep the existing durable alarm retry mechanism when Chrome is the surviving process.
-  if (scope !== `workspaces:${(await browser.storage.local.get('windowstash-data-owner:v1'))['windowstash-data-owner:v1']}`) throw new Error('账号已变化');
-  return true;
+  const started = performance.now();
+  const trace = syncTrace('sync.start', { scope, source: 'src/lib/sync/nativeSync.ts:syncNative' });
+  try {
+    const context = await nativeContext(scope);
+    if (!context) { syncTrace('sync.skipped', { trace, scope, source: 'src/lib/sync/nativeSync.ts:syncNative', result: 'cancelled', changed: false, elapsedMs: performance.now() - started }); return false; }
+    await synchronize(context.exchange, context.cloud, context.user, trace);
+    await importNativeLibrary(scope, context.exchange);
+    // Keep the existing durable alarm retry mechanism when Chrome is the surviving process.
+    if (scope !== `workspaces:${(await browser.storage.local.get('windowstash-data-owner:v1'))['windowstash-data-owner:v1']}`) throw new Error('账号已变化');
+    syncTrace('sync.done', { trace, scope, source: 'src/lib/sync/nativeSync.ts:syncNative', elapsedMs: performance.now() - started });
+    return true;
+  } catch (error) {
+    syncTrace('sync.failed', { trace, scope, source: 'src/lib/sync/nativeSync.ts:syncNative', elapsedMs: performance.now() - started, failure: syncFailure(error) });
+    throw error;
+  }
 }
 export async function resolveNativeConflict(scope: string, id: string, choice: 'local' | 'cloud'): Promise<boolean> {
   const context = await nativeContext(scope); if (!context) return false;

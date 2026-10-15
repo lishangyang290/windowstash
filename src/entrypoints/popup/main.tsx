@@ -1,3 +1,4 @@
+import { initializeDiagnostics } from '@/lib/storage/diagnostics';
 import { accountOwner } from '@/lib/storage/accountScope';
 import React from 'react';
 import ReactDOM from 'react-dom/client';
@@ -571,3 +572,5 @@ export function PopupRoot() {
 startPopupPerformance();
 Object.defineProperty(window, 'windowstashPopupPerformance', { value: popupPerformanceSnapshot, configurable: true });
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><PopupRoot /></React.StrictMode>);
+
+initializeDiagnostics();

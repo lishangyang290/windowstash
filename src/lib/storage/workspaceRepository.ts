@@ -1,3 +1,5 @@
+import { syncTrace, traceContext } from '../../../shared/syncDiagnostics';
+import type { TraceContext } from '../../../shared/diagnostics';
 import { accountStorageKey } from './accountScope';
 import { browser } from 'wxt/browser';
 import { nextLocalExpiry, STORAGE_KEYS } from '@/lib/constants';
@@ -21,8 +23,8 @@ async function readMap(storageKey = STORAGE_KEYS.workspaces as string): Promise<
   return records;
 }
 
-async function writeMap(records: WorkspaceMap, storageKey: string): Promise<void> {
-  await persistLibraryChange(storageKey, { [storageKey]: records });
+async function writeMap(records: WorkspaceMap, storageKey: string, trace?: TraceContext): Promise<void> {
+  await persistLibraryChange(storageKey, { [storageKey]: records }, trace);
 }
 
 export const workspaceRepository = {
@@ -36,10 +38,11 @@ export const workspaceRepository = {
     return (await readMap(requestedKey ?? await accountStorageKey(STORAGE_KEYS.workspaces)))[id] ?? null;
   },
 
-  async saveContent(content: WorkspaceContent, requestedKey?: string): Promise<WorkspaceLocalRecord> {
+  async saveContent(content: WorkspaceContent, requestedKey?: string, diagnostic?: TraceContext): Promise<WorkspaceLocalRecord> {
     const storageKey = requestedKey ?? await accountStorageKey(STORAGE_KEYS.workspaces);
     return write(storageKey, async () => {
       if (await tombstoneRepository.has(content.id, storageKey.replace(/^workspaces/, STORAGE_KEYS.tombstones))) throw new Error('工作区已删除');
+      const trace = syncTrace('operation.start', { trace: { ...(diagnostic ?? traceContext()), workspace: content.id }, scope: storageKey, workspace: content.id, action: 'save', source: 'src/lib/storage/workspaceRepository.ts:saveContent' });
       const records = await readMap(storageKey);
       const previous = records[content.id];
       const record: WorkspaceLocalRecord = {
@@ -55,7 +58,8 @@ export const workspaceRepository = {
         },
       };
       records[content.id] = record;
-      await writeMap(records, storageKey);
+      await writeMap(records, storageKey, trace);
+      syncTrace('local.persisted', { trace, scope: storageKey, workspace: content.id, action: previous ? 'update' : 'save', before: previous?.content.tabs.length ?? 0, after: content.tabs.length, source: 'src/lib/storage/workspaceRepository.ts:saveContent' });
       return record;
     });
   },

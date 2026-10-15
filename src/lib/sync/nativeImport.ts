@@ -5,6 +5,7 @@ import { windowAssociationRepository } from '@/lib/storage/windowAssociationRepo
 import { notifyRemoteDeletion, restoreDeletionNotices } from '@/features/workspaces/remoteDeletion';
 import type { DeleteTombstone, WorkspaceLocalRecord } from '@/types/workspace';
 import { readLibrary, type LocalExchange } from '../../../shared/workspaceSync';
+import { syncTrace } from '../../../shared/syncDiagnostics';
 
 // Chrome storage and Rust serialize object fields in different orders.
 const serialized = (value: unknown) => JSON.stringify(value, (_key, item) =>
@@ -13,6 +14,8 @@ const serialized = (value: unknown) => JSON.stringify(value, (_key, item) =>
 
 let imports = Promise.resolve();
 export function importNativeLibrary(scope: string, exchange: LocalExchange): Promise<void> {
+  const started = performance.now();
+  const trace = syncTrace('native.import.start', { scope });
   const task = imports.then(async () => {
     const library = await readLibrary(exchange), account = await requireDataAccount(scope);
     await withDataAccount(account, async () => {
@@ -55,6 +58,7 @@ export function importNativeLibrary(scope: string, exchange: LocalExchange): Pro
       }
     });
     await withDataAccount(account, () => restoreDeletionNotices(scope));
+    syncTrace('native.import.done', { trace, scope, generation: library.generation, elapsedMs: performance.now() - started });
   });
-  imports = task.catch(() => undefined); return task;
+  imports = task.catch(() => { syncTrace('native.import.failed', { trace, scope, elapsedMs: performance.now() - started }); }); return task;
 }

@@ -30,7 +30,7 @@ async function log(
   message: string,
   storageKey?: string,
 ) {
-  await syncLogRepository.add({ workspaceId, workspaceName, action, result, message }, storageKey?.replace(/^workspaces/, STORAGE_KEYS.syncLogs));
+  void syncLogRepository.add({ workspaceId, workspaceName, action, result, message }, storageKey?.replace(/^workspaces/, STORAGE_KEYS.syncLogs));
 }
 
 async function markFailed(workspaceId: string, error: unknown, storageKey: string): Promise<void> {

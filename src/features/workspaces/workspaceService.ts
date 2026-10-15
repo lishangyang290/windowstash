@@ -9,6 +9,7 @@ import type { BackgroundMessage } from '@/types/messages';
 import type { StoredTab, WorkspaceContent, WorkspaceLocalRecord, WorkspaceStatus } from '@/types/workspace';
 import { syncEngine } from '@/lib/sync/syncEngine';
 import { schedulePendingSync } from '@/lib/sync/pendingSync';
+import { syncTrace, traceContext } from '../../../shared/syncDiagnostics';
 import { getNativeWorkspace, publishNativeWorkspaces, libraryStateKey, NativeWorkspaceDeletedError } from '@/lib/companion/workspaces';
 import { pullNativeLibrary } from '@/lib/sync/nativeWatch';
 import { matchWorkspace, MIN_CANDIDATE_GAP, scoreWorkspaceMatch, type MatchableTab } from './workspaceMatcher';
@@ -38,7 +39,7 @@ async function recordLog(
   message: string,
   storageKey?: string,
 ) {
-  await syncLogRepository.add({ workspaceId, workspaceName, action, result, message }, storageKey?.replace(/^workspaces/, STORAGE_KEYS.syncLogs));
+  void syncLogRepository.add({ workspaceId, workspaceName, action, result, message }, storageKey?.replace(/^workspaces/, STORAGE_KEYS.syncLogs));
 }
 
 async function getLocalWorkspace(id: string, scope: string, preferNative = true) {
@@ -148,6 +149,7 @@ export async function saveCurrentWindow(input: {
 }): Promise<WorkspaceContent> {
   const account = await requireDataAccount(input.accountStorageKey);
   const storageKey = account.storageKey;
+  const operation = syncTrace('operation.start', { trace: traceContext('manual'), scope: storageKey, action: input.closeAfterSave ? 'save-close' : 'save', source: 'src/features/workspaces/workspaceService.ts' });
   const current = await browser.windows.get(input.windowId, { populate: true });
   if (current.id !== input.windowId) throw new Error('当前窗口已不存在');
   const tabs = [...(current.tabs ?? [])].sort((a, b) => a.index - b.index);
@@ -179,15 +181,17 @@ export async function saveCurrentWindow(input: {
   };
 
   await withDataAccount(account, async () => {
-    await workspaceRepository.saveContent(content, storageKey);
+    await workspaceRepository.saveContent(content, storageKey, { ...operation, workspace: content.id });
     await bindWindow(input.windowId, content.id, tabs, storageKey);
     await recordLog(content.id, content.name, 'local-save', 'success', 'Local save success', storageKey);
     try { await schedulePendingSync(); }
     catch { await recordLog(content.id, content.name, 'sync-queue', 'failed', 'Background retry could not be scheduled; local save retained', storageKey); }
   });
   requestSync({ type: 'SYNC_WORKSPACE', workspaceId: content.id, accountStorageKey: storageKey });
+  syncTrace('sync.request', { trace: operation, scope: storageKey, source: 'src/features/workspaces/workspaceService.ts', action: input.closeAfterSave ? 'save-close' : 'save', workspace: content.id });
   await publishNativeWorkspaces(storageKey);
   if (input.closeAfterSave) await withDataAccount(account, () => browser.windows.remove(input.windowId));
+  syncTrace('operation.done', { trace: operation, scope: storageKey, workspace: content.id, action: input.closeAfterSave ? 'save-close' : 'save', source: 'src/features/workspaces/workspaceService.ts' });
   return content;
 }
 
@@ -382,7 +386,7 @@ async function logLaunch(
   candidates: WindowCandidate[],
 ): Promise<void> {
   const ranked = candidates.filter((candidate) => candidate.score != null).sort((a, b) => b.score! - a.score!);
-  await syncLogRepository.add({
+  void syncLogRepository.add({
     workspaceId: record.content.id,
     workspaceName: record.content.name,
     action: 'workspace-launch',
@@ -501,24 +505,30 @@ export async function updateWorkspace(
   const account = await requireDataAccount(expectedKey);
   const record = await workspaceRepository.get(workspaceId, account.storageKey);
   if (!record) throw new Error('工作区不存在');
+  const trace = { ...syncTrace('operation.start', { trace: traceContext('manual'), scope: account.storageKey, workspace: workspaceId, action: 'update', source: 'src/features/workspaces/workspaceService.ts' }), workspace: workspaceId };
   await withDataAccount(account, async () => {
-    await workspaceRepository.saveContent({ ...record.content, ...patch, updatedAt: new Date().toISOString() }, account.storageKey);
+    await workspaceRepository.saveContent({ ...record.content, ...patch, updatedAt: new Date().toISOString() }, account.storageKey, trace);
     requestSync({ type: 'SYNC_WORKSPACE', workspaceId, accountStorageKey: account.storageKey });
+    syncTrace('sync.request', { trace, scope: account.storageKey, source: 'src/features/workspaces/workspaceService.ts', action: 'update', workspace: workspaceId });
   });
   await publishNativeWorkspaces(account.storageKey);
+  syncTrace('operation.done', { trace, scope: account.storageKey, workspace: workspaceId, source: 'src/features/workspaces/workspaceService.ts' });
 }
 
 export async function deleteWorkspace(workspaceId: string, expectedKey?: string): Promise<void> {
   const account = await requireDataAccount(expectedKey);
   const record = await workspaceRepository.get(workspaceId, account.storageKey);
   if (!record) return;
+  const trace = { ...syncTrace('operation.start', { trace: traceContext('manual'), scope: account.storageKey, workspace: workspaceId, action: 'delete', source: 'src/features/workspaces/workspaceService.ts' }), workspace: workspaceId };
   await withDataAccount(account, async () => {
     await tombstoneRepository.add({ workspaceId, workspaceName: record.content.name,
-      accountStorageKey: account.storageKey.replace(/^workspaces/, 'deleteTombstones'), deletedAt: new Date().toISOString() });
+      accountStorageKey: account.storageKey.replace(/^workspaces/, 'deleteTombstones'), deletedAt: new Date().toISOString() }, trace);
     await bindingRepository.suppressWorkspace(workspaceId, account.storageKey);
     await workspaceRepository.remove(workspaceId, account.storageKey);
     await windowAssociationRepository.removeForWorkspace(workspaceId, account.storageKey).catch(() => undefined);
     requestSync({ type: 'SYNC_ALL', accountStorageKey: account.storageKey });
+    syncTrace('sync.request', { trace, scope: account.storageKey, source: 'src/features/workspaces/workspaceService.ts', action: 'delete', workspace: workspaceId });
   });
   await publishNativeWorkspaces(account.storageKey);
+  syncTrace('operation.done', { trace, scope: account.storageKey, workspace: workspaceId, source: 'src/features/workspaces/workspaceService.ts' });
 }

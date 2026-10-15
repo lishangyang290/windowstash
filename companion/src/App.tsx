@@ -20,6 +20,8 @@ import {
 } from './lib/supabase';
 import { workspaceService } from './features/workspaces';
 import { startWorkspaceSync } from './features/sync';
+import type { TraceContext } from '../../shared/diagnostics';
+import { syncTrace } from '../../shared/syncDiagnostics';
 import type { SupabaseConfig, View, WorkspaceSummary } from './types';
 import { SuccessToast } from './SuccessToast';
 import { VisibilityToggleInput } from './VisibilityToggleInput';
@@ -191,31 +193,43 @@ export function Launcher({ config, session, onConfigChange, onSignOut, browserLo
   const [error, setError] = React.useState('');
   const searchRef = React.useRef<HTMLInputElement>(null);
   const refreshRevision = React.useRef(0);
+  const refreshTrace = React.useRef<TraceContext | undefined>(undefined);
 
   const refresh = React.useCallback(async () => {
     const revision = ++refreshRevision.current;
+    const started = performance.now();
+    const trace = syncTrace('ui.refresh.start', { revision });
     const scope = cache.currentScope();
     try {
       const next = await workspaceService.refresh();
       if (revision !== refreshRevision.current || scope !== cache.currentScope()) return;
+      refreshTrace.current = trace;
       setItems(next);
+      syncTrace('ui.refresh.done', { trace, revision, count: next.length, elapsedMs: performance.now() - started });
       setError('');
     } catch (caught) {
+      syncTrace('ui.refresh.failed', { trace, revision, elapsedMs: performance.now() - started });
       if (revision !== refreshRevision.current || scope !== cache.currentScope()) return;
       if (!cache.workspaces().length) setError(caught instanceof Error ? caught.message : '暂时无法刷新工作区');
     }
   }, []);
 
   React.useEffect(() => {
+    syncTrace('ui.committed', { trace: refreshTrace.current, count: items.length });
+    for (const item of items) syncTrace('ui.committed', { trace: refreshTrace.current, workspace: item.id, serverAt: item.updatedAt });
+  }, [items]);
+
+  React.useEffect(() => {
     void refresh();
     const sync = browserLogin ? startWorkspaceSync() : null;
-    const online = () => sync?.kick();
+    const online = () => { syncTrace('lifecycle.online'); sync?.kick('manual'); };
     window.addEventListener('online', online);
     let followup: number | undefined;
     const timer = window.setInterval(() => void refresh(), REFRESH_INTERVAL);
-    const unlistenLocal = listen('local-workspaces-changed', () => { void refresh(); sync?.kick(); });
-    const unlistenResume = listen('system-resumed', () => sync?.kick());
+    const unlistenLocal = listen('local-workspaces-changed', () => { syncTrace('native.changed'); void refresh(); sync?.kick('native-change'); });
+    const unlistenResume = listen('system-resumed', () => { syncTrace('lifecycle.resume'); sync?.kick('startup'); });
     const unlisten = listen('popover-opened', () => {
+      syncTrace('lifecycle.open');
       setQuery('');
       setSelected(0);
       setOpening('');

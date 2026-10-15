@@ -1,3 +1,5 @@
+import type { TraceContext } from '../../../shared/diagnostics';
+import { syncTrace, traceContext } from '../../../shared/syncDiagnostics';
 import { accountStorageKey } from './accountScope';
 import { browser } from 'wxt/browser';
 import { STORAGE_KEYS } from '@/lib/constants';
@@ -27,12 +29,14 @@ export const tombstoneRepository = {
   async has(id: string, requestedKey?: string): Promise<boolean> {
     return Boolean((await read(requestedKey ?? await accountStorageKey(STORAGE_KEYS.tombstones)))[id]);
   },
-  async add(tombstone: DeleteTombstone): Promise<void> {
+  async add(tombstone: DeleteTombstone, diagnostic?: TraceContext): Promise<void> {
     const storageKey = tombstone.accountStorageKey ?? await accountStorageKey(STORAGE_KEYS.tombstones);
     await write(storageKey, async () => {
+      const trace = syncTrace('operation.start', { trace: { ...(diagnostic ?? traceContext()), workspace: tombstone.workspaceId }, scope: storageKey, workspace: tombstone.workspaceId, action: 'delete', source: 'src/lib/storage/tombstoneRepository.ts:add' });
       const items = await read(storageKey);
       items[tombstone.workspaceId] = tombstone;
-      await persistLibraryChange(storageKey.replace(/^deleteTombstones/, 'workspaces'), { [storageKey]: items });
+      await persistLibraryChange(storageKey.replace(/^deleteTombstones/, 'workspaces'), { [storageKey]: items }, trace);
+      syncTrace('local.deleted', { trace, scope: storageKey, workspace: tombstone.workspaceId, action: 'delete', source: 'src/lib/storage/tombstoneRepository.ts:add' });
     });
   },
   async remove(id: string, requestedKey?: string): Promise<void> {

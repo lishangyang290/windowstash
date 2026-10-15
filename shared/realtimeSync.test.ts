@@ -49,4 +49,33 @@ describe('Realtime event lifecycle', () => {
     sync.stop(); ready(); await vi.advanceTimersByTimeAsync(300_000);
     expect(reconcile).toHaveBeenCalledTimes(2);
   });
+
+  it('drains queued changes and readiness immediately after an older sync fails', async () => {
+    vi.useFakeTimers();
+    let hint!: () => void, ready!: () => void, reject!: (error: Error) => void;
+    const reconcile = vi.fn().mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; })).mockResolvedValue(undefined);
+    const sync = new RealtimeSync((a, b) => { hint = a; ready = b; return () => {}; }, reconcile);
+    sync.start(); hint(); hint(); ready(); reject(new Error('busy or stale snapshot'));
+    // No timer advance: an event already queued during the old attempt is new work.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reconcile).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+    sync.stop();
+  });
+
+  it('preserves a fresh event during a failed retry even at maximum backoff', async () => {
+    vi.useFakeTimers();
+    let hint!: () => void, reject!: (error: Error) => void;
+    const reconcile = vi.fn().mockRejectedValue(new Error('offline'));
+    const sync = new RealtimeSync(a => { hint = a; return () => {}; }, reconcile);
+    sync.start(); await vi.advanceTimersByTimeAsync(315_000);
+    reconcile.mockImplementationOnce(() => new Promise((_resolve, fail) => { reject = fail; }));
+    hint(); hint();
+    const calls = reconcile.mock.calls.length;
+    reconcile.mockResolvedValue(undefined); reject(new Error('lease busy'));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reconcile).toHaveBeenCalledTimes(calls + 1);
+    expect(vi.getTimerCount()).toBe(0);
+    sync.stop();
+  });
 });

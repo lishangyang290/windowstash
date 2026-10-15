@@ -17,6 +17,7 @@ pub type Result<T> = std::result::Result<T, &'static str>;
 #[cfg(all(feature = "insecure-test-store", not(debug_assertions)))]
 compile_error!("insecure-test-store is forbidden in production builds");
 
+pub mod diagnostics;
 pub mod auth;
 pub mod bridge;
 pub mod storage;

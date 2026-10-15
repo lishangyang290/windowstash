@@ -1,3 +1,4 @@
+import { initializeDiagnostics } from '@/lib/storage/diagnostics';
 import { accountStorageKey, legacyDataSummary, selectDataAccount } from '@/lib/storage/accountScope';
 import { SupabaseConfigForm } from '@/components/SupabaseConfigForm';
 import { SetupFlow, useSetupNavigation } from '@/components/SetupFlow';
@@ -13,13 +14,12 @@ import { SuccessToast } from '@/components/SuccessToast';
 import { VisibilityToggleInput } from '@/components/VisibilityToggleInput';
 import { deleteWorkspace, openWorkspaceTab, updateWorkspace } from '@/features/workspaces/workspaceService';
 import { syncEngine } from '@/lib/sync/syncEngine';
-import { syncLogRepository } from '@/lib/storage/syncLogRepository';
 import { workspaceRepository } from '@/lib/storage/workspaceRepository';
 import { authService } from '@/lib/supabase/authService';
 import { useVerifiedAccess } from '@/lib/supabase/useVerifiedAccess';
 import type { SupabaseConfig } from '@/lib/supabase/client';
 import { isValidEmail, PASSWORD_REQUIREMENTS, passwordChangeErrorMessage, passwordRequirementsMet, registrationErrorMessage, validatePasswordChange, validateRegistration } from '@/lib/supabase/passwordPolicy';
-import type { StoredTab, SyncLogEntry, WorkspaceLocalRecord } from '@/types/workspace';
+import type { StoredTab, WorkspaceLocalRecord } from '@/types/workspace';
 import '@/styles/base.css';
 import './style.css';
 
@@ -269,22 +269,6 @@ function AccountDialog({
   );
 }
 
-function DiagnosticsDialog({ logs, onClose, onClear }: { logs: SyncLogEntry[]; onClose: () => void; onClear: () => Promise<void> }) {
-  return (
-    <div className="dialog-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="dialog diagnostics-dialog" role="dialog" aria-modal="true" aria-labelledby="diagnostics-title">
-        <div className="dialog-head">
-          <div><h2 id="diagnostics-title">诊断日志</h2><p>用于排查 Workspace 同步问题。</p></div>
-          <button className="close-button" onClick={onClose} aria-label="关闭"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg></button>
-        </div>
-        <div className="diagnostics-head"><span>最近 {logs.length} 条记录</span>{logs.length > 0 && <button onClick={() => void onClear()}>清空日志</button>}</div>
-        <div className="diagnostics-list">
-          {logs.length ? logs.slice(0, 20).map((log) => <div key={log.id}><time>{new Date(log.timestamp).toLocaleString('zh-CN')}</time><strong>{log.workspaceName}</strong><span>{log.message}</span></div>) : <p>暂无诊断记录</p>}
-        </div>
-      </section>
-    </div>
-  );
-}
 
 function WorkspaceRow({ record, recoveryMode, onRefresh, onDeleted }: { record: WorkspaceLocalRecord; recoveryMode: boolean; onRefresh: () => Promise<unknown>; onDeleted: (name: string) => void }) {
   const { content } = record;
@@ -415,12 +399,10 @@ function SyncIssues({ records, onRefresh, onClose }: { records: WorkspaceLocalRe
 
 function Dashboard({ session, config, recoveryMode, onAuthChanged, onSignedOut }: { session: Session; config: SupabaseConfig; recoveryMode: boolean; onAuthChanged: () => Promise<void>; onSignedOut: () => void }) {
   const [records, setRecords] = React.useState<WorkspaceLocalRecord[]>([]);
-  const [logs, setLogs] = React.useState<SyncLogEntry[]>([]);
   const [filter, setFilter] = React.useState<Filter>('all');
   const [query, setQuery] = React.useState('');
   const [accountOpen, setAccountOpen] = React.useState(false);
   const [configOpen, setConfigOpen] = React.useState(false);
-  const [diagnosticsOpen, setDiagnosticsOpen] = React.useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = React.useState(false);
   const [issuesOpen, setIssuesOpen] = React.useState(false);
   const [loading, setLoading] = React.useState(true);
@@ -436,11 +418,10 @@ function Dashboard({ session, config, recoveryMode, onAuthChanged, onSignedOut }
       await onAuthChanged();
       return { records: [], session: null };
     }
-    const [nextRecords, nextLogs, nextLegacy] = await Promise.all([workspaceRepository.list(), syncLogRepository.list(), legacyDataSummary()]);
+    const [nextRecords, nextLegacy] = await Promise.all([workspaceRepository.list(), legacyDataSummary()]);
     if (revision !== refreshRevision.current) return { records: [], session: null };
     setLegacy(nextLegacy);
     setRecords(nextRecords);
-    setLogs(nextLogs);
     setLoading(false);
     return { records: nextRecords, session };
   }, [session.user.id, onAuthChanged]);
@@ -449,7 +430,7 @@ function Dashboard({ session, config, recoveryMode, onAuthChanged, onSignedOut }
     void refresh();
     void browser.runtime.sendMessage({ type: 'SYNC_ALL' });
     const listener = (changes: Record<string, unknown>) => {
-      if (Object.keys(changes).some((key) => key.startsWith('workspaces:') || key.startsWith('syncLogs:') || key.startsWith('deleteTombstones:') || key.startsWith('windowstash-unowned-'))) void refresh();
+      if (Object.keys(changes).some((key) => key.startsWith('workspaces:') || key.startsWith('deleteTombstones:') || key.startsWith('windowstash-unowned-'))) void refresh();
     };
     browser.storage.onChanged.addListener(listener);
     return () => {
@@ -528,7 +509,7 @@ function Dashboard({ session, config, recoveryMode, onAuthChanged, onSignedOut }
               <button className="account-button" aria-haspopup={session ? 'menu' : undefined} aria-expanded={session ? accountMenuOpen : undefined} onClick={() => session ? setAccountMenuOpen((open) => !open) : setAccountOpen(true)}><span className="avatar">{session?.user.email?.[0]?.toUpperCase() ?? '?'}</span><span title={session?.user.email}>{session?.user.email ?? '登录'}</span><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m6 9 6 6 6-6" /></svg></button>
               {session && accountMenuOpen && <div className="account-menu" role="menu">
                 <button role="menuitem" onClick={() => { setAccountMenuOpen(false); setAccountOpen(true); }}>修改密码</button>
-                <button role="menuitem" onClick={() => { setAccountMenuOpen(false); setDiagnosticsOpen(true); }}>诊断日志</button>
+                <button role="menuitem" onClick={() => { setAccountMenuOpen(false); void browser.tabs.create({ url: browser.runtime.getURL('/diagnostics.html') }); }}>诊断与反馈</button>
                 <button role="menuitem" onClick={() => void logout()}>退出登录</button>
               </div>}
             </div>
@@ -566,7 +547,6 @@ function Dashboard({ session, config, recoveryMode, onAuthChanged, onSignedOut }
         </div>
       </div> : null}
       {accountOpen && <AccountDialog session={session} onClose={() => setAccountOpen(false)} onChanged={authChanged} />}
-      {diagnosticsOpen && <DiagnosticsDialog logs={logs} onClose={() => setDiagnosticsOpen(false)} onClear={async () => { await syncLogRepository.clear(); await refresh(); }} />}
     </PageShell>
   );
 }
@@ -589,3 +569,5 @@ if (authorizationPage) document.body.classList.add('authorization-page');
 ReactDOM.createRoot(document.getElementById('root')!).render(authorizationPage
   ? <CompanionLogin login={(refresh, previous, onBusyChange, showTitle) => <AccountDialog companion flow showTitle={showTitle} onPrevious={previous} onBusyChange={onBusyChange} session={null} onClose={() => void refresh()} onChanged={refresh} />} />
   : <React.StrictMode><OptionsRoot /></React.StrictMode>);
+
+initializeDiagnostics();

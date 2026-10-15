@@ -4,6 +4,8 @@ import { instanceId } from './connection';
 import { hex, NATIVE_HOST } from './protocol';
 import type { WorkspaceLocalRecord } from '@/types/workspace';
 import type { LocalExchange } from '../../../shared/workspaceSync';
+import type { TraceContext } from '../../../shared/diagnostics';
+import { syncTrace } from '../../../shared/syncDiagnostics';
 export class NativeWorkspaceDeletedError extends Error {}
 
 export async function nativeMessage(message: Record<string, unknown>, started: number): Promise<unknown> {
@@ -35,7 +37,7 @@ export async function nativeLibraryExchange(scope: string): Promise<LocalExchang
 
 const PREFIX = 'windowstash-local-library:';
 export const libraryStateKey = (scope: string) => `${PREFIX}${scope}`;
-interface LibraryState { revision: number; pending: boolean }
+interface LibraryState { revision: number; pending: boolean; diagnostic?: TraceContext; operations?: Record<string, TraceContext> }
 const tasks = new Map<string, Promise<unknown>>();
 function locked<T>(name: string, task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
   if (globalThis.navigator?.locks) return (signal ? navigator.locks.request(name, { signal }, task) : navigator.locks.request(name, task)).then((result) => result);
@@ -47,13 +49,14 @@ function locked<T>(name: string, task: () => Promise<T>, signal?: AbortSignal): 
 }
 
 /** Commit the mutation and its durable projection marker together. */
-export async function persistLibraryChange(scope: string, changes: Record<string, unknown>) {
+export async function persistLibraryChange(scope: string, changes: Record<string, unknown>, diagnostic?: TraceContext) {
   if (!scope.startsWith('workspaces:[')) return browser.storage.local.set(changes);
   await locked(libraryStateKey(scope), async () => {
     const key = libraryStateKey(scope);
     const state = (await browser.storage.local.get(key))[key] as LibraryState | undefined;
     if (state && (!Number.isSafeInteger(state.revision) || state.revision < 1 || state.revision >= Number.MAX_SAFE_INTEGER)) throw new Error('本机投影版本无效，原数据已保留');
-    await browser.storage.local.set({ ...changes, [key]: { revision: (state?.revision ?? 0) + 1, pending: true } });
+    await browser.storage.local.set({ ...changes, [key]: { revision: (state?.revision ?? 0) + 1, pending: true, ...((diagnostic ?? state?.diagnostic) ? { diagnostic: diagnostic ?? state?.diagnostic } : {}), ...(diagnostic?.workspace ? { operations: Object.fromEntries([...Object.entries(state?.operations ?? {}).filter(([id]) => id !== diagnostic.workspace), [diagnostic.workspace, diagnostic]].slice(-64)) } : state?.operations ? { operations: state.operations } : {}) } });
+    syncTrace('local.persisted', { trace: diagnostic, scope, revision: (state?.revision ?? 0) + 1 });
   });
 }
 
@@ -65,12 +68,14 @@ export const libraryScope = (key: string) => key.slice(PREFIX.length);
 /** No cloud request participates in this acknowledgement. Failed sends leave the marker intact. */
 export function publishNativeWorkspaces(scope: string, force = false): Promise<void> {
   const started = Date.now();
+  const queuedTrace = syncTrace('native.publish.queued', { scope });
+  let publishTrace: TraceContext | undefined;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5_000);
   return locked(`publish:${scope}`, async () => {
     // Preserve standalone extension use. No native account is inferred from a local label.
     const link = await authLink();
-    if (!link) return;
+    if (!link) { syncTrace('native.publish.skipped', { trace: queuedTrace, scope }); return; }
     const key = libraryStateKey(scope);
     const snapshot = await locked(key, async () => {
       const data = await browser.storage.local.get([scope, scope.replace(/^workspaces/, 'deleteTombstones'), scope.replace(/^workspaces/, 'syncRecovery'), key, 'supabaseConfig', 'windowstash-data-owner:v1']);
@@ -84,7 +89,8 @@ export function publishNativeWorkspaces(scope: string, force = false): Promise<v
       if (!Number.isSafeInteger(state.revision) || state.revision < 1) throw new Error('本机投影版本无效，原数据已保留');
       return { data, state, owner };
     });
-    if (!snapshot.state.pending && !force) return;
+    if (!snapshot.state.pending && !force) { syncTrace('native.publish.skipped', { trace: queuedTrace, scope }); return; }
+    publishTrace = syncTrace('native.publish.start', { trace: snapshot.state.diagnostic ?? queuedTrace, scope, revision: snapshot.state.revision });
     const config = snapshot.data.supabaseConfig as { url: string };
     const owner = JSON.parse(snapshot.owner) as [string, string];
     if (JSON.stringify([new URL(config.url).href.replace(/\/+$/, ''), owner[1]]) !== snapshot.owner) throw new Error('账号配置已变化，本机数据已保留');
@@ -95,16 +101,18 @@ export function publishNativeWorkspaces(scope: string, force = false): Promise<v
     const bytes = new TextEncoder().encode(JSON.stringify({ records, deleted, ...(Object.keys(conflicts).length ? { conflicts } : {}) }));
     if (bytes.length > 8 * 1024 * 1024) throw new Error('本机工作区数据超过传输上限；保存数据已保留');
     const chunks = Math.max(1, Math.ceil(bytes.length / 16_384));
-    const envelope = { version: 1, type: 'workspaces', instance_id: await instanceId(), capability: link.capability, project_url: config.url, user_id: owner[1], revision: snapshot.state.revision, chunks };
+    const envelope = { version: 1, type: 'workspaces', instance_id: await instanceId(), capability: link.capability, project_url: config.url, user_id: owner[1], revision: snapshot.state.revision, chunks, diagnostic: publishTrace };
     for (let index = 0; index < chunks; index++) {
-        const reply = await nativeMessage({ ...envelope, index, part: hex(bytes.subarray(index * 16_384, (index + 1) * 16_384)) }, started) as { status?: string; revision?: number };
+        const reply = await nativeMessage({ ...envelope, ...(index === chunks - 1 ? { diagnostic_operations: snapshot.state.operations } : {}), index, part: hex(bytes.subarray(index * 16_384, (index + 1) * 16_384)) }, started) as { status?: string; revision?: number };
         if (reply?.status !== (index === chunks - 1 ? 'persisted' : 'staged') || reply.revision !== snapshot.state.revision) throw new Error('工作区已保存在扩展本地，但本机通道未确认写入，未关闭窗口；请重试');
     }
+    syncTrace('native.publish.persisted', { trace: publishTrace, scope, revision: snapshot.state.revision, count: records.length, deleted: deleted.length, elapsedMs: Date.now() - started });
     await locked(key, async () => {
       const state = (await browser.storage.local.get(key))[key] as LibraryState;
       if (state.revision === snapshot.state.revision) await browser.storage.local.set({ [key]: { ...state, pending: false } });
     });
   }, controller.signal).catch(error => {
+    syncTrace('native.publish.failed', { trace: publishTrace ?? queuedTrace, scope, elapsedMs: Date.now() - started });
     if (controller.signal.aborted) throw new Error('本机工作区通道超时；原数据已保留，请重试');
     throw error;
   }).finally(() => clearTimeout(timer));

@@ -16,8 +16,8 @@ export function startWorkspaceSync(): RealtimeSync | null {
     return invoke('workspace_sync', { instance: grant.instance_id, project: grant.config.url, user: grant.session.user.id, action, payload });
   };
   const controller = new RealtimeSync((hint, ready) =>
-    subscribeWorkspaceChanges(client, grant.session.user.id, hint, ready),
-  () => synchronize(exchange, syncCloud(client), grant.session.user.id));
+    subscribeWorkspaceChanges(client, grant.session.user.id, (_payload, trace) => hint(trace), ready),
+  trace => synchronize(exchange, syncCloud(client), grant.session.user.id, trace));
   controller.start();
   return controller;
 }

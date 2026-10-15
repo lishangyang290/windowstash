@@ -120,6 +120,36 @@ async fn local_workspaces() -> Result<serde_json::Value, String> {
 }
 
 #[tauri::command]
+async fn export_diagnostics(app: tauri::AppHandle, bundle: serde_json::Value) -> Result<String, String> {
+    if bundle["schema"] != "windowstash.diagnostics/1" || !bundle["events"].is_array() { return Err("invalid_diagnostic_bundle".into()); }
+    let bytes = serde_json::to_vec_pretty(&bundle).map_err(|_| "invalid_diagnostic_bundle")?;
+    if bytes.len() > 20*1024*1024 { return Err("diagnostic_bundle_too_large".into()); }
+    let directory = app.path().download_dir().map_err(|_| "downloads_unavailable")?;
+    let name = format!("windowstash-diagnostics-{}-{}.json", windowstash_native_host::bridge::now(), &windowstash_native_host::bridge::random_id()[..8]);
+    let path = directory.join(name);
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|_| "diagnostic_export_failed")?;
+    file.write_all(&bytes).map_err(|_| "diagnostic_export_failed")?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+async fn diagnostic_records(instance: String, project: String, user: String, entries: Vec<serde_json::Value>) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = windowstash_native_host::bridge::directory().map_err(str::to_string)?;
+        let bytes = fs::read(root.join("selection.json")).map_err(|_| "浏览器关联不可用".to_string())?;
+        let selected: connection::Selection = serde_json::from_slice(&bytes).map_err(|_| "浏览器关联不可用".to_string())?;
+        windowstash_native_host::workspaces::desktop_diagnostics(&root, &selected.route_id, &instance, &project, &user, entries).map_err(str::to_string)
+    }).await.map_err(|_| "diagnostic_worker_failed".to_string())?
+}
+
+fn open_diagnostics(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("diagnostics") { let _ = window.show(); let _ = window.set_focus(); return; }
+    let _ = tauri::WebviewWindowBuilder::new(app, "diagnostics", tauri::WebviewUrl::App("index.html#diagnostics".into()))
+        .title("诊断中心 · WindowStash").inner_size(1120.0, 820.0).min_inner_size(640.0, 500.0).build();
+}
+
+#[tauri::command]
 async fn workspace_sync(instance: String, project: String, user: String, action: String, payload: serde_json::Value) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = windowstash_native_host::bridge::directory().map_err(str::to_string)?;
@@ -377,6 +407,8 @@ pub fn run() {
             desktop_cloud_auth,
             local_workspaces,
             workspace_sync,
+            diagnostic_records,
+            export_diagnostics,
             hide_popover,
             show_popover,
             quit_app
@@ -408,8 +440,9 @@ pub fn run() {
             }
 
             let open = MenuItem::with_id(app, "open", "打开 WindowStash", true, None::<&str>)?;
+            let diagnostics = MenuItem::with_id(app, "diagnostics", "诊断中心", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &quit])?;
+            let menu = Menu::with_items(app, &[&open, &diagnostics, &quit])?;
             #[cfg(target_os = "windows")]
             let icon: Image<'static> =
                 Image::from_app_icon_resource(32).unwrap_or_else(|_| tray_icon());
@@ -424,6 +457,7 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => display_popover(app),
+                    "diagnostics" => open_diagnostics(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -480,7 +514,9 @@ pub fn run() {
             });
             Ok(())
         })
-        .on_window_event(|window, event| match event {
+        .on_window_event(|window, event| {
+            if window.label() != WINDOW_LABEL { return; }
+            match event {
             tauri::WindowEvent::Focused(false) => {
                 let _ = window.hide();
             }
@@ -489,7 +525,7 @@ pub fn run() {
                 let _ = window.hide();
             }
             _ => {}
-        })
+        }})
         .run(tauri::generate_context!())
         .expect("failed to run WindowStash Companion");
 }

@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Minimal permissions for the WindowStash menu bar launcher",
-  "windows": ["main"],
+  "windows": ["main", "diagnostics"],
   "permissions": [
     "core:default",
     "autostart:allow-enable",

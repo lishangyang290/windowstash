@@ -1,6 +1,9 @@
 import type { CloudWorkspaceRow, WorkspaceContent, WorkspaceLocalRecord } from '../src/types/workspace';
+import type { TraceContext } from './diagnostics';
+import { traceContext, syncTrace, syncFailure } from './syncDiagnostics';
 
 export interface NativeLibrary {
+  diagnostics?: Record<string, TraceContext>;
   revision: number; digest: string; generation: number;
   records: Record<string, WorkspaceLocalRecord>; deleted: string[];
   remote_deleted: Record<string, string>; delete_ack: string[];
@@ -9,9 +12,9 @@ export interface NativeLibrary {
 export type LocalExchange = (action: string, payload: Record<string, unknown>) => Promise<unknown>;
 export interface CloudSnapshot { protocol: 1; user_id: string; records: CloudWorkspaceRow[]; deleted: { workspace_id: string; user_id: string; deleted_at: string }[] }
 export interface SyncCloud {
-  snapshot(): Promise<unknown>;
-  put(record: WorkspaceLocalRecord, hash: string): Promise<unknown>;
-  remove(id: string): Promise<void>;
+  snapshot(trace?: TraceContext): Promise<unknown>;
+  put(record: WorkspaceLocalRecord, hash: string, trace?: TraceContext): Promise<unknown>;
+  remove(id: string, trace?: TraceContext): Promise<void>;
 }
 export const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const MAX_BYTES = 16 * 1024 * 1024, CHUNK = 16_384;
@@ -76,18 +79,30 @@ function conflict(record: WorkspaceLocalRecord, message: string): WorkspaceLocal
 }
 
 /** One native lease owns upload, for both processes. No cloud absence is a deletion. */
-export async function synchronize(exchange: LocalExchange, cloud: SyncCloud, user: string): Promise<boolean> {
+export async function synchronize(exchange: LocalExchange, cloud: SyncCloud, user: string, trace: TraceContext = traceContext()): Promise<boolean> {
+  const started = performance.now();
+  trace = syncTrace('lease.start', { trace });
+  const rawExchange = exchange;
+  exchange = (action, payload) => rawExchange(action, { ...payload, diagnostic: trace });
   const lease = await exchange('acquire', {}) as { status: string; token?: string };
-  if (lease?.status === 'busy') throw new Error('其他本机进程正在同步，将自动重试');
+  if (lease?.status === 'busy') { syncTrace('lease.busy', { trace, elapsedMs: performance.now() - started }); throw new Error('其他本机进程正在同步，将自动重试'); }
   if (lease?.status !== 'acquired' || !/^[a-f0-9]{64}$/.test(lease.token ?? '')) fail();
   const token = lease.token!;
+  syncTrace('lease.acquired', { trace, elapsedMs: performance.now() - started });
   try {
     let state = await readLibrary(exchange);
+    syncTrace('native.read', { trace, revision: state.revision, generation: state.generation, count: Object.keys(state.records).length, deleted: state.deleted.length });
+    const workspaceTrace = (id: string): TraceContext => {
+      const origin = state.diagnostics?.[id];
+      return origin && /^[a-f0-9-]{36}$/i.test(origin.operationId) ? { ...origin, parentEventId: trace.parentEventId } : trace;
+    };
     const before = JSON.stringify(state);
-    const raw = await cloud.snapshot() as CloudSnapshot;
+    const raw = await cloud.snapshot(trace) as CloudSnapshot;
     if (raw?.protocol !== 1 || raw.user_id !== user || !Array.isArray(raw.records) || !Array.isArray(raw.deleted)) fail();
     const rows = new Map<string, CloudWorkspaceRow>();
-    for (const value of raw.records) { const row = await checkedRow(value, user); if (rows.has(row.id)) fail(); rows.set(row.id, row); }
+    for (const value of raw.records) { const row = await checkedRow(value, user); if (rows.has(row.id)) fail(); rows.set(row.id, row);
+      if (state.records[row.id]?.sync.lastSyncedCloudUpdatedAt !== row.updated_at) syncTrace('cloud.received', { trace, workspace: row.id, serverAt: row.updated_at });
+    }
     // Validate the entire response before any local or cloud mutations.
     const deletions = new Map<string, string>();
     for (const item of raw.deleted) {
@@ -96,6 +111,7 @@ export async function synchronize(exchange: LocalExchange, cloud: SyncCloud, use
     }
     for (const [id, stamp] of deletions) {
       if (state.remote_deleted[id] && state.remote_deleted[id] !== stamp) fail();
+      if (state.diagnostics?.[id] && state.remote_deleted[id] !== stamp) syncTrace('cloud.version', { trace: workspaceTrace(id), workspace: id, serverAt: stamp, action: 'remove', source: 'shared/workspaceSync.ts:synchronize' });
       state.remote_deleted[id] = stamp;
       if (!state.deleted.includes(id)) state.deleted.push(id);
       if (!state.delete_ack.includes(id)) state.delete_ack.push(id);
@@ -110,12 +126,13 @@ export async function synchronize(exchange: LocalExchange, cloud: SyncCloud, use
       const reply = await exchange('renew', { token }) as { status: string };
       if (reply.status !== 'renewed') fail();
     };
+    syncTrace('queue.snapshot', { trace, count: Object.keys(state.records).length, pending: Object.values(state.records).filter(r => r.sync.syncStatus !== 'synced').length, deleted: state.deleted.filter(id => !state.delete_ack.includes(id)).length });
     const uploads: string[] = [];
     for (const [id, local] of Object.entries(state.records)) {
       const remote = rows.get(id), hash = await workspaceHash(local.content);
       if (!remote) {
         if (local.sync.lastSyncedHash || local.sync.lastSyncedCloudUpdatedAt) {
-          state.records[id] = conflict(local, '云端记录缺失，已保留本机副本，禁止自动重新上传'); continue;
+          syncTrace('conflict.detected', { trace: workspaceTrace(id), workspace: id, result: 'waiting' }); state.records[id] = conflict(local, '云端记录缺失，已保留本机副本，禁止自动重新上传'); continue;
         }
         if (local.sync.syncStatus === 'conflict') continue;
         uploads.push(id); continue;
@@ -126,7 +143,7 @@ export async function synchronize(exchange: LocalExchange, cloud: SyncCloud, use
       }
       const changedLocal = hash !== local.sync.lastSyncedHash;
       if (changedLocal && (local.sync.syncStatus === 'conflict' || !local.sync.lastSyncedCloudUpdatedAt || remote.updated_at !== local.sync.lastSyncedCloudUpdatedAt)) {
-        state.records[id] = conflict(local, '本机与云端均有更新，已保留两个版本');
+        syncTrace('conflict.detected', { trace: workspaceTrace(id), workspace: id, result: 'waiting' }); state.records[id] = conflict(local, '本机与云端均有更新，已保留两个版本');
         const versions = state.conflicts[id] ??= [], copy = downloaded(remote);
         if (!versions.some(r => r.sync.lastSyncedCloudUpdatedAt === remote.updated_at)) versions.push(copy);
       } else if (changedLocal) {
@@ -135,24 +152,33 @@ export async function synchronize(exchange: LocalExchange, cloud: SyncCloud, use
       rows.delete(id);
     }
     for (const [id, row] of rows) if (!state.deleted.includes(id) && !state.records[id]) state.records[id] = downloaded(row);
+    for (const [id, stamp] of deletions) syncTrace('cloud.received', { trace: workspaceTrace(id), workspace: id, serverAt: stamp, action: 'remove' });
     // Downloads/deletions are durably committed even if a subsequent upload fails.
     let changed = JSON.stringify(state) !== before;
     if (changed) { await renew(); await writeLibrary(exchange, state, token); state = await readLibrary(exchange); }
     const uploadBase = JSON.stringify(state);
     for (const id of state.deleted) {
       if (state.delete_ack.includes(id)) continue;
-      await renew(); await cloud.remove(id); state.delete_ack.push(id);
+      syncTrace('queue.delete', { trace: workspaceTrace(id), workspace: id, action: 'remove' });
+      await renew(); await cloud.remove(id, workspaceTrace(id)); state.delete_ack.push(id);
     }
     for (const id of uploads) {
       const local = state.records[id]; if (!local || state.deleted.includes(id)) continue;
+      syncTrace('queue.upload', { trace: workspaceTrace(id), workspace: id, action: 'put' });
       await renew();
-      const row = await checkedRow(await cloud.put(local, await workspaceHash(local.content)), user);
+      const row = await checkedRow(await cloud.put(local, await workspaceHash(local.content), workspaceTrace(id)), user);
+      syncTrace('cloud.version', { trace: workspaceTrace(id), workspace: id, serverAt: row.updated_at, action: 'put' });
       if (row.id !== id) fail();
       state.records[id] = downloaded(row);
     }
     if (JSON.stringify(state) !== uploadBase) { await renew(); await writeLibrary(exchange, state, token); changed = true; }
+    if (changed) for (const record of Object.values(state.records)) if (record.sync.syncStatus === 'synced') syncTrace('native.applied', { trace, workspace: record.content.id, serverAt: record.sync.lastSyncedCloudUpdatedAt ?? undefined });
+    syncTrace('native.applied', { trace, changed, elapsedMs: performance.now() - started });
     return changed;
-  } finally { await exchange('release', { token }).catch(() => undefined); }
+  } catch (error) {
+    syncTrace('sync.failed', { trace, failure: syncFailure(error), elapsedMs: performance.now() - started, source: 'shared/workspaceSync.ts:synchronize' });
+    throw error;
+  } finally { await exchange('release', { token }).then(() => syncTrace('lease.released', { trace })).catch(() => { syncTrace('lease.release.failed', { trace }); }); }
 }
 
 export async function resolveSynchronizedConflict(exchange: LocalExchange, cloud: SyncCloud, user: string, id: string, choice: 'local' | 'cloud') {

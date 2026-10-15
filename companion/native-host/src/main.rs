@@ -121,6 +121,8 @@ fn main() {
     if let Err(code) = run() {
         // Only fixed error codes are emitted. Never echo request bodies.
         let _ = write_frame(&mut io::stdout(), &json!({"status": "error", "code": code}));
+        windowstash_native_host::diagnostics::flush();
         std::process::exit(1);
     }
+    windowstash_native_host::diagnostics::flush();
 }

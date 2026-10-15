@@ -190,7 +190,7 @@ describe('workspaceService', () => {
 
     expect(result.id).toBe(localRecord.content.id);
     expect(result.createdAt).toBe(localRecord.content.createdAt);
-    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: localRecord.content.id, tabs: [expect.objectContaining({ url: 'https://current.example', pinned: true })], activeTabIndex: 0 }), 'workspaces');
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: localRecord.content.id, tabs: [expect.objectContaining({ url: 'https://current.example', pinned: true })], activeTabIndex: 0 }), 'workspaces', expect.objectContaining({ operationId: expect.any(String) }));
     expect(browserMock.windows.remove).not.toHaveBeenCalled();
   });
 
@@ -202,7 +202,7 @@ describe('workspaceService', () => {
     expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({
       id: 'workspace-1',
       name: '新的工作区名称',
-    }), 'workspaces');
+    }), 'workspaces', expect.objectContaining({ operationId: expect.any(String) }));
     expect(browserMock.runtime.sendMessage).toHaveBeenCalledWith({ type: 'SYNC_WORKSPACE', workspaceId: 'workspace-1', accountStorageKey: 'workspaces' });
   });
 
@@ -212,7 +212,7 @@ describe('workspaceService', () => {
 
     await expect(updateWorkspace('workspace-1', { name: '离线新名称' })).resolves.toBeUndefined();
 
-    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ name: '离线新名称' }), 'workspaces');
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ name: '离线新名称' }), 'workspaces', expect.objectContaining({ operationId: expect.any(String) }));
   });
 
   it('restores ordered tabs, pinned state and active tab into a new window', async () => {
@@ -553,7 +553,7 @@ describe('workspaceService', () => {
 
     expect(result.id).toBe('workspace-1');
     expect(syncMock.syncAll).toHaveBeenCalledOnce();
-    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: 'workspace-1' }), 'workspaces');
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: 'workspace-1' }), 'workspaces', expect.objectContaining({ operationId: expect.any(String) }));
   });
 
   it('exposes the binding while a large lazy restore is still in progress', async () => {
@@ -802,7 +802,7 @@ describe('workspaceService', () => {
 
     expect(saved.id).not.toBe('workspace-1');
     expect(bindingMock.set).toHaveBeenCalledWith(22, saved.id);
-    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: saved.id }), 'workspaces');
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: saved.id }), 'workspaces', expect.objectContaining({ operationId: expect.any(String) }));
   });
 
   it('continues updating the original workspace when the reopened window is saved', async () => {
@@ -816,7 +816,7 @@ describe('workspaceService', () => {
     const saved = await saveCurrentWindow({ windowId: 99, name: 'PetLifeHub', status: 'active', closeAfterSave: false });
 
     expect(saved.id).toBe('workspace-1');
-    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: 'workspace-1' }), 'workspaces');
+    expect(workspaceMock.saveContent).toHaveBeenCalledWith(expect.objectContaining({ id: 'workspace-1' }), 'workspaces', expect.objectContaining({ operationId: expect.any(String) }));
   });
 
   it('focuses an already bound workspace instead of restoring a duplicate', async () => {

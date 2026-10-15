@@ -111,7 +111,7 @@ function score(association: PersistentWindowAssociation, window: LiveWindow): Ca
 
 async function logAssociation(action: string, association: PersistentWindowAssociation, message: object, scope: string): Promise<void> {
   const record = await workspaceRepository.get(association.workspaceId, scope);
-  await syncLogRepository.add({
+  void syncLogRepository.add({
     workspaceId: association.workspaceId,
     workspaceName: record?.content.name ?? 'Unknown workspace',
     action,

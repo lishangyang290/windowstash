@@ -16,7 +16,7 @@ beforeEach(() => {
   state = { generation: 0, revision: 1, digest: 'fixture', records: {}, deleted: [], remote_deleted: {}, delete_ack: [], conflicts: {} };
   const channel = { on: vi.fn((event, filter, hint) => {
     if (event === 'system') f.system = hint;
-    else { f.filters.push(filter); f.hint = hint; }
+    else { f.filters.push(filter); f.hint = () => hint({ table: filter.table, eventType: filter.event, new: {} }); }
     return channel;
   }), subscribe: vi.fn(ready => { f.ready = ready; return channel; }) };
   f.channel.mockReturnValue(channel);
@@ -101,5 +101,34 @@ describe('Companion independent cloud synchronization (mock RPC/native transport
     resolve({ error: null, data: { protocol: 1, user_id: 'user-A', records: [], deleted: [] } });
     await vi.waitFor(() => expect(f.remove).toHaveBeenCalledOnce());
     expect(state.generation).toBe(0); expect(f.invoke.mock.calls.some(([, value]) => value.action === 'apply')).toBe(false);
+  });
+
+  it('applies creation, modification and tombstone hints queued behind failed snapshots without waiting for retry', async () => {
+    let rows: unknown[] = [], deleted: unknown[] = [];
+    f.rpc.mockImplementation(() => ({ abortSignal: async () => ({ error: null, data: { protocol: 1, user_id: 'user-A', records: rows, deleted } }) }));
+    const sync = startWorkspaceSync()!;
+    try {
+      await vi.waitFor(() => expect(f.invoke.mock.calls.some(([, request]) => request.action === 'release')).toBe(true));
+      const changeDuringFailure = async (change: () => Promise<void>, check: () => void) => {
+        let reject: ((error: Error) => void) | undefined;
+        f.rpc.mockImplementationOnce(() => ({ abortSignal: () => new Promise((_resolve, fail) => { reject = fail; }) }));
+        sync.kick();
+        await vi.waitFor(() => expect(reject).toBeTypeOf('function'));
+        await change(); f.hint!(); reject!(new Error('snapshot interrupted'));
+        // waitFor's one-second deadline is below even the first five-second retry.
+        await vi.waitFor(check);
+        await vi.waitFor(() => expect(f.invoke.mock.calls.at(-1)?.[1].action).toBe('release'));
+      };
+      const content = { id, name: 'Created', status: 'active' as const, tabs: [], activeTabIndex: 0, createdAt: stamp, updatedAt: stamp };
+      const makeRow = async () => ({ id, name: content.name, status: content.status, tabs: [], active_tab_index: 0, created_at: stamp, updated_at: content.updatedAt, user_id: 'user-A', content_hash: await workspaceHash(content) });
+      await changeDuringFailure(async () => { rows = [await makeRow()]; }, () => expect(state.records[id]?.content.name).toBe('Created'));
+      await changeDuringFailure(async () => {
+        content.name = 'Modified'; content.updatedAt = '2026-10-15T00:00:00Z'; rows = [await makeRow()];
+      }, () => expect(state.records[id]?.content.name).toBe('Modified'));
+      await changeDuringFailure(async () => {
+        rows = []; deleted = [{ workspace_id: id, user_id: 'user-A', deleted_at: stamp }];
+        f.ready!('CHANNEL_ERROR'); f.ready!('SUBSCRIBED');
+      }, () => { expect(state.records[id]).toBeUndefined(); expect(state.remote_deleted[id]).toBe(stamp); });
+    } finally { sync.stop(); }
   });
 });
