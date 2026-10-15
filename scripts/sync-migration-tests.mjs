@@ -3,8 +3,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { URL } from 'node:url';
 import { checkMigration } from './verify-sync-migration.mjs';
-const sql = readFileSync(new URL('../supabase/migrations/20261014_workspace_sync_v1.sql', import.meta.url), 'utf8');
-const schema = readFileSync(new URL('../supabase/schema.sql', import.meta.url), 'utf8');
+const sql = readFileSync(new URL('../supabase/migrations/20261014_workspace_sync_v1.sql', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const schema = readFileSync(new URL('../supabase/schema.sql', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 test('migration satisfies static security/compatibility contracts (not a database execution)', () => assert.equal(checkMigration(sql), true));
 test('static checks reject missing guards, broken quotes, missing account ownership and destructive statements', () => {
   for (const bad of [sql.replace('before insert or update or delete', 'before insert'), sql.replace('w.user_id <> auth.uid()', 'true'), sql.replace('commit;', 'truncate public.workspaces; commit;'), `${sql}\n'`, sql.replace('enable row level security', 'disable row level security'), sql.replace("greatest(clock_timestamp(), OLD.updated_at + interval '1 microsecond')", 'now()'), sql.replace('create publication supabase_realtime;', ''), sql.replace('not pubinsert or not pubupdate', 'false'), sql.replace('create trigger workspaces_set_updated_at before update', 'create trigger wrong_trigger before update')]) {
