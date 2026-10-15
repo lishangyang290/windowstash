@@ -1,4 +1,5 @@
 import type { SVGProps } from 'react';
+import logo from '../../../public/icon-128.png';
 
 type IconProps = SVGProps<SVGSVGElement>;
 
@@ -15,5 +16,5 @@ export function WorkspaceIcon(props: IconProps) {
 }
 
 export function LogoMark() {
-  return <span className="logo-mark" aria-hidden="true"><span /><span /></span>;
+  return <img className="logo-mark" src={logo} alt="" />;
 }
