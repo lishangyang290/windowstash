@@ -58,6 +58,16 @@ select 'tombstone_table_permissions',
   and not has_table_privilege('authenticated', 'public.workspace_tombstones', 'INSERT,UPDATE,DELETE,TRUNCATE')
   and not has_table_privilege('anon', 'public.workspace_tombstones', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')
 union all
+select 'workspace_crud_permissions', bool_and(has_table_privilege('authenticated', 'public.workspaces', privilege))
+from (values ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) as required(privilege)
+union all
+select 'workspace_no_extra_client_privileges', not exists (
+  select 1 from pg_catalog.pg_roles client cross join pg_catalog.pg_roles reachable
+  where client.rolname in ('anon', 'authenticated')
+    and (pg_catalog.pg_has_role(client.oid, reachable.oid, 'USAGE') or pg_catalog.pg_has_role(client.oid, reachable.oid, 'SET'))
+    and has_table_privilege(reachable.oid, 'public.workspaces', 'TRUNCATE,REFERENCES,TRIGGER')
+)
+union all
 select 'enabled_guard_and_timestamp_triggers', count(*) = 2 and bool_and(
   t.tgenabled = 'O' and (
     (t.tgname = 'windowstash_workspace_guard' and t.tgtype = 31

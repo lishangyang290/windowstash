@@ -3,6 +3,22 @@
 begin;
 set local lock_timeout = '5s';
 set local statement_timeout = '30s';
+-- RLS does not protect TRUNCATE. Remove only unnecessary table privileges.
+revoke truncate, references, trigger on table public.workspaces from public, anon, authenticated;
+grant select, insert, update, delete on table public.workspaces to authenticated;
+-- Do not silently alter shared roles or memberships: inherited privileges abort the transaction.
+do $$
+declare client record; reachable record;
+begin
+  for client in select oid, rolname from pg_catalog.pg_roles where rolname in ('anon', 'authenticated') loop
+    for reachable in select oid, rolname from pg_catalog.pg_roles
+      where pg_catalog.pg_has_role(client.oid, oid, 'USAGE') or pg_catalog.pg_has_role(client.oid, oid, 'SET') loop
+      if pg_catalog.has_table_privilege(reachable.oid, 'public.workspaces', 'TRUNCATE,REFERENCES,TRIGGER') then
+        raise exception 'workspace_extra_privileges: client=%, reachable_role=%; review grants or membership', client.rolname, reachable.rolname;
+      end if;
+    end loop;
+  end loop;
+end $$;
 create table if not exists public.workspace_tombstones (
   workspace_id uuid primary key,
   user_id uuid not null,

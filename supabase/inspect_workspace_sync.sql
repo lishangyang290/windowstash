@@ -29,6 +29,39 @@ select 'grants', coalesce(jsonb_agg(to_jsonb(g)), '[]'::jsonb)
 from information_schema.table_privileges g where table_schema = 'public'
 and table_name in ('workspaces', 'workspace_tombstones')
 union all
+select 'reachable_workspace_privileges', coalesce(jsonb_agg(jsonb_build_object(
+  'client', client.rolname, 'reachable_role', reachable.rolname,
+  'inherited', pg_catalog.pg_has_role(client.oid, reachable.oid, 'USAGE'),
+  'set_role', pg_catalog.pg_has_role(client.oid, reachable.oid, 'SET'),
+  'privilege', required.privilege,
+  'granted', has_table_privilege(reachable.oid, to_regclass('public.workspaces'), required.privilege),
+  'superuser', reachable.rolsuper, 'bypass_rls', reachable.rolbypassrls
+)), '[]'::jsonb)
+from pg_catalog.pg_roles client cross join pg_catalog.pg_roles reachable
+cross join (values ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE'), ('REFERENCES'), ('TRIGGER')) as required(privilege)
+where client.rolname in ('anon', 'authenticated')
+  and (pg_catalog.pg_has_role(client.oid, reachable.oid, 'USAGE') or pg_catalog.pg_has_role(client.oid, reachable.oid, 'SET'))
+union all
+select 'table_owners_and_acl', coalesce(jsonb_agg(jsonb_build_object(
+  'table', c.relname, 'owner', pg_catalog.pg_get_userbyid(c.relowner), 'acl', c.relacl
+)), '[]'::jsonb)
+from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+where n.nspname = 'public' and c.relname in ('workspaces', 'workspace_tombstones')
+union all
+select 'schema_acl', coalesce(jsonb_agg(jsonb_build_object(
+  'schema', n.nspname, 'owner', pg_catalog.pg_get_userbyid(n.nspowner), 'acl', n.nspacl
+)), '[]'::jsonb) from pg_catalog.pg_namespace n where n.nspname in ('public', 'auth')
+union all
+select 'client_role_memberships', coalesce(jsonb_agg(jsonb_build_object(
+  'member', member.rolname, 'role', parent.rolname, 'membership', to_jsonb(m)
+)), '[]'::jsonb)
+from pg_catalog.pg_auth_members m
+join pg_catalog.pg_roles member on member.oid = m.member
+join pg_catalog.pg_roles parent on parent.oid = m.roleid
+where exists (select 1 from pg_catalog.pg_roles client
+  where client.rolname in ('anon', 'authenticated')
+    and pg_catalog.pg_has_role(client.oid, member.oid, 'MEMBER'))
+union all
 select 'functions', coalesce(jsonb_agg(jsonb_build_object(
   'signature', p.oid::regprocedure::text, 'owner', pg_catalog.pg_get_userbyid(p.proowner),
   'acl', p.proacl, 'definition', pg_catalog.pg_get_functiondef(p.oid)

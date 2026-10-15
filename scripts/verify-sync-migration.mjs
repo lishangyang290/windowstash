@@ -13,7 +13,12 @@ export function checkMigration(sql) {
   for (const ch of strings) { if (ch === '(') depth++; if (ch === ')') depth--; assert(depth >= 0, 'unbalanced parentheses'); }
   assert.equal(depth, 0, 'unbalanced parentheses');
   assert(/^\s*begin;/i.test(source) && /commit;\s*$/i.test(source), 'migration must be transactional');
-  assert(!/\b(?:truncate|drop\s+table|delete\s+from\s+public\.workspaces)\b/i.test(strings), 'no destructive top-level statements');
+  assert(!/(?:^|;)\s*(?:truncate\b|drop\s+table\b|delete\s+from\s+public\.workspaces\b)/i.test(strings), 'no destructive top-level statements');
+  assert(/revoke truncate, references, trigger on table public\.workspaces from public, anon, authenticated;/.test(source), 'remove direct and PUBLIC extra privileges');
+  assert(/grant select, insert, update, delete on table public\.workspaces to authenticated;/.test(source), 'preserve normal client CRUD');
+  assert(/pg_has_role\(client\.oid, oid, 'USAGE'\)/.test(source) && /pg_has_role\(client\.oid, oid, 'SET'\)/.test(source), 'check inherited and SET ROLE paths');
+  assert(/has_table_privilege\(reachable\.oid, 'public\.workspaces', 'TRUNCATE,REFERENCES,TRIGGER'\)/.test(source)
+    && /raise exception 'workspace_extra_privileges:/.test(source), 'unresolved inherited privileges must abort');
   assert(/create table if not exists public\.workspace_tombstones/i.test(source));
   assert(/alter table public\.workspace_tombstones enable row level security/i.test(source));
   assert(/grant select on public\.workspace_tombstones to authenticated/i.test(source));
