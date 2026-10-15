@@ -159,7 +159,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .config-site-header{position:fixed;top:0;left:0;right:0;z-index:40;height:64px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.96);backdrop-filter:blur(14px)}
 .config-site-header-inner{display:flex;height:100%;align-items:center;justify-content:space-between;padding:0 28px;gap:16px}
 .config-site-brand{display:flex;align-items:center;gap:12px;color:var(--text);font-size:16px;font-weight:700;letter-spacing:-.02em}
-.config-site-mark{display:block;width:31px;height:31px}
+.config-site-mark{display:block;width:31px;height:31px;border-radius:7px}
 .config-site-header a{color:var(--muted);font-size:14px;text-decoration:none}
 .config-site-header a:hover{text-decoration:underline}
 
