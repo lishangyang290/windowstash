@@ -62,6 +62,16 @@ const localRecord: WorkspaceLocalRecord = {
 };
 
 describe('workspaceService', () => {
+  it('reads a bound native workspace repeatedly without writing it back and triggering another popup refresh', async () => {
+    bindingMock.get.mockResolvedValue('workspace-1');
+    workspaceMock.get.mockResolvedValue(localRecord);
+    nativeReadMock.mockResolvedValue(localRecord);
+    for (let i = 0; i < 3; i++) {
+      expect((await resolveWorkspaceForWindow(22, []))?.content.id).toBe('workspace-1');
+    }
+    expect(workspaceMock.put).not.toHaveBeenCalled();
+    expect(nativeMock).not.toHaveBeenCalled();
+  });
   it('uses the native cloud download before an older Chrome cache when reopening a bound workspace', async () => {
     bindingMock.get.mockResolvedValue('workspace-1');
     const latest = { ...localRecord, content: { ...localRecord.content, name: 'Latest remote update', updatedAt: '2026-10-14T00:00:00Z' } };
@@ -253,12 +263,13 @@ describe('workspaceService', () => {
 
   it('restores full native data after extension cache expiry without cloud access', async () => {
     workspaceMock.get.mockResolvedValueOnce(null).mockResolvedValue(localRecord);
-    nativeReadMock.mockResolvedValueOnce({ ...localRecord, accountStorageKey: 'workspaces' });
+    nativeReadMock.mockResolvedValue({ ...localRecord, accountStorageKey: 'workspaces' });
     browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
     browserMock.tabs.create.mockResolvedValue({ id: 901 });
     browserMock.tabs.remove.mockResolvedValue(undefined);
     await expect(restoreSavedWorkspace('workspace-1')).resolves.toBe(99);
     expect(nativeReadMock).toHaveBeenCalledWith('workspace-1', 'workspaces');
+    expect(workspaceMock.put).toHaveBeenCalledOnce();
     expect(workspaceMock.put).toHaveBeenCalledWith(expect.objectContaining({ accountStorageKey: 'workspaces' }));
     expect(syncMock.syncAll).not.toHaveBeenCalled();
   });

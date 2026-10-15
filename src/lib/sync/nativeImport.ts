@@ -6,6 +6,11 @@ import { notifyRemoteDeletion, restoreDeletionNotices } from '@/features/workspa
 import type { DeleteTombstone, WorkspaceLocalRecord } from '@/types/workspace';
 import { readLibrary, type LocalExchange } from '../../../shared/workspaceSync';
 
+// Chrome storage and Rust serialize object fields in different orders.
+const serialized = (value: unknown) => JSON.stringify(value, (_key, item) =>
+  item && typeof item === 'object' && !Array.isArray(item)
+    ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+
 let imports = Promise.resolve();
 export function importNativeLibrary(scope: string, exchange: LocalExchange): Promise<void> {
   const task = imports.then(async () => {
@@ -23,22 +28,29 @@ export function importNativeLibrary(scope: string, exchange: LocalExchange): Pro
       // Never infer deletion from missing records. Only explicit native markers remove cached IDs.
       const next = pending ? { ...records } : { ...records, ...Object.fromEntries(Object.entries(library.records).map(([id, record]) => [id, { ...record, accountStorageKey: scope }])) };
       const recovery = structuredClone(local[recoveryKey] as Record<string, WorkspaceLocalRecord[]> ?? {});
+      for (const [id, versions] of Object.entries(recovery)) {
+        recovery[id] = [...new Map(versions.map(record => [serialized(record.content), record])).values()];
+      }
       for (const [id, versions] of Object.entries(library.conflicts)) {
         const copies = recovery[id] ??= [];
-        for (const version of versions) if (!copies.some(copy => JSON.stringify(copy.content) === JSON.stringify(version.content))) copies.push(version);
+        const known = new Set(copies.map(copy => serialized(copy.content)));
+        for (const version of versions) {
+          const key = serialized(version.content);
+          if (!known.has(key)) { copies.push(version); known.add(key); }
+        }
       }
       for (const id of library.deleted) {
         const previous = records[id];
         if (library.remote_deleted[id] && previous && previous.sync.syncStatus !== 'synced') {
           const versions = recovery[id] ??= [];
-          if (!versions.some(record => JSON.stringify(record.content) === JSON.stringify(previous.content))) versions.push(previous);
+          if (!versions.some(record => serialized(record.content) === serialized(previous.content))) versions.push(previous);
         }
         if (library.remote_deleted[id] && !tombstones[id] && boundIds.has(id)) await notifyRemoteDeletion(scope, id, library.remote_deleted[id]);
         tombstones[id] ??= { workspaceId: id, workspaceName: records[id]?.content.name ?? '', deletedAt: library.remote_deleted[id] ?? new Date().toISOString(), accountStorageKey: tombstoneKey };
         if (library.delete_ack.includes(id)) tombstones[id].cloudDeletedAt ??= library.remote_deleted[id] ?? new Date().toISOString();
         delete next[id];
       }
-      if (JSON.stringify(next) !== JSON.stringify(records) || JSON.stringify(tombstones) !== JSON.stringify(local[tombstoneKey] ?? {}) || JSON.stringify(recovery) !== JSON.stringify(local[recoveryKey] ?? {})) {
+      if (serialized(next) !== serialized(records) || serialized(tombstones) !== serialized(local[tombstoneKey] ?? {}) || serialized(recovery) !== serialized(local[recoveryKey] ?? {})) {
         await persistLibraryChange(scope, { [scope]: next, [tombstoneKey]: tombstones, [recoveryKey]: recovery });
       }
     });

@@ -54,10 +54,8 @@ async function getLocalWorkspace(id: string, scope: string, preferNative = true)
   if (cached && record && ((await browser.storage.local.get(libraryStateKey(scope)))[libraryStateKey(scope)] as { pending?: boolean } | undefined)?.pending) return cached;
   // Save against the version the user edited; a newer native/cloud baseline must cause a conflict.
   if (cached && !preferNative) return cached;
-  if (record) {
-    const account = await requireDataAccount(scope);
-    await withDataAccount(account, () => workspaceRepository.put(record));
-  }
+  // Reading must not emit storage changes: popup refreshes read this path again.
+  // Native watch/import owns cache updates; restore persists its expiry separately.
   return record ?? cached;
 }
 

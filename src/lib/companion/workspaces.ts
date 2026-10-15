@@ -37,9 +37,10 @@ const PREFIX = 'windowstash-local-library:';
 export const libraryStateKey = (scope: string) => `${PREFIX}${scope}`;
 interface LibraryState { revision: number; pending: boolean }
 const tasks = new Map<string, Promise<unknown>>();
-function locked<T>(name: string, task: () => Promise<T>): Promise<T> {
-  if (globalThis.navigator?.locks) return navigator.locks.request(name, task).then((result) => result);
-  const result = (tasks.get(name) ?? Promise.resolve()).then(task, task);
+function locked<T>(name: string, task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (globalThis.navigator?.locks) return (signal ? navigator.locks.request(name, { signal }, task) : navigator.locks.request(name, task)).then((result) => result);
+  const run = () => { signal?.throwIfAborted(); return task(); };
+  const result = (tasks.get(name) ?? Promise.resolve()).then(run, run);
   tasks.set(name, result);
   void result.finally(() => { if (tasks.get(name) === result) tasks.delete(name); }).catch(() => undefined);
   return result;
@@ -63,8 +64,10 @@ export const libraryScope = (key: string) => key.slice(PREFIX.length);
 
 /** No cloud request participates in this acknowledgement. Failed sends leave the marker intact. */
 export function publishNativeWorkspaces(scope: string, force = false): Promise<void> {
+  const started = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5_000);
   return locked(`publish:${scope}`, async () => {
-    const started = Date.now();
     // Preserve standalone extension use. No native account is inferred from a local label.
     const link = await authLink();
     if (!link) return;
@@ -101,7 +104,10 @@ export function publishNativeWorkspaces(scope: string, force = false): Promise<v
       const state = (await browser.storage.local.get(key))[key] as LibraryState;
       if (state.revision === snapshot.state.revision) await browser.storage.local.set({ [key]: { ...state, pending: false } });
     });
-  });
+  }, controller.signal).catch(error => {
+    if (controller.signal.aborted) throw new Error('本机工作区通道超时；原数据已保留，请重试');
+    throw error;
+  }).finally(() => clearTimeout(timer));
 }
 
 export async function getNativeWorkspace(id: string, scope: string): Promise<WorkspaceLocalRecord | null> {

@@ -36,7 +36,7 @@ beforeEach(() => {
   fixture.nativeReply = { capability: 'a'.repeat(64), config: { url: config.url, publishable_key: config.publishableKey }, session: { access_token: 'fixture-token', refresh_token: 'fixture-refresh', expires_at: Math.floor(Date.now() / 1000) + 3600, expires_in: 3600, token_type: 'bearer', user: { id: userId } } };
   fixture.session.set(scope.replace(/^workspaces/, 'windowBinding:7'), 'fixture-workspace');
   fixture.local.set(scope, { 'fixture-workspace': { accountStorageKey: scope, content: { id: 'fixture-workspace', name: 'Private fixture', status: 'active', tabs: [], activeTabIndex: 0, createdAt: '2026-10-13', updatedAt: '2026-10-13' }, sync: { syncStatus: 'synced' } } });
-  vi.stubGlobal('navigator', { locks: { request: (_name: string, task: () => Promise<unknown>) => task() } });
+  vi.stubGlobal('navigator', { locks: { request: (_name: string, options: LockOptions | (() => Promise<unknown>), callback?: () => Promise<unknown>) => (typeof options === 'function' ? options : callback!)() } });
   vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('Unexpected network request'); }));
 });
 afterEach(async () => { await stopRefresh?.(); stopRefresh = undefined; vi.unstubAllGlobals(); });

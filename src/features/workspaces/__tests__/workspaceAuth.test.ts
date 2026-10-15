@@ -29,7 +29,8 @@ async function login(user: string) {
 async function logout() { await hideDataAccount(); state.local.delete(tokenKey); }
 beforeEach(() => {
   const queues = new Map<string, Promise<unknown>>();
-  vi.stubGlobal('navigator', { locks: { request: (name: string, task: () => Promise<unknown>) => {
+  vi.stubGlobal('navigator', { locks: { request: (name: string, options: LockOptions | (() => Promise<unknown>), callback?: () => Promise<unknown>) => {
+    const task = typeof options === 'function' ? options : callback!;
     const next = (queues.get(name) ?? Promise.resolve()).then(task, task);
     queues.set(name, next.catch(() => {})); return next;
   } } });

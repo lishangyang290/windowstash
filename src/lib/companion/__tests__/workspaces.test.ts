@@ -21,6 +21,21 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 describe('durable native workspace projection', () => {
+  it('cancels a queued publish at the deadline without sending or clearing pending data', async () => {
+    vi.useFakeTimers();
+    await persistLibraryChange(scope, { [scope]: {} });
+    const request = vi.fn((_name: string, options: LockOptions) => new Promise((_, reject) => {
+      options.signal!.addEventListener('abort', () => reject(options.signal!.reason), { once: true });
+    }));
+    vi.stubGlobal('navigator', { locks: { request } });
+    const failed = expect(publishNativeWorkspaces(scope)).rejects.toThrow('通道超时');
+    await vi.advanceTimersByTimeAsync(5_000);
+    await failed;
+    expect(fixture.send).not.toHaveBeenCalled();
+    expect(fixture.storage.get(libraryStateKey(scope))).toEqual({ revision: 1, pending: true });
+    expect(request.mock.calls[0]?.[1].signal?.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it('preserves existing data when the projection counter is invalid or exhausted', async () => {
     fixture.storage.set(scope, { retained: true });
     fixture.storage.set(libraryStateKey(scope), { revision: Number.MAX_SAFE_INTEGER, pending: false });
@@ -33,6 +48,8 @@ describe('durable native workspace projection', () => {
     await publishNativeWorkspaces(scope);
     expect(fixture.storage.get(libraryStateKey(scope))).toEqual({ revision: 1, pending: false });
     expect(JSON.stringify(fixture.send.mock.calls)).not.toContain('never-export');
+    await Promise.all(Array.from({ length: 20 }, () => publishNativeWorkspaces(scope)));
+    expect(fixture.send).toHaveBeenCalledOnce();
   });
   it('chunks UTF-8 data and exports cloud downloads and explicit local tombstones', async () => {
     await persistLibraryChange(scope, {
