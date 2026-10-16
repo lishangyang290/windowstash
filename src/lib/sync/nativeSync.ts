@@ -36,7 +36,7 @@ export async function syncNative(scope: string): Promise<boolean> {
     const context = await nativeContext(scope);
     if (!context) { syncTrace('sync.skipped', { trace, scope, source: 'src/lib/sync/nativeSync.ts:syncNative', result: 'cancelled', changed: false, elapsedMs: performance.now() - started }); return false; }
     await synchronize(context.exchange, context.cloud, context.user, trace);
-    await importNativeLibrary(scope, context.exchange);
+    await importNativeLibrary(scope, context.exchange, trace);
     // Keep the existing durable alarm retry mechanism when Chrome is the surviving process.
     if (scope !== `workspaces:${(await browser.storage.local.get('windowstash-data-owner:v1'))['windowstash-data-owner:v1']}`) throw new Error('账号已变化');
     syncTrace('sync.done', { trace, scope, source: 'src/lib/sync/nativeSync.ts:syncNative', elapsedMs: performance.now() - started });

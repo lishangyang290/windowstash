@@ -5,7 +5,7 @@ export interface Fields {
   trace?: TraceContext; scope?: string; operationId?: string; parentEventId?: string; trigger?: string;
   source?: string; errorCode?: string; retryAttempt?: number; httpStatus?: number; pending?: number; queueDepth?: number; before?: number; after?: number; blockedByOperationId?: string;
   result?: DiagnosticEvent['result'];
-  run?: number; revision?: number; generation?: number; count?: number; deleted?: number;
+  run?: number; revision?: number; generation?: number; count?: number; deleted?: number; conflicts?: number; targetRef?: string;
   elapsedMs?: number; retryMs?: number; changed?: boolean; queued?: boolean;
   workspace?: string; serverAt?: string;
   failure?: 'lease-busy' | 'lease-expired' | 'stale-revision' | 'validation' | 'other';
@@ -58,7 +58,7 @@ export function syncTrace(stage: Stage, fields: Fields = {}): TraceContext {
     const failure = stage.endsWith('.failed'), waiting = stage.endsWith('.busy') || stage.endsWith('.retry') || ['queue.upload', 'queue.delete'].includes(stage) || stage === 'realtime.status' && ['CHANNEL_ERROR','TIMED_OUT','CLOSED'].includes(fields.status ?? '');
     const event = sanitizeEvent({ id, timestamp, component: activeComponent, event: stage,
       operationId: trace.operationId, parentEventId: fields.parentEventId ?? trace.parentEventId, blockedByOperationId: fields.blockedByOperationId,
-      workspaceRef, cloudVersion: fields.serverAt, correlationId: workspaceRef,
+      workspaceRef, cloudVersion: fields.serverAt, correlationId: workspaceRef, targetRef: fields.targetRef,
       durationMs: fields.elapsedMs, retryAttempt: fields.retryAttempt, errorCode: fields.errorCode ?? fields.failure,
       trigger: fields.trigger ?? trace.trigger,
       level: failure ? 'ERROR' : waiting ? 'WARN' : 'INFO',

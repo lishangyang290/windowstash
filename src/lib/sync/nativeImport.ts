@@ -7,6 +7,7 @@ import type { DeleteTombstone, WorkspaceLocalRecord } from '@/types/workspace';
 import { readLibrary, type LocalExchange } from '../../../shared/workspaceSync';
 import { syncTrace } from '../../../shared/syncDiagnostics';
 import { diagnosticErrorCode } from '../../../shared/diagnostics';
+import type { TraceContext } from '../../../shared/diagnostics';
 
 // Chrome storage and Rust serialize object fields in different orders.
 const serialized = (value: unknown) => JSON.stringify(value, (_key, item) =>
@@ -14,9 +15,9 @@ const serialized = (value: unknown) => JSON.stringify(value, (_key, item) =>
     ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
 
 let imports = Promise.resolve();
-export function importNativeLibrary(scope: string, exchange: LocalExchange): Promise<void> {
+export function importNativeLibrary(scope: string, exchange: LocalExchange, diagnostic?: TraceContext): Promise<void> {
   const started = performance.now();
-  const trace = syncTrace('native.import.start', { scope });
+  const trace = syncTrace('native.import.start', { scope, trace: diagnostic });
   const task = imports.then(async () => {
     const library = await readLibrary(exchange), account = await requireDataAccount(scope);
     await withDataAccount(account, async () => {

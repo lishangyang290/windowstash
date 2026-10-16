@@ -7,12 +7,13 @@ beforeEach(() => { events = []; configureDiagnostics({ component: 'extension', s
 afterEach(async () => { await flushDiagnostics(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 it('matches legacy stage endings and lease contention without treating unrelated successes as completion', async () => {
   const lease = syncTrace('lease.start'); syncTrace('lease.busy', { trace: lease });
-  const cloud = traceContext(); syncTrace('cloud.start', { trace: cloud, action: 'snapshot' }); syncTrace('cloud.done', { trace: cloud, action: 'snapshot' });
+  const cloud = syncTrace('cloud.start', { trace: traceContext(), action: 'snapshot' }); syncTrace('cloud.done', { trace: cloud, action: 'snapshot' });
   const pending = syncTrace('cloud.start', { action: 'put' }); syncTrace('native.applied', { trace: pending });
   await flushDiagnostics();
-  const findings = makeBundle(events, {}, Date.now() + 60_000).findings.filter(f => f.symptom.includes('长时间缺少结束'));
+  const findings = makeBundle(events, {}, Date.now() + 60_000).findings.filter(f => f.outcome === 'unknown' && f.disposition !== 'routine');
   expect(findings).toHaveLength(1);
   expect(findings[0]?.firstAbnormal).toBe(pending.parentEventId);
+  expect(findings[0]?.disposition).toBe('historical');
 });
 it('records import failure codes without exporting raw error text', () => {
   expect(diagnosticErrorCode(new Error('账号已变化，请重新操作'))).toBe('account-changed');

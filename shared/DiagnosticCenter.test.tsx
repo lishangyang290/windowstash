@@ -3,7 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { DiagnosticCenter } from './DiagnosticCenter';
-import { makeBundle, type DiagnosticEvent } from './diagnostics';
+import { makeBundle as buildBundle, type DiagnosticEvent } from './diagnostics';
+const makeBundle: typeof buildBundle = (events, coverage, now = events[0] ? Date.parse(events[0].timestamp) : Date.now()) => buildBundle(events, coverage, now);
 vi.mock('./diagnosticTiming', () => ({ diagnosticTiming: vi.fn(), yieldDiagnosticUI: async () => {} }));
 vi.mock('./diagnosticExport', () => ({ prepareDiagnosticExport: vi.fn(async (latest, imported) => {
   const bundle = imported.length ? makeBundle([...latest.events, ...imported], latest.coverage) : latest;
@@ -54,6 +55,18 @@ it('isolates problem evidence and restores the correctly selected page when retu
   await act(async () => container.querySelector<HTMLButtonElement>('.diag-event-choice')!.click());
   expect(detail.querySelector('h2')?.textContent).toBe('收到云端工作区版本');
 });
+it('defaults to actionable faults while preserving unconfirmed historical failures and their original evidence', async () => {
+  const bundle = buildBundle([event], {}, Date.parse(event.timestamp) + 60_000);
+  await act(async () => root.render(<DiagnosticCenter load={async () => bundle} enableDetails={async () => {}} />));
+  expect(container.textContent).toContain('目前未发现需要处理的故障');
+  expect(container.querySelectorAll('.diag-issue-row')).toHaveLength(0);
+  await click('历史异常或恢复未确认 1');
+  expect(container.querySelectorAll('.diag-issue-row')).toHaveLength(1);
+  expect(container.textContent).toContain('42501');
+  expect(container.textContent).toContain('已记录失败');
+  await click('事件记录 1');
+  expect(container.querySelectorAll('tbody tr')).toHaveLength(1);
+});
 it('keeps the selected trace in the visible page and respects component and level filters', async () => {
   const events = records(41);
   await act(async () => root.render(<DiagnosticCenter load={async () => makeBundle(events)} enableDetails={async () => {}} />));
@@ -101,17 +114,17 @@ it('selects the corresponding trace from any cell or blank area of an event row'
   }
 });
 it('distinguishes same-name same-time events within one operation and focuses the matching timeline step', async () => {
-  const events = records(30).map((e, index) => ({ ...e, operationId: event.operationId, timestamp: event.timestamp,
+  const events = records(30).map(e => ({ ...e, operationId: event.operationId, timestamp: event.timestamp,
     event: 'cloud.received', result: 'success' as const, level: 'INFO' as const, errorCode: undefined,
-    workspaceRef: (index + 1).toString(16).padStart(8, '0') + 'a'.repeat(56), cloudVersion: '2026-10-15T00:00:00.123456Z' }));
+    workspaceRef: 'a'.repeat(64), cloudVersion: '2026-10-15T00:00:00.123456Z' }));
   await act(async () => root.render(<DiagnosticCenter load={async () => makeBundle(events)} enableDetails={async () => {}} />));
   await click('事件记录 30');
   const pane = container.querySelector('[aria-label="操作追踪详情"]')!;
   expect(pane.querySelector('.diag-trace-meta')?.textContent).toContain('30 / 30');
-  expect(pane.querySelector('[aria-label="当前选中事件详情"]')?.textContent).toContain('0000001e');
+  expect(pane.querySelector('[aria-current="step"]')?.getAttribute('data-trace-event-id')).toBe(events[29]!.id);
   await act(async () => container.querySelectorAll<HTMLTableRowElement>('tbody tr')[1]!.click());
   expect(pane.querySelector('.diag-trace-meta')?.textContent).toContain('29 / 30');
-  expect(pane.querySelector('[aria-label="当前选中事件详情"]')?.textContent).toContain('0000001d');
+  expect(pane.querySelector('[aria-current="step"]')?.getAttribute('data-trace-event-id')).toBe(events[28]!.id);
   expect(JSON.parse(pane.querySelector('[aria-current="step"] pre')!.textContent!).id).toBe(events[28]!.id);
   expect(pane.querySelector('[aria-current="step"]')?.getAttribute('data-trace-event-id')).toBe(events[28]!.id);
   expect(pane.querySelectorAll('.diag-timeline li')).toHaveLength(5);

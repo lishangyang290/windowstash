@@ -137,7 +137,7 @@ pub fn sanitize_frontend(entry: Value) -> Option<Value> {
     for key in ["id", "operationId", "parentEventId", "processId", "blockedByOperationId"] {
         if let Some(value) = entry[key].as_str().filter(|s| valid_id(s)) { safe.insert(key.into(), json!(value)); }
     }
-    for key in ["deviceId", "workspaceRef", "correlationId"] {
+    for key in ["deviceId", "workspaceRef", "correlationId", "targetRef"] {
         if let Some(value) = entry[key].as_str().filter(|s| s.len()==64 && s.bytes().all(|b|b.is_ascii_hexdigit())) { safe.insert(key.into(), json!(value)); }
     }
     for (key, values) in [
@@ -155,9 +155,9 @@ pub fn sanitize_frontend(entry: Value) -> Option<Value> {
     safe.insert("buildId".into(), json!(build));
     for key in ["timestamp", "durationMs", "retryAttempt"] { if let Some(value) = entry[key].as_u64() { safe.insert(key.into(), json!(value)); } }
     if let Some(stamp) = entry["cloudVersion"].as_str().filter(|s|s.len()<=40 && s.bytes().all(|b|b.is_ascii_digit() || b"-T:.+Z".contains(&b))) { safe.insert("cloudVersion".into(), json!(stamp)); }
-    if let Some(code) = entry["errorCode"].as_str().filter(|s|["lease-busy","lease-expired","stale-revision","validation","other","timeout","account-changed","sync_lease_expired"].contains(s) || (s.len()==5 && s.bytes().all(|b|b.is_ascii_uppercase() || b.is_ascii_digit()))) { safe.insert("errorCode".into(), json!(code)); }
+    if let Some(code) = entry["errorCode"].as_str().filter(|s|["lease-busy","lease-expired","stale-revision","validation","other","timeout","account-changed","sync_lease_expired","local_store_corrupt","local_store_full","local_store_unavailable"].contains(s) || (s.len()==5 && s.bytes().all(|b|b.is_ascii_uppercase() || b.is_ascii_digit()))) { safe.insert("errorCode".into(), json!(code)); }
     let mut state = serde_json::Map::new();
-    for key in ["run","revision","generation","count","deleted","retryMs","pending","queueDepth","httpStatus","leaseRemainingMs","before","after"] { if let Some(v)=entry["state"][key].as_u64() { state.insert(key.into(),json!(v)); } }
+    for key in ["run","revision","generation","count","deleted","conflicts","retryMs","pending","queueDepth","httpStatus","leaseRemainingMs","before","after"] { if let Some(v)=entry["state"][key].as_u64() { state.insert(key.into(),json!(v)); } }
     for key in ["changed","queued"] { if let Some(v)=entry["state"][key].as_bool() { state.insert(key.into(),json!(v)); } }
     for key in ["action","status","failure","reason","context"] {
         if let Some(v)=entry["state"][key].as_str().filter(|v|["popup","manager","background","diagnostics","companion","save","save-close","update","delete","snapshot","put","remove","acquire","read","renew","apply","release","SUBSCRIBED","CHANNEL_ERROR","TIMED_OUT","CLOSED","ok","error","other","busy","lease-busy","lease-expired","stale-revision","validation","retry","startup"].contains(v)) { state.insert(key.into(),json!(v)); }
@@ -234,9 +234,14 @@ mod tests {
     }
     #[test]
     fn frontend_wire_is_allowlisted_instead_of_serializing_errors_or_identity() {
-        let mut raw = event("sync.failed", &json!({}), "failed", None, json!({"count":1,"token":"PRIVATE","email":"PRIVATE"}));
+        let mut raw = event("sync.failed", &json!({}), "failed", None, json!({"count":1,"conflicts":2,"token":"PRIVATE","email":"PRIVATE"}));
         raw["component"] = json!("companion"); raw["password"] = json!("PRIVATE"); raw["errorCode"] = json!("PRIVATE");
+        raw["targetRef"] = json!("a".repeat(64));
         let safe = sanitize_frontend(raw).unwrap();
         assert!(!safe.to_string().contains("PRIVATE")); assert_eq!(safe["state"]["count"],1);
+        assert_eq!(safe["state"]["conflicts"],2); assert_eq!(safe["targetRef"],"a".repeat(64));
+        let mut invalid = safe; invalid["targetRef"] = json!("PRIVATE"); invalid["errorCode"] = json!("local_store_corrupt");
+        let checked = sanitize_frontend(invalid).unwrap();
+        assert!(checked.get("targetRef").is_none()); assert_eq!(checked["errorCode"],"local_store_corrupt");
     }
 }

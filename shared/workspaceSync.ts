@@ -78,6 +78,10 @@ function conflict(record: WorkspaceLocalRecord, message: string): WorkspaceLocal
   return { ...record, sync: { ...record.sync, syncStatus: 'conflict', lastSyncError: message } };
 }
 
+function observeQueue(state: NativeLibrary, trace?: TraceContext) {
+  syncTrace('queue.snapshot', { trace, count: Object.keys(state.records).length, pending: Object.values(state.records).filter(r => r.sync.syncStatus !== 'synced').length, conflicts: Object.values(state.records).filter(r => r.sync.syncStatus === 'conflict').length, deleted: state.deleted.filter(id => !state.delete_ack.includes(id)).length });
+}
+
 /** One native lease owns upload, for both processes. No cloud absence is a deletion. */
 export async function synchronize(exchange: LocalExchange, cloud: SyncCloud, user: string, trace: TraceContext = traceContext()): Promise<boolean> {
   const started = performance.now();
@@ -96,6 +100,7 @@ export async function synchronize(exchange: LocalExchange, cloud: SyncCloud, use
       const origin = state.diagnostics?.[id];
       return origin && /^[a-f0-9-]{36}$/i.test(origin.operationId) ? { ...origin, parentEventId: trace.parentEventId } : trace;
     };
+    observeQueue(state, trace);
     const before = JSON.stringify(state);
     const raw = await cloud.snapshot(trace) as CloudSnapshot;
     if (raw?.protocol !== 1 || raw.user_id !== user || !Array.isArray(raw.records) || !Array.isArray(raw.deleted)) fail();
@@ -126,7 +131,6 @@ export async function synchronize(exchange: LocalExchange, cloud: SyncCloud, use
       const reply = await exchange('renew', { token }) as { status: string };
       if (reply.status !== 'renewed') fail();
     };
-    syncTrace('queue.snapshot', { trace, count: Object.keys(state.records).length, pending: Object.values(state.records).filter(r => r.sync.syncStatus !== 'synced').length, deleted: state.deleted.filter(id => !state.delete_ack.includes(id)).length });
     const uploads: string[] = [];
     for (const [id, local] of Object.entries(state.records)) {
       const remote = rows.get(id), hash = await workspaceHash(local.content);
@@ -156,6 +160,7 @@ export async function synchronize(exchange: LocalExchange, cloud: SyncCloud, use
     // Downloads/deletions are durably committed even if a subsequent upload fails.
     let changed = JSON.stringify(state) !== before;
     if (changed) { await renew(); await writeLibrary(exchange, state, token); state = await readLibrary(exchange); }
+    if (changed) observeQueue(state, trace);
     const uploadBase = JSON.stringify(state);
     for (const id of state.deleted) {
       if (state.delete_ack.includes(id)) continue;
@@ -172,6 +177,7 @@ export async function synchronize(exchange: LocalExchange, cloud: SyncCloud, use
       state.records[id] = downloaded(row);
     }
     if (JSON.stringify(state) !== uploadBase) { await renew(); await writeLibrary(exchange, state, token); changed = true; }
+    observeQueue(state, trace);
     if (changed) for (const record of Object.values(state.records)) if (record.sync.syncStatus === 'synced') syncTrace('native.applied', { trace, workspace: record.content.id, serverAt: record.sync.lastSyncedCloudUpdatedAt ?? undefined });
     syncTrace('native.applied', { trace, changed, elapsedMs: performance.now() - started });
     return changed;
@@ -202,5 +208,6 @@ export async function resolveSynchronizedConflict(exchange: LocalExchange, cloud
       if (result.id !== id) fail(); state.records[id] = downloaded(result);
     }
     await exchange('renew', { token }); await writeLibrary(exchange, state, token);
+    observeQueue(state);
   } finally { await exchange('release', { token }).catch(() => undefined); }
 }

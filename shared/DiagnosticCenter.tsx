@@ -6,6 +6,7 @@ import { DiagnosticSelect } from './DiagnosticSelect';
 import './diagnostics.css';
 import { prepareDiagnosticExport } from './diagnosticExport';
 import { diagnosticTiming, yieldDiagnosticUI } from './diagnosticTiming';
+import { dispositionLabels, outcomeLabels, type Disposition } from './diagnosticOperations';
 
 type View = 'issues' | 'events' | 'status';
 function initialView(): View {
@@ -16,7 +17,7 @@ const PAGE_SIZE = 40;
 const labels: Record<string, string> = {
   extension: 'Chrome 扩展', companion: 'Companion', 'native-host': 'Native Host', 'companion-rust': '桌面服务',
   started: '开始', success: '完成', waiting: '等待', failed: '失败', cancelled: '已取消', observed: '状态记录',
-  confirmed: '已记录的异常', suspected: '需要核实', insufficient: '证据不完整',
+  confirmed: '事实已证实', suspected: '尚需核实', insufficient: '证据不完整',
 };
 const stamp = (at?: string | null) => at && Number.isFinite(Date.parse(at)) ? new Date(at).toLocaleString('zh-CN', { hour12: false }) : '未知';
 const timeOnly = (at?: string | null) => at && Number.isFinite(Date.parse(at)) ? new Date(at).toLocaleTimeString('zh-CN', { hour12: false }) : '未知';
@@ -35,7 +36,7 @@ function download(bundle: DiagnosticBundle, json: string) {
 }
 function EvidenceStatus({ group }: { group: IssueGroup }) {
   const count = group.findings.length;
-  return <span className={`diag-confidence diag-confidence--${group.confidence}`}>{labels[group.confidence]}{count > 1 ? ` · ${count} 条线索` : ''}</span>;
+  return <span className={`diag-confidence diag-severity--${group.representative.severity ?? 'info'}`}>{dispositionLabels[group.representative.disposition ?? 'historical']}{count > 1 ? ` · ${count} 条线索` : ''}</span>;
 }
 function IssueDetail({ issue, bundle, onEvidence, onCopy }: {
   issue: IssueGroup; bundle: DiagnosticBundle; onEvidence: (id: string) => void; onCopy: (value: string) => void;
@@ -49,6 +50,9 @@ function IssueDetail({ issue, bundle, onEvidence, onCopy }: {
       <div className="diag-evidence-head"><b>目前能确定什么</b></div>
       <p className="diag-readable">{issue.representative.hypothesis}</p>
       <dl className="diag-detail-pairs">
+        <div><dt>操作结果</dt><dd>{issue.representative.outcome ? outcomeLabels[issue.representative.outcome] : '历史记录未提供终态'}</dd></div>
+        <div><dt>证据可信度</dt><dd>{labels[issue.confidence]}</dd></div>
+        <div><dt>事件影响等级</dt><dd>{issue.representative.severity === 'error' ? '明确风险' : issue.representative.severity === 'warning' ? '影响需要核实' : '信息记录'}；当前处理状态见上方标记</dd></div>
         <div><dt>相关位置</dt><dd>{anchor ? componentLabel(anchor.component) : '记录不足'}</dd></div>
         <div><dt>最后线索</dt><dd>{anchor ? `${eventLabel(anchor)} · ${timeOnly(anchor.timestamp)}` : '尚未找到对应事件'}</dd></div>
         <div><dt>源码模块</dt><dd><code>{issue.representative.source.join('、') || anchor?.source || '未记录'}</code></dd></div>
@@ -145,6 +149,7 @@ function TraceDetail({ active, bundle, onCopy, onSelect, problem }: {
 export function DiagnosticCenter({ load, enableDetails, save }: { load: (onPartial?: (bundle: DiagnosticBundle) => void) => Promise<DiagnosticBundle>; enableDetails: () => Promise<void>; save?: (bundle: DiagnosticBundle) => Promise<string> }) {
   const [bundle, setBundle] = useState<DiagnosticBundle>(() => makeBundle([]));
   const [view, setView] = useState<View>(initialView);
+  const [issueState, setIssueState] = useState<Disposition>('actionable'), [issueLimit, setIssueLimit] = useState(PAGE_SIZE);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState('');
   const [exportStage, setExportStage] = useState('');
   const exporting = useRef(false);
@@ -222,7 +227,8 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: (onParti
     window.addEventListener('windowstash-diagnostic-account-changed', clear);
     return () => window.removeEventListener('windowstash-diagnostic-account-changed', clear);
   }, []);
-  const issues = useMemo(() => groupDiagnosticFindings(bundle), [bundle]);
+  const allIssues = useMemo(() => groupDiagnosticFindings(bundle), [bundle]);
+  const issues = useMemo(() => allIssues.filter(issue => (issue.representative.disposition ?? 'historical') === issueState), [allIssues, issueState]);
   const selectedIssue = issues.find(x => x.key === selectedIssueKey) ?? issues[0];
   const events = bundle.events;
   const evidenceIds = useMemo(() => {
@@ -251,7 +257,7 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: (onParti
     setView('events'); setMobileDetail(true);
   }
   function switchView(next: View) { setView(next); setMobileDetail(false); setMessage(''); }
-  const currentIssueCount = issues.length;
+  const currentIssueCount = allIssues.filter(issue => issue.representative.disposition === 'actionable').length;
   const last = (name: string) => events.filter(e => e.event === name).at(-1);
   const recentSuccess = events.filter(e => e.event === 'cloud.version' || e.event === 'cloud.done' && ['put','remove'].includes(String(e.state.action))).at(-1);
   const recentFailure = events.filter(e => e.result === 'failed').at(-1);
@@ -284,14 +290,17 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: (onParti
       <button className={view === 'status' ? 'diag-tab-active' : ''} aria-current={view === 'status' ? 'page' : undefined} onClick={() => switchView('status')}>采集状态</button>
     </nav><div className="diag-toolbar-info">记录范围 {stamp(bundle.range.from)} — {stamp(bundle.range.to)}</div></div>
     {view === 'issues' && <div className={`diag-workspace ${mobileDetail ? 'diag-show-detail' : ''}`}>
-      <section className="diag-list-pane" aria-label="问题线索列表"><div className="diag-pane-intro"><strong>发现 {currentIssueCount} 组值得排查的线索</strong><p>{bundle.findings.length} 条分析归并为操作组。没有记录不代表一定正常。</p></div>
+      <section className="diag-list-pane" aria-label="问题线索列表"><div className="diag-pane-intro"><strong>{dispositionLabels[issueState]} · {issues.length}</strong><p>按操作目标与执行尝试判断。历史失败不代表当前故障，也不等于已经恢复。</p>
+        <div className="diag-issue-states" aria-label="操作处理状态">{(Object.keys(dispositionLabels) as Disposition[]).map(state => <button key={state} aria-pressed={issueState === state} onClick={() => { setIssueState(state); setIssueLimit(PAGE_SIZE); setSelectedIssueKey(null); }}>{dispositionLabels[state]} {allIssues.filter(issue => (issue.representative.disposition ?? 'historical') === state).length}</button>)}</div>
+      </div>
         <div className="diag-scroller diag-issue-scroll">
-          {issues.map(issue => <button key={issue.key} className={`diag-issue-row ${selectedIssue?.key===issue.key?'diag-selected':''}`} onClick={() => { setSelectedIssueKey(issue.key); setMobileDetail(true); }}>
+          {issues.slice(0, issueLimit).map(issue => <button key={issue.key} className={`diag-issue-row ${selectedIssue?.key===issue.key?'diag-selected':''}`} onClick={() => { setSelectedIssueKey(issue.key); setMobileDetail(true); }}>
             <div className="diag-issue-row-head"><EvidenceStatus group={issue}/><time>{stamp(issue.timestamp)}</time></div>
             <strong>{issue.representative.symptom}</strong><p>{issue.representative.hypothesis}</p>
             <span className="diag-issue-row-foot">{issue.anchor ? componentLabel(issue.anchor.component) : '来源不明'} <span>查看详情 →</span></span>
           </button>)}
-          {!issues.length && <div className="diag-empty"><strong>{reading ? '正在整理问题线索…' : '尚无可以归类的故障线索'}</strong><p>{reading ? '正在读取可访问组件的日志。已读到的事件可以先在事件记录中查看。' : '这不等于系统没有问题。可以查看事件记录或导入另一台设备的诊断文件。'}</p><button className="diag-secondary" onClick={() => switchView('events')}>查看事件记录</button></div>}
+          {issues.length > issueLimit && <button className="diag-secondary" onClick={() => setIssueLimit(limit => limit + PAGE_SIZE)}>继续显示 {Math.min(PAGE_SIZE, issues.length - issueLimit)} 项</button>}
+          {!issues.length && <div className="diag-empty"><strong>{reading ? '正在整理问题线索…' : issueState === 'actionable' ? '目前未发现需要处理的故障' : '此状态下暂无操作记录'}</strong><p>{reading ? '正在读取可访问组件的日志。已读到的事件可以先在事件记录中查看。' : '结论仅限已采集证据；可查看历史、运行状态或原始事件，不代表整个系统绝对正常。'}</p><button className="diag-secondary" onClick={() => switchView('events')}>查看事件记录</button></div>}
         </div>
       </section>
       <aside className="diag-detail-pane" aria-label="故障详情">

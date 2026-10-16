@@ -8,15 +8,16 @@ export function syncCloud(client: RpcClient): SyncCloud {
     const action = name === 'windowstash_snapshot_v1' ? 'snapshot' : name === 'windowstash_put_v1' ? 'put' : 'remove';
     const id = action === 'put' ? (args?.workspace as { id?: unknown })?.id : args?.workspace_id;
     const workspace = typeof id === 'string' ? id : undefined;
+    const targetRef = action === 'put' ? (args?.workspace as { content_hash?: string })?.content_hash : undefined;
     const started = performance.now();
-    trace = syncTrace('cloud.start', { trace, action, workspace });
+    trace = syncTrace('cloud.start', { trace, action, workspace, targetRef });
     try {
       const { data, error, status } = await client.rpc(name, args).abortSignal(AbortSignal.timeout(10_000));
       if (error) throw new Error(`云端同步暂未完成：${error.message}`, { cause: { ...error, status } });
-      syncTrace('cloud.done', { trace, action, workspace, httpStatus: status, elapsedMs: performance.now() - started });
+      syncTrace('cloud.done', { trace, action, workspace, targetRef, httpStatus: status, elapsedMs: performance.now() - started });
       return data;
     } catch (error) {
-      syncTrace('cloud.failed', { trace, httpStatus: (error as { cause?: { status?: number } })?.cause?.status, errorCode: typeof (error as { cause?: { code?: unknown } })?.cause?.code === 'string' ? (error as { cause: { code: string } }).cause.code : (error as { name?: string })?.name === 'TimeoutError' ? 'timeout' : 'other', action, workspace, elapsedMs: performance.now() - started });
+      syncTrace('cloud.failed', { trace, targetRef, httpStatus: (error as { cause?: { status?: number } })?.cause?.status, errorCode: typeof (error as { cause?: { code?: unknown } })?.cause?.code === 'string' ? (error as { cause: { code: string } }).cause.code : (error as { name?: string })?.name === 'TimeoutError' ? 'timeout' : 'other', action, workspace, elapsedMs: performance.now() - started });
       throw error;
     }
   }

@@ -30,15 +30,15 @@ describe('diagnostics presentation', () => {
     expect(result.map(e=>e.id)).toEqual([a.id,related.id]);
     expect(result.map(e=>e.id)).not.toContain(b.id);
   });
-  it('keeps versioned and unversioned stages of one operation together and matches exact cross-device versions', () => {
+  it('keeps distinct targets and devices separate even when server versions match', () => {
     const a=event(1,1), b={ ...event(2,1), workspaceRef:'b'.repeat(64),cloudVersion:'2026-10-15T10:00:00.123456Z' };
     const remote={ ...event(3,2), deviceId:'c'.repeat(64),workspaceRef:b.workspaceRef,cloudVersion:b.cloudVersion };
     const differentVersion={ ...event(4,3), workspaceRef:b.workspaceRef,cloudVersion:'2026-10-15T10:00:00.123457Z' };
     const unrelated={ ...event(5,1), deviceId:'d'.repeat(64) };
     const bundle={ ...makeBundle([a,b,remote,differentVersion,unrelated]), findings:[a,b,remote,differentVersion,unrelated].map(e=>finding(e,'等待核对')) };
     const groups=groupDiagnosticFindings(bundle);
-    expect(groups).toHaveLength(3);
-    expect(groups.find(g=>g.findings.length===3)?.eventIds).toEqual([a.id,b.id,remote.id]);
+    expect(groups).toHaveLength(5);
+    expect(groups.every(g=>g.findings.length===1)).toBe(true);
     expect(bundle.findings).toHaveLength(5);
   });
   it('keeps the representative anchor aligned with the strongest evidence', () => {
@@ -50,12 +50,12 @@ describe('diagnostics presentation', () => {
     expect(group.anchor?.id).toBe(failed.id);
     expect(group.timestamp).toBe(later.timestamp.replace('Z','.000Z'));
   });
-  it('groups a controller failure and its explicitly linked cloud request without merging adjacent operations', () => {
+  it('retains context links without merging distinct business operations', () => {
     const controller=event(1,1), cloud={...event(2,2,'cloud.failed'),parentEventId:controller.id};
     const unrelated=event(3,3);
     const bundle={...makeBundle([controller,cloud,unrelated]),findings:[controller,cloud,unrelated].map(e=>finding(e,'失败'))};
     const groups=groupDiagnosticFindings(bundle);
-    expect(groups).toHaveLength(2);
-    expect(groups.find(g=>g.findings.length===2)?.eventIds).toEqual([controller.id,cloud.id]);
+    expect(groups).toHaveLength(3);
+    expect(bundle.links).toContainEqual({from:controller.id,to:cloud.id,basis:'parent-event'});
   });
 });

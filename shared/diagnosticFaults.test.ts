@@ -50,7 +50,8 @@ it('exports evidence distinguishing native lease contention from cloud failures'
   await expect(synchronize(f.exchange, f.cloud, user)).rejects.toThrow('其他本机进程');
   const bundle = await exported();
   expect(f.rpc).not.toHaveBeenCalled(); expect(f.state.records[id]?.sync.syncStatus).toBe('pending');
-  expect(bundle.findings.some(x => x.confidence === 'confirmed' && x.source.includes('shared/workspaceSync.ts:synchronize') && x.symptom.includes('租约'))).toBe(true);
+  expect(bundle.findings.some(x => x.disposition === 'actionable')).toBe(false);
+  expect(bundle.events.some(x => x.event === 'lease.busy')).toBe(true);
   expect(bundle.events.some(x => x.event === 'cloud.start')).toBe(false);
 });
 it('records a real pending RPC before completion and exports its precise code path', async () => {
@@ -62,7 +63,7 @@ it('records a real pending RPC before completion and exports its precise code pa
   expect(bundle.events.some(e => e.event === 'cloud.start' && e.state.action === 'put')).toBe(true);
   expect(bundle.events.some(e => e.event === 'cloud.done' && e.state.action === 'put')).toBe(false);
   expect(f.state.records[id]?.sync.syncStatus).toBe('pending');
-  expect(bundle.findings.some(finding => finding.symptom.includes('长时间') && finding.source.includes('shared/syncCloud.ts:rpc'))).toBe(true);
+  expect(bundle.findings.some(finding => finding.outcome === 'unknown' && finding.disposition === 'historical' && finding.source.includes('shared/syncCloud.ts:rpc'))).toBe(true);
   gate.resolve(); await run;
   expect(f.state.records[id]?.sync.syncStatus).toBe('synced');
 });
@@ -70,8 +71,20 @@ it('does not claim a remote receive or a Realtime failure when no event was deli
   const f = await fixture(); await synchronize(f.exchange, f.cloud, user, f.trace);
   await flushDiagnostics();
   const bundle = makeBundle(events, { companion: 'no receive evidence available' }, Date.now() + 60_000);
-  expect(bundle.findings.some(f => f.confidence === 'insufficient' && f.symptom.includes('另一设备'))).toBe(true);
+  expect(bundle.findings.some(f => f.disposition === 'actionable')).toBe(false);
+  expect(bundle.events.some(e => e.event === 'cloud.version')).toBe(true);
   expect(bundle.links.some(l => l.basis === 'workspace-cloud-version')).toBe(false);
+});
+it('reports a newly persisted conflict even when calibration returns successfully', async () => {
+  const f = await fixture();
+  f.state.records[id]!.sync.lastSyncedCloudUpdatedAt = stamp;
+  f.state.records[id]!.sync.lastSyncedHash = 'b'.repeat(64);
+  await synchronize(f.exchange, f.cloud, user, f.trace);
+  const bundle = await exported();
+  expect(f.state.records[id]!.sync.syncStatus).toBe('conflict');
+  expect(bundle.events.some(e => e.event === 'conflict.detected')).toBe(true);
+  expect(bundle.events.some(e => e.event === 'queue.snapshot' && e.state.conflicts === 1)).toBe(true);
+  expect(bundle.findings.some(f => f.disposition === 'actionable' && f.symptom.includes('未解决冲突'))).toBe(true);
 });
 it('receives an actual subscription callback then isolates calibration validation failure', async () => {
   const f = await fixture();
@@ -98,7 +111,8 @@ it('identifies the operation blocking a queued trigger without inventing a deadl
   const request = bundle.events.find(e => e.event === 'sync.request' && e.state.queued)!;
   expect(request.blockedByOperationId).toBe(bundle.events.find(e => e.event === 'sync.start')!.operationId);
   expect(reconcile).toHaveBeenCalledOnce();
-  expect(bundle.findings.some(f => f.symptom.includes('前序任务') && f.confidence === 'suspected')).toBe(true);
+  expect(bundle.findings.some(f => f.disposition === 'actionable')).toBe(false);
+  expect(bundle.findings.some(f => f.outcome === 'unknown')).toBe(true);
   gate.resolve(); await tick();
 });
 it('records actual retry after an interrupted controller restarts with durable pending work', async () => {
@@ -121,7 +135,7 @@ it('exports a reproducible deletion-upload failure with RPC, retry and source ev
   await vi.waitFor(() => expect(f.rpc.mock.calls.some(([name]) => name === 'windowstash_delete_v1')).toBe(true));
   expect(f.state.delete_ack).toEqual([]);
   await flushDiagnostics(); const waiting = makeBundle(events, {}, Date.now() + 60_000);
-  expect(waiting.findings.some(f => f.source.includes('shared/syncCloud.ts:rpc') && f.symptom.includes('长时间'))).toBe(true);
+  expect(waiting.findings.some(f => f.source.includes('shared/syncCloud.ts:rpc') && f.outcome === 'unknown')).toBe(true);
   f.fail('42501'); gate.resolve(); await tick();
   const bundle = await exported();
   expect(f.state.delete_ack).toEqual([]);
@@ -136,8 +150,9 @@ it('keeps Realtime disconnect distinct from actual receive and detects missing r
   const channel = { on: vi.fn(), subscribe: (callback: typeof status) => { status = callback; } };
   const stop = subscribeWorkspaceChanges({ channel: () => channel, removeChannel: async () => 'ok' }, user, () => {}, () => {});
   status('SUBSCRIBED'); status('CHANNEL_ERROR'); await tick();
-  expect((await exported()).findings.some(f => f.symptom.includes('重新订阅'))).toBe(true);
+  expect((await exported()).findings.some(f => f.kind === 'realtime' && f.disposition === 'actionable' && f.outcome === 'waiting')).toBe(true);
   status('SUBSCRIBED'); await tick();
+  expect((await exported()).findings.some(f => f.kind === 'realtime' && f.disposition === 'recovered')).toBe(true);
   // Distinct callbacks may share wall-clock milliseconds; evidence order breaks ties.
   expect(events.some(e => e.event === 'realtime.event')).toBe(false); stop();
 });
