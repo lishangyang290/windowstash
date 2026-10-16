@@ -160,7 +160,7 @@ fn hide_tray_menu(app: tauri::AppHandle) {
 fn display_tray_menu(app: &tauri::AppHandle) {
     let window = app.get_webview_window("tray-menu").or_else(|| {
         tauri::WebviewWindowBuilder::new(app, "tray-menu", tauri::WebviewUrl::App("index.html#tray-menu".into()))
-            .title("WindowStash").inner_size(238.0, 120.0).decorations(false).transparent(true)
+            .title("WindowStash").inner_size(172.0, 94.0).decorations(false).transparent(true)
             .resizable(false).always_on_top(true).skip_taskbar(true).visible(false).build().ok()
     });
     if let Some(window) = window {

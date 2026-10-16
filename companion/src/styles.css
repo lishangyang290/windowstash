@@ -162,11 +162,9 @@ button:disabled { cursor: default; opacity: .55; }
   .supabase-form label, .loading-shell) { font-weight: 400; }
 .workspace-row b { font-weight: 600; }
 
-body:has(.tray-menu) { background: transparent; padding: 6px; }
-.tray-menu { display: grid; gap: 3px; padding: 6px; border: 1px solid #e2e2e6; border-radius: 12px; background: #fdfdfd; box-shadow: 0 3px 12px #18181b14; }
-.tray-menu button { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 40px; padding: 0 10px; border: 0; border-radius: 7px; background: transparent; color: #34343b; text-align: left; font-size: 14px; }
-.tray-menu button:hover, .tray-menu button:focus-visible { outline: none; background: var(--hover); }
-.tray-menu svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.tray-menu-separator { height: 1px; margin: 2px 6px; background: var(--line); }
-.tray-menu .tray-menu-quit { color: #864d49; }
-.tray-menu .tray-menu-quit:hover, .tray-menu .tray-menu-quit:focus-visible { background: #f8eeee; }
+body:has(.tray-menu) { background: transparent; padding: 4px; }
+.tray-menu { display: grid; padding: 4px 0; border: 1px solid #dedee1; border-radius: 8px; outline: none; background: #f8f8f9; box-shadow: 0 2px 7px #18181b18; }
+.tray-menu button { display: flex; align-items: center; gap: 10px; width: calc(100% - 6px); min-height: 34px; margin: 0 3px; padding: 0 9px; border: 0; border-radius: 4px; background: transparent; color: #18181b; text-align: left; font-size: 14px; font-weight: 400; }
+.tray-menu button:hover, .tray-menu button:focus-visible { outline: none; background: #eaeaec; }
+.tray-menu svg { flex-shrink: 0; width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.65; stroke-linecap: round; stroke-linejoin: round; }
+.tray-menu-separator { height: 1px; margin: 3px 0; background: #dedee1; }
