@@ -113,3 +113,28 @@ it('keeps a failed operation in its observed retry schedule actionable, without 
   expect(current([start, error, retry], now + 60_000)).toHaveLength(1);
   expect(current([start, retry], now + 60_000)).toHaveLength(0);
 });
+it.each(['cloud.done', 'native.import.done', 'native.publish.persisted', 'operation.done'])('recognizes an independent %s as completion of that goal only', name => {
+  expect(analyze([event(name, { result: 'success' })]).findings[0]).toMatchObject({ outcome: 'succeeded', disposition: 'routine' });
+});
+it.each(['native.publish.skipped', 'sync.skipped', 'sync.coalesced', 'sync.stop', 'realtime.stop'])('recognizes independent %s without claiming success or recovery', name => {
+  expect(analyze([event(name)]).findings[0]).toMatchObject({ outcome: 'cancelled', disposition: 'routine', recoveryEvidence: [] });
+});
+it('preserves failed, pending and explicitly erroneous skipped stages', () => {
+  const error = event('native.publish.failed', { result: 'failed', errorCode: 'timeout' });
+  const skip = event('native.publish.skipped');
+  expect(analyze([error, skip]).findings[0]).toMatchObject({ outcome: 'failed', disposition: 'actionable' });
+  expect(analyze([skip, event('native.publish.skipped', { result: 'failed', errorCode: 'validation' })]).findings[0]?.outcome).toBe('failed');
+  expect(current([event('native.publish.skipped', { state: { pending: 1 } })], now + 60_000)[0]).toMatchObject({ outcome: 'cancelled', severity: 'warning' });
+  expect(current([event('native.publish.skipped', { errorCode: 'timeout' })])[0]?.outcome).toBe('cancelled');
+  expect(analyze([event('native.publish.skipped', { errorCode: 'timeout' })], now + 60_000).findings[0]?.disposition).toBe('historical');
+});
+it('does not let missing or contradictory evidence finish an unrelated attempt or its parent', () => {
+  const start = event('native.publish.start');
+  const orphan = event('native.publish.persisted', { result: 'success', parentEventId: uuid() });
+  expect(analyze([start, orphan]).findings[0]?.outcome).toBe('waiting');
+  expect(analyze([event('native.publish.skipped', { result: 'waiting' })], now + 60_000).findings[0]?.outcome).toBe('unknown');
+  const root = event('operation.start');
+  const skip = event('native.publish.skipped', { parentEventId: root.id });
+  expect(analyze([root, skip]).findings.find(f => f.kind === 'operation')?.outcome).toBe('waiting');
+  expect(current([event('queue.snapshot', { state: { conflicts: 1 } }), event('sync.skipped')], now + 60_000)).toHaveLength(1);
+});

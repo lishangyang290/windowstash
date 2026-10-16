@@ -90,7 +90,10 @@ export function assessOperations(input: DiagnosticEvent[], now: number): Finding
       : !['native.import', 'native.publish'].includes(group.kind) || !!start.targetRef;
     const retryCompletion = failures.length ? completed.find(start => start.trigger === 'retry' && coversGoal(start) && failedStarts.some(previous => descendsFrom(start, previous))
       && failures.every(e => order.get(e.id)! < order.get(start.id)!)) : undefined;
-    const terminal = starts.length ? ownedEnd(starts.at(-1)!) : undefined;
+    // A retained terminal can stand on its own; it must not finish an unmatched live attempt.
+    const terminal = starts.length ? ownedEnd(starts.at(-1)!) : group.events.filter(e =>
+      (contract.done.includes(e.event) || contract.cancelled.includes(e.event) || e.result === 'cancelled')
+      && !['started', 'waiting'].includes(e.result)).at(-1);
     const subscriptionReady = group.kind === 'realtime' && (last.event === 'realtime.status' && last.state.status === 'SUBSCRIBED'
       || last.event === 'realtime.database' && last.state.status === 'ok');
     const subscriptionError = group.kind === 'realtime' && group.events.some(e => e.event === 'realtime.status' && ['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(String(e.state.status)) || e.event === 'realtime.database' && e.state.status === 'error');
@@ -98,7 +101,7 @@ export function assessOperations(input: DiagnosticEvent[], now: number): Finding
       && start.processId === last.processId && start.component === last.component);
     let outcome: Outcome = retryCompletion || recoveredSubscription ? 'recovered'
       : failures.length ? 'failed'
-        : terminal && contract.cancelled.includes(terminal.event) ? 'cancelled'
+        : terminal && (contract.cancelled.includes(terminal.event) || terminal.result === 'cancelled') ? 'cancelled'
           : terminal && contract.done.includes(terminal.event) ? 'succeeded'
             : subscriptionReady ? 'succeeded' : 'unknown';
     if (!failures.length && outcome === 'unknown' && now >= Date.parse(last.timestamp) && now - Date.parse(last.timestamp) <= CURRENT_OBSERVATION_MS
@@ -111,6 +114,12 @@ export function assessOperations(input: DiagnosticEvent[], now: number): Finding
     if (currentConflict) outcome = 'waiting';
     const pendingRisk = group.kind === 'sync' && !!snapshot && snapshot.operationId === last.operationId
       && ((Number(snapshot.state.pending) > 0) || Number(snapshot.state.deleted) > 0) && failures.length > 0;
+    const skippedPending = outcome === 'cancelled' && terminal?.event.endsWith('.skipped')
+      && [terminal.state.pending, terminal.state.deleted, terminal.state.conflicts].some(value => Number(value) > 0);
+    const skippedError = outcome === 'cancelled' && terminal && [terminal.errorCode, terminal.state.failure, terminal.state.reason]
+      .some(code => typeof code === 'string' && !['lease-busy', 'account-changed'].includes(code)
+        && (code === terminal.errorCode || ['other', 'timeout', 'validation', 'conflict', 'lease-expired', 'stale-revision'].includes(code)));
+    const skippedRisk = skippedPending || skippedError;
     const durableRisk = failures.some(persistentError) || currentConflict || pendingRisk;
     const currentLane = latestLane.get(laneFor(last, group.kind)) === order.get(last.id);
     const fresh = now >= Date.parse(last.timestamp) && now - Date.parse(last.timestamp) <= CURRENT_OBSERVATION_MS;
@@ -119,29 +128,30 @@ export function assessOperations(input: DiagnosticEvent[], now: number): Finding
     const unresolved = failures.length > 0 && outcome !== 'recovered';
     const connectionUncertain = subscriptionError && !subscriptionReady && !group.events.some(e => e.event === 'realtime.stop');
     const actionable = currentConflict || unresolved && (durableRisk || currentLane && (fresh || retryPending))
-      || connectionUncertain && currentLane && fresh;
+      || connectionUncertain && currentLane && fresh || skippedRisk && (skippedPending || currentLane && fresh);
     const normalControl = !failures.length && group.events.every(e => ['lease.busy', 'sync.request', 'sync.retry'].includes(e.event)
       || e.event === 'sync.failed' && e.errorCode === 'lease-busy');
     const disposition: Disposition = outcome === 'recovered' ? 'recovered' : actionable ? 'actionable' : normalControl ? 'routine'
-      : unresolved || outcome === 'unknown' || connectionUncertain || group.events.some(e => e.event === 'conflict.detected') ? 'historical' : 'routine';
+      : unresolved || skippedRisk || outcome === 'unknown' || connectionUncertain || group.events.some(e => e.event === 'conflict.detected') ? 'historical' : 'routine';
     const anchor = failures.at(-1) ?? last;
     const evidence = [...new Set([...failures.map(e => e.id), ...group.events.map(e => e.id)])];
     const hypothesis = currentConflict ? `最近完整队列快照记录 ${conflictSnapshot!.state.conflicts} 个未解决冲突，不能用冲突副本数量替代此状态。`
       : outcome === 'recovered' ? '同一目标有直接关联的恢复及完成证据；原失败记录仍保留。'
         : unresolved ? `已记录${contract.name}失败${anchor.errorCode ? `（${anchor.errorCode}）` : ''}；${actionable ? '当前失败或明确持续风险需要处理。' : '缺少关联恢复证据，保留为历史失败；不能据此认定当前仍然故障或已经恢复。'}`
           : outcome === 'succeeded' ? `${contract.name}的完成条件有直接证据；不代表其他操作或所有工作区均已完成。`
-            : outcome === 'cancelled' ? '已记录取消、跳过或合并调度；不将此控制流当作功能失败。'
+            : skippedRisk ? '该阶段已跳过或取消，但仍记录待提交数据或错误线索，需要核实影响；不能据此确认目标完成或此前失败已经恢复。'
+              : outcome === 'cancelled' ? '该阶段已明确跳过、取消或转交；不代表目标提交成功，也不证明此前失败已经恢复。'
               : outcome === 'waiting' ? '有近期执行、排队或竞争证据；普通等待和重试不直接构成故障。'
                 : '现有记录不足以确定最终结果；日志轮转、采集范围或进程结束均可能造成证据缺口。';
     assessments.push({ operationKey, kind: group.kind, outcome, disposition,
-      severity: durableRisk ? 'error' : failures.length || connectionUncertain ? 'warning' : 'info',
+      severity: durableRisk ? 'error' : failures.length || connectionUncertain || skippedRisk ? 'warning' : 'info',
       confidence: failures.length || currentConflict || ['succeeded', 'recovered', 'cancelled'].includes(outcome) ? 'confirmed' : 'insufficient',
       symptom: currentConflict ? '完整队列快照仍存在未解决冲突' : `${contract.name}：${outcomeLabels[outcome]}`,
       evidence, firstAbnormal: anchor.id, lastSuccess: retryCompletion ? ownedEnd(retryCompletion)?.id : undefined,
       recoveryEvidence: retryCompletion ? [retryCompletion.id, ownedEnd(retryCompletion)!.id] : recoveredSubscription ? [last.id] : [],
       devices: [...new Set(group.events.map(e => e.deviceId))], components: [...new Set(group.events.map(e => e.component))], source: [...new Set(group.events.map(e => e.source))],
       hypothesis, check: actionable ? `检查 ${anchor.source} 的目标、错误码及尚未完成的阶段；仅用对应目标的完成证据确认恢复。` : '可查看原始事件与阶段记录；缺少证据时不推断成功或失败。',
-      missing: unresolved ? ['原失败目标的明确恢复或覆盖证据'] : outcome === 'unknown' ? ['对应操作的结束、取消或覆盖证据'] : [],
+      missing: unresolved ? ['原失败目标的明确恢复或覆盖证据'] : skippedRisk ? ['跳过原因及该目标的后续处理证据'] : outcome === 'unknown' ? ['对应操作的结束、取消或覆盖证据'] : [],
     });
   }
   return assessments;
