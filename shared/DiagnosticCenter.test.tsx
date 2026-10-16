@@ -61,10 +61,9 @@ it('defaults to actionable faults while preserving unconfirmed historical failur
   expect(container.textContent).toContain('当前未发现明确的故障');
   expect(container.textContent).toContain('供开发者或 Codex 分析');
   expect(container.querySelectorAll('.diag-issue-row')).toHaveLength(0);
-  const otherRecords = container.querySelector<HTMLDetailsElement>('.diag-other-records')!;
-  expect(otherRecords.hasAttribute('open')).toBe(false);
-  expect(otherRecords.querySelector('summary')?.textContent).toBe('其他诊断记录');
-  await act(async () => { otherRecords.open = true; });
+  const categories = container.querySelector('[aria-label="诊断记录分类"]')!;
+  expect(categories.querySelector('details')).toBeNull();
+  expect(categories.querySelectorAll('button')).toHaveLength(4);
   await click('待核实记录 1');
   expect(container.querySelectorAll('.diag-issue-row')).toHaveLength(1);
   expect(container.textContent).toContain('42501');

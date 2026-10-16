@@ -61,12 +61,10 @@ body:has(.diagnostics) { margin:0; overflow:hidden; }
 .diag-confidence--confirmed { border-color:#f0ddda; color:#a14a43; background:#fff8f7; }
 .diag-severity--error { border-color:#f0ddda; color:#a14a43; background:#fff8f7; }
 .diag-severity--warning { border-color:#e8dfcc; color:#8b682b; background:#fffaf0; }
-.diag-issue-states { display:flex; flex-direction:column; align-items:flex-start; gap:10px; margin-top:12px; }
+.diag-issue-states { display:flex; flex-wrap:wrap; gap:6px; margin-top:12px; }
 .diag-issue-states button { border:1px solid var(--d-line); border-radius:5px; padding:4px 7px; background:white; color:var(--d-muted); font-size:var(--d-small); }
 .diag-issue-states button[aria-pressed="true"] { color:var(--d-ink); background:var(--d-soft); border-color:#989ba4; }
 .diag-issue-states .diag-current-state { color:var(--d-ink); font-weight:600; }
-.diag-other-records summary { cursor:pointer; color:var(--d-muted); font-size:var(--d-small); }
-.diag-secondary-states { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
 .diag-confidence--suspected { border-color:#f0e6cf; color:#9d762e; background:#fffaf0; }
 .diag-issue-row>strong { display:block; font-size:var(--d-body); font-weight:650; line-height:1.5; }
 .diag-issue-row>p { color:#7d8089; font-size:var(--d-body); line-height:1.7; margin:6px 0 11px; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }

@@ -300,7 +300,7 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: (onParti
       <section className="diag-list-pane" aria-label="问题线索列表"><div className="diag-pane-intro"><strong>{dispositionLabels[issueState]} · {issues.length}</strong><p>{stateDescriptions[issueState]}</p>
         <div className="diag-issue-states" aria-label="诊断记录分类">
           <button className="diag-current-state" aria-pressed={issueState === 'actionable'} onClick={() => selectIssueState('actionable')}>当前故障线索 {currentIssueCount}</button>
-          <details className="diag-other-records"><summary>其他诊断记录</summary><div className="diag-secondary-states">{(['historical', 'recovered', 'routine'] as Disposition[]).map(state => <button key={state} aria-pressed={issueState === state} onClick={() => selectIssueState(state)}>{dispositionLabels[state]} {allIssues.filter(issue => (issue.representative.disposition ?? 'historical') === state).length}</button>)}</div></details>
+          {(['historical', 'recovered', 'routine'] as Disposition[]).map(state => <button key={state} aria-pressed={issueState === state} onClick={() => selectIssueState(state)}>{dispositionLabels[state]} {allIssues.filter(issue => (issue.representative.disposition ?? 'historical') === state).length}</button>)}
         </div>
       </div>
         <div className="diag-scroller diag-issue-scroll">
