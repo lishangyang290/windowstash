@@ -174,6 +174,16 @@ it('restores the export button and reports a safe cause after save failure', asy
   expect(container.querySelector<HTMLButtonElement>('.diag-primary')!.disabled).toBe(false);
   expect(container.textContent).toContain('导出失败：downloads_unavailable');
 });
+it('presents missing stages as aligned rows with one shared evidence explanation', async () => {
+  await act(async () => root.render(<DiagnosticCenter load={async () => makeBundle([event])} enableDetails={async () => {}} />));
+  await click('事件记录 1'); await click('云端请求失败');
+  const disclosure = container.querySelector('.diag-missing')!;
+  expect(disclosure.querySelector('summary')?.textContent).toContain('暂无证据的阶段');
+  expect(disclosure.querySelectorAll('[role="listitem"]')).toHaveLength(8);
+  expect(disclosure.querySelectorAll('.diag-missing-note')).toHaveLength(1);
+  expect(disclosure.textContent).not.toContain('未记录到，无法确认');
+  expect(disclosure.querySelector('ul')).toBeNull();
+});
 it('does not save old account evidence when the account changes during export', async () => {
   let finish!: (bundle: ReturnType<typeof makeBundle>) => void;
   const load = vi.fn().mockResolvedValueOnce(makeBundle([event])).mockImplementation(() => new Promise(resolve => { finish = resolve; }));

@@ -169,6 +169,12 @@ body:has(.diagnostics) { margin:0; overflow:hidden; }
 .diag-stage { display:flex; align-items:center; gap:8px; color:#5f626c; font-size:var(--d-body); }
 .diag-stage small { margin-left:auto; color:var(--d-muted); }
 .diag-dot { height:7px; width:7px; border-radius:50%; background:#b8bbc4; }.diag-dot--seen { background:#777f79; }
+.diag-stage-count { display:inline-block; margin-left:5px; padding:1px 7px; border-radius:5px; background:#eef0f3; color:#666b76; font-size:var(--d-small); font-weight:500; }
+.diagnostics .diag-missing-note { margin:10px 0; color:var(--d-muted); font-size:var(--d-small); line-height:1.6; }
+.diag-missing-stages { overflow:hidden; border:1px solid var(--d-line); border-radius:8px; }
+.diag-missing-stage { display:grid; grid-template-columns:22px minmax(0,1fr); gap:10px; align-items:baseline; padding:10px 12px; color:#5f626c; line-height:1.55; }
+.diag-missing-stage + .diag-missing-stage { border-top:1px solid var(--d-line); }
+.diag-stage-index { color:#989da8; font-size:var(--d-small); font-variant-numeric:tabular-nums; }
 .diag-missing { border-top:1px solid #e3e4e9; padding-top:13px; }
 .diag-note { margin-top:18px; color:var(--d-muted); font-size:var(--d-body); line-height:1.65; }
 .diag-empty { padding:38px 20px 38px 0; max-width:440px; }

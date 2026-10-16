@@ -132,7 +132,11 @@ function TraceDetail({ active, bundle, onCopy, onSelect, problem }: {
       {ordered.length > 5 && <button className="diag-secondary diag-wide" onClick={() => setShowAll(v => !v)}>{showAll ? '收起完整过程' : `展开全部 ${ordered.length} 条关联事件`}</button>}
       <div className="diag-evidence-head diag-evidence-head--stages"><b>关键阶段核对</b><span>未记录 ≠ 未执行</span></div>
       <div className="diag-stage-list">{seen.map(({name,matched}) => <div className="diag-stage" key={name}><span className="diag-dot diag-dot--seen"/><span>{name}</span><small>{matched.length} 条证据</small></div>)}</div>
-      {!!unavailable.length && <details className="diag-disclosure diag-missing"><summary>其他 {unavailable.length} 个阶段暂无证据</summary><ul>{unavailable.map(({name}) => <li key={name}>{name}：未记录到，无法确认</li>)}</ul></details>}
+      {!!unavailable.length && <details className="diag-disclosure diag-missing">
+        <summary>暂无证据的阶段 <span className="diag-stage-count">{unavailable.length}</span></summary>
+        <p className="diag-missing-note">以下阶段缺少可访问的记录，不代表未执行。</p>
+        <div className="diag-missing-stages" role="list">{unavailable.map(({name}, index) => <div className="diag-missing-stage" role="listitem" key={name}><span className="diag-stage-index" aria-hidden="true">{String(index + 1).padStart(2, '0')}</span><span>{name}</span></div>)}</div>
+      </details>}
       <div className="diag-note">本地时间与另一台设备可能存在偏差；不能仅凭时间相近推断因果。</div>
     </div>
   </>;
