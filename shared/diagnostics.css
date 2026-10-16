@@ -130,7 +130,7 @@ body:has(.diagnostics) { margin:0; overflow:hidden; }
 .diag-event-table th { position:sticky; top:0; z-index:1; color:#8b8e96; background:#f8f8f9; padding:11px 12px; text-align:left; font-size:var(--d-small); font-weight:600; border-bottom:1px solid #e6e7eb; }
 .diag-event-table th:nth-child(1){width:100px}.diag-event-table th:nth-child(2){width:110px}.diag-event-table th:nth-child(4){width:96px}
 .diag-event-table td { padding:12px; font-size:var(--d-body); color:#6c707a; border-bottom:1px solid #eff0f2; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
-.diag-event-table th:nth-child(4),.diag-event-table td:nth-child(4) { text-align:left; vertical-align:middle; }
+.diag-event-table th:nth-child(4),.diag-event-table td:nth-child(4) { text-align:center; vertical-align:middle; }
 .diag-event-table td:nth-child(4) { overflow:visible; text-overflow:clip; }
 .diag-event-table tbody tr { cursor:pointer; }
 .diag-event-table tbody tr:hover { background:#fafafb; }
