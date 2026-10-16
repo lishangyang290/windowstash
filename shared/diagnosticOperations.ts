@@ -15,7 +15,7 @@ const contracts: Record<string, Contract> = {
   lease: { name: '本机同步租约', start: 'lease.start', done: ['lease.acquired', 'lease.released'], cancelled: ['lease.busy'] },
 };
 export const dispositionLabels: Record<Disposition, string> = {
-  actionable: '当前待处理', historical: '历史异常或恢复未确认', recovered: '已确认恢复', routine: '普通运行状态',
+  actionable: '当前故障线索', historical: '待核实记录', recovered: '已恢复', routine: '正常运行记录',
 };
 export const outcomeLabels: Record<Outcome, string> = {
   succeeded: '目标已完成', recovered: '失败后确认恢复', waiting: '执行或等待中', failed: '已记录失败', unknown: '结果无法确定', cancelled: '已取消或转交',

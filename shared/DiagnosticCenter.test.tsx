@@ -58,13 +58,21 @@ it('isolates problem evidence and restores the correctly selected page when retu
 it('defaults to actionable faults while preserving unconfirmed historical failures and their original evidence', async () => {
   const bundle = buildBundle([event], {}, Date.parse(event.timestamp) + 60_000);
   await act(async () => root.render(<DiagnosticCenter load={async () => bundle} enableDetails={async () => {}} />));
-  expect(container.textContent).toContain('目前未发现需要处理的故障');
+  expect(container.textContent).toContain('当前未发现明确的故障');
+  expect(container.textContent).toContain('供开发者或 Codex 分析');
   expect(container.querySelectorAll('.diag-issue-row')).toHaveLength(0);
-  await click('历史异常或恢复未确认 1');
+  const otherRecords = container.querySelector<HTMLDetailsElement>('.diag-other-records')!;
+  expect(otherRecords.hasAttribute('open')).toBe(false);
+  expect(otherRecords.querySelector('summary')?.textContent).toBe('其他诊断记录');
+  await act(async () => { otherRecords.open = true; });
+  await click('待核实记录 1');
   expect(container.querySelectorAll('.diag-issue-row')).toHaveLength(1);
   expect(container.textContent).toContain('42501');
   expect(container.textContent).toContain('已记录失败');
-  await click('事件记录 1');
+  expect(container.textContent).toContain('不代表已确认的故障');
+  expect(container.textContent).toContain('开发者排查建议');
+  await click('当前故障线索 0');
+  await click('查看全部诊断记录');
   expect(container.querySelectorAll('tbody tr')).toHaveLength(1);
 });
 it('keeps the selected trace in the visible page and respects component and level filters', async () => {

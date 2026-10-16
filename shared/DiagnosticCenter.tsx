@@ -14,6 +14,12 @@ function initialView(): View {
   return value === 'events' || value === 'status' ? value : 'issues';
 }
 const PAGE_SIZE = 40;
+const stateDescriptions: Record<Disposition, string> = {
+  actionable: '收集当前故障及需核实风险的证据，供开发者或 Codex 分析。你可以直接导出诊断文件。',
+  historical: '这些历史失败或证据不足的记录不代表已确认的故障，也不代表已经恢复；保留供开发者核实。',
+  recovered: '具有明确恢复证据的记录，原失败和恢复过程仍可查看。',
+  routine: '已完成阶段及正常跳过、取消、等待等记录，不代表所有业务目标均已完成。',
+};
 const labels: Record<string, string> = {
   extension: 'Chrome 扩展', companion: 'Companion', 'native-host': 'Native Host', 'companion-rust': '桌面服务',
   started: '开始', success: '完成', waiting: '等待', failed: '失败', cancelled: '已取消', observed: '状态记录',
@@ -57,7 +63,7 @@ function IssueDetail({ issue, bundle, onEvidence, onCopy }: {
         <div><dt>最后线索</dt><dd>{anchor ? `${eventLabel(anchor)} · ${timeOnly(anchor.timestamp)}` : '尚未找到对应事件'}</dd></div>
         <div><dt>源码模块</dt><dd><code>{issue.representative.source.join('、') || anchor?.source || '未记录'}</code></dd></div>
       </dl>
-      <div className="diag-evidence-head"><b>建议检查</b></div>
+      <div className="diag-evidence-head"><b>开发者排查建议</b></div>
       <p className="diag-readable">{issue.representative.check}</p>
       <div className="diag-evidence-head"><b>关联证据</b><span>{issue.eventIds.filter(id => events.has(id)).length} 条</span></div>
       <div className="diag-evidence-list">
@@ -257,6 +263,7 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: (onParti
     setView('events'); setMobileDetail(true);
   }
   function switchView(next: View) { setView(next); setMobileDetail(false); setMessage(''); }
+  function selectIssueState(state: Disposition) { setIssueState(state); setIssueLimit(PAGE_SIZE); setSelectedIssueKey(null); }
   const currentIssueCount = allIssues.filter(issue => issue.representative.disposition === 'actionable').length;
   const last = (name: string) => events.filter(e => e.event === name).at(-1);
   const recentSuccess = events.filter(e => e.event === 'cloud.version' || e.event === 'cloud.done' && ['put','remove'].includes(String(e.state.action))).at(-1);
@@ -274,7 +281,7 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: (onParti
   ];
   return <main className="diagnostics">
     <header className="diag-header">
-      <div className="diag-heading"><div className="diag-wordmark"><img className="diag-mark" src={logo} alt="" /> WindowStash <span className="diag-slash">/</span> 诊断</div><h1>诊断中心</h1><p>把分散的技术记录整理成可以排查的故障线索。</p></div>
+      <div className="diag-heading"><div className="diag-wordmark"><img className="diag-mark" src={logo} alt="" /> WindowStash <span className="diag-slash">/</span> 诊断</div><h1>诊断中心</h1><p>收集并整理故障证据，供开发者或 Codex 分析问题。</p></div>
       <div className="diag-actions"><button disabled={busy} className="diag-secondary" onClick={() => void refresh()}>刷新</button>
         <label className="diag-file diag-secondary">导入诊断文件<input type="file" disabled={!!exportStage} accept=".json,application/json" onChange={e => { const revision = accountRevision.current, file = e.target.files?.[0]; if (!file) return; if (file.size > 20 * 1024 * 1024) { setMessage('诊断文件超过 20 MiB'); e.target.value = ''; return; }
           void file.text().then(raw => { if (revision !== accountRevision.current) return; const imported = importBundle(raw); importedEvents.current = [...new Map([...importedEvents.current, ...imported.events].map(event => [event.id, event])).values()].slice(-20_000);
@@ -290,8 +297,11 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: (onParti
       <button className={view === 'status' ? 'diag-tab-active' : ''} aria-current={view === 'status' ? 'page' : undefined} onClick={() => switchView('status')}>采集状态</button>
     </nav><div className="diag-toolbar-info">记录范围 {stamp(bundle.range.from)} — {stamp(bundle.range.to)}</div></div>
     {view === 'issues' && <div className={`diag-workspace ${mobileDetail ? 'diag-show-detail' : ''}`}>
-      <section className="diag-list-pane" aria-label="问题线索列表"><div className="diag-pane-intro"><strong>{dispositionLabels[issueState]} · {issues.length}</strong><p>按操作目标与执行尝试判断。历史失败不代表当前故障，也不等于已经恢复。</p>
-        <div className="diag-issue-states" aria-label="操作处理状态">{(Object.keys(dispositionLabels) as Disposition[]).map(state => <button key={state} aria-pressed={issueState === state} onClick={() => { setIssueState(state); setIssueLimit(PAGE_SIZE); setSelectedIssueKey(null); }}>{dispositionLabels[state]} {allIssues.filter(issue => (issue.representative.disposition ?? 'historical') === state).length}</button>)}</div>
+      <section className="diag-list-pane" aria-label="问题线索列表"><div className="diag-pane-intro"><strong>{dispositionLabels[issueState]} · {issues.length}</strong><p>{stateDescriptions[issueState]}</p>
+        <div className="diag-issue-states" aria-label="诊断记录分类">
+          <button className="diag-current-state" aria-pressed={issueState === 'actionable'} onClick={() => selectIssueState('actionable')}>当前故障线索 {currentIssueCount}</button>
+          <details className="diag-other-records"><summary>其他诊断记录</summary><div className="diag-secondary-states">{(['historical', 'recovered', 'routine'] as Disposition[]).map(state => <button key={state} aria-pressed={issueState === state} onClick={() => selectIssueState(state)}>{dispositionLabels[state]} {allIssues.filter(issue => (issue.representative.disposition ?? 'historical') === state).length}</button>)}</div></details>
+        </div>
       </div>
         <div className="diag-scroller diag-issue-scroll">
           {issues.slice(0, issueLimit).map(issue => <button key={issue.key} className={`diag-issue-row ${selectedIssue?.key===issue.key?'diag-selected':''}`} onClick={() => { setSelectedIssueKey(issue.key); setMobileDetail(true); }}>
@@ -300,7 +310,7 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: (onParti
             <span className="diag-issue-row-foot">{issue.anchor ? componentLabel(issue.anchor.component) : '来源不明'} <span>查看详情 →</span></span>
           </button>)}
           {issues.length > issueLimit && <button className="diag-secondary" onClick={() => setIssueLimit(limit => limit + PAGE_SIZE)}>继续显示 {Math.min(PAGE_SIZE, issues.length - issueLimit)} 项</button>}
-          {!issues.length && <div className="diag-empty"><strong>{reading ? '正在整理问题线索…' : issueState === 'actionable' ? '目前未发现需要处理的故障' : '此状态下暂无操作记录'}</strong><p>{reading ? '正在读取可访问组件的日志。已读到的事件可以先在事件记录中查看。' : '结论仅限已采集证据；可查看历史、运行状态或原始事件，不代表整个系统绝对正常。'}</p><button className="diag-secondary" onClick={() => switchView('events')}>查看事件记录</button></div>}
+          {!issues.length && <div className="diag-empty"><strong>{reading ? '正在整理问题线索…' : issueState === 'actionable' ? '当前未发现明确的故障' : '此分类暂无记录'}</strong><p>{reading ? '正在读取可访问组件的日志。已读到的事件可以先在事件记录中查看。' : '结论仅限已采集证据。全部记录仍可查看，也可导出诊断文件交给开发者或 Codex 分析。'}</p><button className="diag-secondary" onClick={() => switchView('events')}>查看全部诊断记录</button></div>}
         </div>
       </section>
       <aside className="diag-detail-pane" aria-label="故障详情">
