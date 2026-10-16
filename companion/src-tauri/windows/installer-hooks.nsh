@@ -10,8 +10,8 @@ Var WindowStashUpdateMutex
   ${If} $0 != 0
     SetErrorLevel 20
     IfSilent +2
-      MessageBox MB_ICONSTOP|MB_OK "WindowStash update failed. Account and workspace data have not been removed.$\r$\n$1"
-    Abort "WindowStash update failed: $1"
+      MessageBox MB_ICONSTOP|MB_OK "WindowStash 更新失败，未清除账号和工作区数据。$\r$\n技术详情：$1"
+    Abort "WindowStash 更新失败：$1"
   ${EndIf}
 !macroend
 
@@ -23,7 +23,7 @@ Var WindowStashUpdateMutex
   ${If} $0 == 0
   ${OrIf} $1 == 183
     SetErrorLevel 20
-    Abort "Another WindowStash installer is running, or the update lock is unavailable."
+    Abort "另一个 WindowStash 安装程序正在运行，或无法获取更新锁。"
   ${EndIf}
   InitPluginsDir
   SetOverwrite on
