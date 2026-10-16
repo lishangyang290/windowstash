@@ -3,12 +3,13 @@ use std::ffi::OsString;
 use std::{env, fs, path::PathBuf, process::Command};
 use tauri::{
     image::Image,
-    menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager,
 };
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_positioner::{Position, WindowExt};
+#[cfg(not(target_os = "windows"))]
+use tauri::menu::{Menu, MenuItem};
 
 const WINDOW_LABEL: &str = "main";
 static CONNECTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -143,10 +144,30 @@ async fn diagnostic_records(instance: String, project: String, user: String, ent
     }).await.map_err(|_| "diagnostic_worker_failed".to_string())?
 }
 
-fn open_diagnostics(app: &tauri::AppHandle) {
+#[tauri::command]
+async fn open_diagnostics(app: tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("diagnostics") { let _ = window.show(); let _ = window.set_focus(); return; }
-    let _ = tauri::WebviewWindowBuilder::new(app, "diagnostics", tauri::WebviewUrl::App("index.html#diagnostics".into()))
+    let _ = tauri::WebviewWindowBuilder::new(&app, "diagnostics", tauri::WebviewUrl::App("index.html#diagnostics".into()))
         .title("诊断中心 · WindowStash").inner_size(1120.0, 820.0).min_inner_size(640.0, 500.0).build();
+}
+
+#[tauri::command]
+fn hide_tray_menu(app: tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("tray-menu") { let _ = window.hide(); }
+}
+
+#[cfg(target_os = "windows")]
+fn display_tray_menu(app: &tauri::AppHandle) {
+    let window = app.get_webview_window("tray-menu").or_else(|| {
+        tauri::WebviewWindowBuilder::new(app, "tray-menu", tauri::WebviewUrl::App("index.html#tray-menu".into()))
+            .title("WindowStash").inner_size(238.0, 120.0).decorations(false).transparent(true)
+            .resizable(false).always_on_top(true).skip_taskbar(true).visible(false).build().ok()
+    });
+    if let Some(window) = window {
+        let _ = window.move_window(Position::TrayCenter);
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 #[tauri::command]
@@ -409,6 +430,8 @@ pub fn run() {
             workspace_sync,
             diagnostic_records,
             export_diagnostics,
+            open_diagnostics,
+            hide_tray_menu,
             hide_popover,
             show_popover,
             quit_app
@@ -439,10 +462,11 @@ pub fn run() {
                 }
             }
 
-            let open = MenuItem::with_id(app, "open", "打开 WindowStash", true, None::<&str>)?;
-            let diagnostics = MenuItem::with_id(app, "diagnostics", "诊断中心", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&open, &diagnostics, &quit])?;
+            #[cfg(not(target_os = "windows"))]
+            let menu = Menu::with_items(app, &[
+                &MenuItem::with_id(app, "open", "打开 WindowStash", true, None::<&str>)?,
+                &MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?,
+            ])?;
             #[cfg(target_os = "windows")]
             let icon: Image<'static> =
                 Image::from_app_icon_resource(32).unwrap_or_else(|_| tray_icon());
@@ -453,16 +477,24 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             let tray = tray.icon_as_template(true);
 
-            tray.menu(&menu)
+            #[cfg(not(target_os = "windows"))]
+            let tray = tray.menu(&menu);
+            tray
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => display_popover(app),
-                    "diagnostics" => open_diagnostics(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
                     tauri_plugin_positioner::on_tray_event(tray.app_handle(), &event);
+                    #[cfg(target_os = "windows")]
+                    if let TrayIconEvent::Click { button: MouseButton::Right, button_state: MouseButtonState::Up, .. } = event {
+                        // WebView2 window creation must run outside synchronous event handlers.
+                        let app = tray.app_handle().clone();
+                        std::thread::spawn(move || display_tray_menu(&app));
+                        return;
+                    }
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
@@ -515,7 +547,7 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
-            if window.label() != WINDOW_LABEL { return; }
+            if window.label() != WINDOW_LABEL && window.label() != "tray-menu" { return; }
             match event {
             tauri::WindowEvent::Focused(false) => {
                 let _ = window.hide();
@@ -531,6 +563,7 @@ pub fn run() {
 }
 
 fn display_popover(app: &tauri::AppHandle) {
+    if let Some(menu) = app.get_webview_window("tray-menu") { let _ = menu.hide(); }
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         let _ = window.move_window(Position::TrayCenter);
         let _ = window.show();

@@ -176,6 +176,7 @@ function Settings({ config, onBack, onConfigChange, onSignOut, browserLogin }: {
         {!browserLogin && <button className="setting-row" onClick={() => void beginBrowserLogin()}><span><b>改用浏览器登录</b><small>使用 Chrome 中的 WindowStash 账号</small></span><span className="row-chevron">›</span></button>}
         {!browserLogin && <button className="setting-row" onClick={() => setConnectionOpen(true)}><span><b>Supabase</b><small>连接设置</small></span><span className="row-chevron">›</span></button>}
         {canSwitchChrome && <button className="setting-row" onClick={() => setChromeOpen(true)}><span><b>切换 Chrome 用户</b><small>选择打开工作区的浏览器</small></span><span className="row-chevron">›</span></button>}
+        <button className="setting-row" onClick={() => void invoke('open_diagnostics')}><span><b>诊断中心</b><small>查看同步记录、排查问题和导出日志</small></span><span className="row-chevron">›</span></button>
       </section>
       <footer className="settings-footer">{browserLogin ? <button className="account-manager" onClick={() => void chromeBridge.openManager()}>在浏览器中管理账号</button> : <button onClick={onSignOut}>退出登录</button>}</footer>
     </main>

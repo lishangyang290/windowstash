@@ -3,14 +3,15 @@ import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { WorkspaceSummary } from './types';
+import { invoke } from '@tauri-apps/api/core';
 const state = vi.hoisted(() => ({ items: [] as WorkspaceSummary[], scope: 'A', refresh: vi.fn(), opened: undefined as (() => void) | undefined, manager: vi.fn() }));
 vi.mock('./features/workspaces', () => ({ workspaceService: { cached: () => state.items, refresh: state.refresh } }));
 vi.mock('./lib/cache', () => ({ cache: { currentScope: () => state.scope, workspaces: () => state.items }, sortByRecent: (items: WorkspaceSummary[]) => items }));
-vi.mock('./lib/chromeBridge', () => ({ chromeBridge: { openManager: state.manager } }));
+vi.mock('./lib/chromeBridge', () => ({ chromeBridge: { openManager: state.manager, connection: vi.fn().mockResolvedValue({ targets: [], selected: null }) } }));
 vi.mock('./ChromeConnectionPanel', () => ({ ChromeConnectionPanel: () => null, ChromeConnectionPage: () => null }));
 vi.mock('@tauri-apps/api/event', () => ({ listen: async (_name: string, callback: () => void) => { state.opened = callback; return () => { state.opened = undefined; }; } }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
-vi.mock('@tauri-apps/plugin-autostart', () => ({ disable: vi.fn(), enable: vi.fn(), isEnabled: vi.fn() }));
+vi.mock('@tauri-apps/plugin-autostart', () => ({ disable: vi.fn(), enable: vi.fn(), isEnabled: vi.fn().mockResolvedValue(false) }));
 import { Launcher } from './App';
 let root: ReturnType<typeof createRoot>, container: HTMLElement;
 const item = (name: string): WorkspaceSummary => ({ id: name, name, tabCount: 2, updatedAt: '2026-10-13' });
@@ -25,6 +26,16 @@ beforeEach(() => {
 });
 afterEach(async () => { await act(async () => root.unmount()); vi.useRealTimers(); vi.unstubAllGlobals(); });
 const render = () => act(async () => root.render(<Launcher key={state.scope} config={{ url: 'https://example.invalid', publishableKey: 'fixture' }} session={{ user: { id: state.scope } } as never} onConfigChange={() => {}} onSignOut={() => {}} />));
+
+it('opens diagnostics from ordinary settings without quitting or changing workspaces', async () => {
+  await render();
+  const click = async (text: string) => act(async () => [...container.querySelectorAll('button')].find(button => button.textContent?.includes(text))!.click());
+  await click('设置');
+  expect(container.textContent).toContain('查看同步记录、排查问题和导出日志');
+  await click('诊断中心');
+  expect(invoke).toHaveBeenCalledWith('open_diagnostics');
+  expect(invoke).not.toHaveBeenCalledWith('quit_app');
+});
 
 it('shows newly synced cloud data on the single follow-up after opening the tray, without opening a manager', async () => {
   await render();

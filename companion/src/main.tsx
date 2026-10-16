@@ -1,7 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { initializeDiagnostics } from './lib/diagnostics';
-const Surface = React.lazy(() => location.hash === '#diagnostics' ? import('./Diagnostics') : import('./App'));
+const Surface = React.lazy(() => location.hash === '#tray-menu' ? import('./TrayMenu') : location.hash === '#diagnostics' ? import('./Diagnostics') : import('./App'));
 initializeDiagnostics();
 import './styles.css';
 
