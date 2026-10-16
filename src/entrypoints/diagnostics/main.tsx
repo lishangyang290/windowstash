@@ -1,14 +1,15 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { DiagnosticCenter } from '../../../shared/DiagnosticCenter';
-import { makeBundle, type DiagnosticEvent } from '../../../shared/diagnostics';
+import { makeBundle, type DiagnosticBundle, type DiagnosticEvent } from '../../../shared/diagnostics';
 import { extensionDiagnostics, detailedDiagnostics, initializeDiagnostics } from '@/lib/storage/diagnostics';
 import { accountStorageKey } from '@/lib/storage/accountScope';
 import { nativeLibraryExchange } from '@/lib/companion/workspaces';
 
 initializeDiagnostics();
-async function load() {
+async function load(onPartial?: (bundle: DiagnosticBundle) => void) {
   const local = await extensionDiagnostics();
+  onPartial?.(local);
   const native: DiagnosticEvent[] = [];
   const coverage = { ...local.coverage };
   try {

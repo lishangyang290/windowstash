@@ -1,13 +1,19 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { differentDevice, eventNames, importBundle, makeBundle, type DiagnosticBundle, type DiagnosticEvent } from './diagnostics';
 import { evidenceForOperation, groupDiagnosticFindings, type IssueGroup } from './diagnosticPresentation';
+import logo from '../public/icon-128.png';
+import { DiagnosticSelect } from './DiagnosticSelect';
 import './diagnostics.css';
 
 type View = 'issues' | 'events' | 'status';
+function initialView(): View {
+  const value = globalThis.location ? new URL(location.href).searchParams.get('view') : null;
+  return value === 'events' || value === 'status' ? value : 'issues';
+}
 const PAGE_SIZE = 40;
 const labels: Record<string, string> = {
   extension: 'Chrome 扩展', companion: 'Companion', 'native-host': 'Native Host', 'companion-rust': '桌面服务',
-  started: '开始', success: '完成', waiting: '等待', failed: '失败', cancelled: '已取消', observed: '已观察',
+  started: '开始', success: '完成', waiting: '等待', failed: '失败', cancelled: '已取消', observed: '状态记录',
   confirmed: '已记录的异常', suspected: '需要核实', insufficient: '证据不完整',
 };
 const stamp = (at?: string | null) => at && Number.isFinite(Date.parse(at)) ? new Date(at).toLocaleString('zh-CN', { hour12: false }) : '未知';
@@ -36,7 +42,7 @@ function IssueDetail({ issue, bundle, onEvidence, onCopy }: {
   const events = new Map(bundle.events.map(e => [e.id, e]));
   const anchor = issue.anchor;
   return <>
-    <div className="diag-pane-header"><span className="diag-eyebrow">故障详情</span><EvidenceStatus group={issue}/><h2>{issue.representative.symptom}</h2><p>以下是已采集记录推导出的排查方向，不代表所有根因都已确认。</p></div>
+    <div className="diag-pane-header"><div className="diag-detail-title"><h2>{issue.representative.symptom}</h2><EvidenceStatus group={issue}/></div><p>以下是已采集记录推导出的排查方向，不代表所有根因都已确认。</p></div>
     <div className="diag-pane-body">
       <div className="diag-evidence-head"><b>目前能确定什么</b></div>
       <p className="diag-readable">{issue.representative.hypothesis}</p>
@@ -70,33 +76,58 @@ const stages: [string, string[]][] = [
   ['本机完成校准', ['native.applied']],
   ['界面已提交更新', ['ui.committed']],
 ];
-function TraceDetail({ active, bundle, onCopy }: {active: DiagnosticEvent; bundle: DiagnosticBundle; onCopy: (value: string) => void}) {
+function TraceDetail({ active, bundle, onCopy, onSelect, problem }: {
+  active: DiagnosticEvent; bundle: DiagnosticBundle; onCopy: (value: string) => void; onSelect: (id: string) => void; problem?: string;
+}) {
   const [showAll, setShowAll] = useState(false);
+  const header = useRef<HTMLDivElement>(null);
+  const preserveScroll = useRef(false);
   const trace = useMemo(() => evidenceForOperation(bundle, active), [active, bundle]);
-  React.useEffect(() => setShowAll(false), [active.id]);
   const ordered = [...trace].sort((a,b) => a.timestamp.localeCompare(b.timestamp));
-  const subset = showAll ? ordered : ordered.slice(0, 16);
+  const position = ordered.findIndex(e => e.id === active.id);
+  const start = showAll ? 0 : Math.floor(Math.max(0, position) / 5) * 5;
+  const subset = showAll ? ordered : ordered.slice(start, start + 5);
+  React.useEffect(() => {
+    if (!preserveScroll.current) header.current?.closest('.diag-detail-pane')?.scrollTo(0, 0);
+    preserveScroll.current = false;
+  }, [active.id]);
   const observed = stages.map(([name, names]) => {
     const matched = trace.filter(e => names.includes(e.event) && (name !== '另一设备收到 Realtime 事件' || differentDevice(active, e)));
     return { name, matched };
   });
-  const seen = observed.filter(x => x.matched.length);
-  const unavailable = observed.filter(x => !x.matched.length);
+  const seen = observed.filter(x => x.matched.length), unavailable = observed.filter(x => !x.matched.length);
   return <>
-    <div className="diag-pane-header"><span className="diag-eyebrow">操作追踪</span><span className={`diag-result diag-result--${active.result}`}>{stateLabel(active.result)}</span>
-      <h2>{eventLabel(active)}</h2><p>{componentLabel(active.component)} · {stamp(active.timestamp)}</p></div>
+    <div className="diag-pane-header diag-trace-header" ref={header}>
+      <div className="diag-detail-title"><h2>{eventLabel(active)}</h2><span className={`diag-result diag-result--${active.result}`}>{stateLabel(active.result)}</span></div>
+      <div className="diag-trace-meta"><span>{componentLabel(active.component)} · {stamp(active.timestamp)}</span><span>关联记录 {position + 1} / {ordered.length}</span></div>
+      {problem && <p className="diag-trace-context" title={problem}>来源问题：{problem}</p>}
+    </div>
     <div className="diag-pane-body">
       <div className="diag-summary-strip"><div><strong>{trace.length}</strong><span>有证据事件</span></div><div><strong>{seen.length}/{stages.length}</strong><span>有记录阶段</span></div><div><strong>{trace.filter(e=>e.result==='failed').length}</strong><span>失败记录</span></div></div>
-      <div className="diag-evidence-head"><b>关联操作时间线</b><span>仅依据明确关联证据</span></div>
+      <section className="diag-selected-event" aria-label="当前选中事件详情">
+        <div className="diag-evidence-head"><b>当前选中事件</b><span>与左侧选中行对应</span></div>
+        <dl className="diag-detail-pairs">
+          {active.workspaceRef && <div><dt>工作区标识</dt><dd><code title={active.workspaceRef}>{active.workspaceRef.slice(0, 8)}</code>（脱敏）</dd></div>}
+          {active.cloudVersion && <div><dt>云端版本</dt><dd><code>{active.cloudVersion}</code></dd></div>}
+          {active.durationMs !== undefined && <div><dt>执行耗时</dt><dd>{active.durationMs} ms</dd></div>}
+          {active.errorCode && <div><dt>错误码</dt><dd>{active.errorCode}</dd></div>}
+          <div><dt>源码位置</dt><dd><code>{active.source}</code></dd></div>
+        </dl>
+      </section>
+      <div className="diag-evidence-head"><b>关联操作时间线</b><span>{showAll || ordered.length <= 5 ? '仅依据明确关联证据' : `当前显示第 ${start + 1}–${start + subset.length} 条`}</span></div>
       <ol className="diag-timeline">
-        {subset.map(e => <li key={e.id} className={`diag-timeline-${e.result}`}>
-          <div className="diag-timeline-title"><span>{eventLabel(e)}</span><em>{stateLabel(e.result)}</em></div>
-          <div className="diag-timeline-meta">{timeOnly(e.timestamp)} · {componentLabel(e.component)}{e.durationMs !== undefined ? ` · ${e.durationMs} ms` : ''}</div>
-          {e.errorCode && <p className="diag-error-line">错误码：{e.errorCode}</p>}
-          <details className="diag-disclosure"><summary>技术证据</summary><div className="diag-technical"><div><code>{e.source || 'unknown'}</code></div><pre>{JSON.stringify(e, null, 2)}</pre><button className="diag-secondary" onClick={() => onCopy(JSON.stringify(e, null, 2))}>复制这条记录</button></div></details>
+        {subset.map(e => <li key={e.id} data-trace-event-id={e.id} aria-current={e.id === active.id ? 'step' : undefined} className={`diag-timeline-${e.result} ${e.id === active.id ? 'diag-timeline-current' : ''}`}>
+          <div className="diag-step-card">
+          <button className="diag-step-choice" onClick={() => { if (e.id !== active.id) { preserveScroll.current = true; onSelect(e.id); } }} aria-label={`查看步骤：${eventLabel(e)}`}>
+            <span className="diag-timeline-title"><span>{eventLabel(e)}</span><em>{e.id === active.id ? '当前选中' : stateLabel(e.result)}</em></span>
+            <span className="diag-timeline-meta">{timeOnly(e.timestamp)} · {componentLabel(e.component)}{e.durationMs !== undefined ? ` · ${e.durationMs} ms` : ''}</span>
+            {e.errorCode && <span className="diag-error-line">错误码：{e.errorCode}</span>}
+          </button>
+          <details className="diag-step-fields"><summary>查看此步骤的技术字段</summary><div className="diag-technical"><code>{e.source}</code><pre>{JSON.stringify(e, null, 2)}</pre><button className="diag-secondary" onClick={() => onCopy(JSON.stringify(e, null, 2))}>复制这条记录</button></div></details>
+          </div>
         </li>)}
       </ol>
-      {ordered.length > 16 && <button className="diag-secondary diag-wide" onClick={() => setShowAll(v => !v)}>{showAll ? '收起其他事件' : `展开全部 ${ordered.length} 条关联事件`}</button>}
+      {ordered.length > 5 && <button className="diag-secondary diag-wide" onClick={() => setShowAll(v => !v)}>{showAll ? '收起完整过程' : `展开全部 ${ordered.length} 条关联事件`}</button>}
       <div className="diag-evidence-head diag-evidence-head--stages"><b>关键阶段核对</b><span>未记录 ≠ 未执行</span></div>
       <div className="diag-stage-list">{seen.map(({name,matched}) => <div className="diag-stage" key={name}><span className="diag-dot diag-dot--seen"/><span>{name}</span><small>{matched.length} 条证据</small></div>)}</div>
       {!!unavailable.length && <details className="diag-disclosure diag-missing"><summary>其他 {unavailable.length} 个阶段暂无证据</summary><ul>{unavailable.map(({name}) => <li key={name}>{name}：未记录到，无法确认</li>)}</ul></details>}
@@ -105,46 +136,69 @@ function TraceDetail({ active, bundle, onCopy }: {active: DiagnosticEvent; bundl
   </>;
 }
 
-export function DiagnosticCenter({ load, enableDetails, save }: { load: () => Promise<DiagnosticBundle>; enableDetails: () => Promise<void>; save?: (bundle: DiagnosticBundle) => Promise<string> }) {
+export function DiagnosticCenter({ load, enableDetails, save }: { load: (onPartial?: (bundle: DiagnosticBundle) => void) => Promise<DiagnosticBundle>; enableDetails: () => Promise<void>; save?: (bundle: DiagnosticBundle) => Promise<string> }) {
   const [bundle, setBundle] = useState<DiagnosticBundle>(() => makeBundle([]));
-  const [view, setView] = useState<View>('issues');
+  const [view, setView] = useState<View>(initialView);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState('');
+  const [reading, setReading] = useState(true), [hasRead, setHasRead] = useState(false);
   const [query, setQuery] = useState(''), [level, setLevel] = useState(''), [component, setComponent] = useState(''), [kind, setKind] = useState('');
   const [from, setFrom] = useState(''), [to, setTo] = useState(''), [page, setPage] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedIssueKey, setSelectedIssueKey] = useState<string | null>(null);
+  const [evidenceScope, setEvidenceScope] = useState<{ title: string; anchorId: string; ids: string[] } | null>(null);
   const [mobileDetail, setMobileDetail] = useState(false);
   const [advanced, setAdvanced] = useState(false);
-  const accountRevision = useRef(0), importedEvents = useRef<DiagnosticEvent[]>([]);
+  const accountRevision = useRef(0), readRevision = useRef(0), importedEvents = useRef<DiagnosticEvent[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
   const refresh = React.useCallback(async () => {
-    setBusy(true); const revision = accountRevision.current;
+    setBusy(true); setReading(true); const revision = accountRevision.current, request = ++readRevision.current;
+    const current = () => revision === accountRevision.current && request === readRevision.current;
+    const apply = (latest: DiagnosticBundle) => {
+      if (!current()) return;
+      setBundle(importedEvents.current.length ? makeBundle([...latest.events, ...importedEvents.current], latest.coverage) : latest);
+      setHasRead(true);
+    };
     try {
-      const latest = await load(); if (revision !== accountRevision.current) return;
-      setBundle(makeBundle([...latest.events, ...importedEvents.current], latest.coverage)); setMessage(''); setPage(0);
-    } catch { setMessage('无法读取部分诊断记录；未修改工作区。请检查组件授权或重试。'); }
-    finally { setBusy(false); }
+      const latest = await load(apply); if (!current()) return;
+      apply(latest); setMessage('');
+    } catch { if (current()) setMessage('无法读取部分诊断记录；未修改工作区。请检查组件授权或重试。'); }
+    finally { if (current()) { setBusy(false); setReading(false); } }
   }, [load]);
   React.useEffect(() => { document.title = '诊断中心 · WindowStash'; void refresh(); }, [refresh]);
   React.useEffect(() => {
-    const clear = () => { accountRevision.current++; importedEvents.current = []; setBundle(makeBundle([])); setSelectedId(null); setSelectedIssueKey(null); setMessage('账号已变化，已隐藏旧账号诊断记录；请刷新。'); };
+    if (!globalThis.location || !globalThis.history) return;
+    const url = new URL(location.href); url.searchParams.set('view', view);
+    history.replaceState(history.state, '', url);
+  }, [view]);
+  React.useEffect(() => {
+    const clear = () => { accountRevision.current++; readRevision.current++; importedEvents.current = []; setBundle(makeBundle([])); setSelectedId(null); setSelectedIssueKey(null); setEvidenceScope(null); setHasRead(false); setReading(false); setBusy(false); setMessage('账号已变化，已隐藏旧账号诊断记录；请刷新。'); };
     window.addEventListener('windowstash-diagnostic-account-changed', clear);
     return () => window.removeEventListener('windowstash-diagnostic-account-changed', clear);
   }, []);
   const issues = useMemo(() => groupDiagnosticFindings(bundle), [bundle]);
   const selectedIssue = issues.find(x => x.key === selectedIssueKey) ?? issues[0];
   const events = bundle.events;
-  const filtered = useMemo(() => [...events].reverse().filter(e => (!level || e.level === level) && (!component || e.component === component) && (!kind || category(e) === kind)
+  const evidenceIds = useMemo(() => {
+    if (!evidenceScope) return null;
+    const anchor = events.find(e => e.id === evidenceScope.anchorId);
+    return new Set([...evidenceScope.ids, ...(anchor ? evidenceForOperation(bundle, anchor).map(e => e.id) : [])]);
+  }, [evidenceScope, bundle, events]);
+  const filtered = useMemo(() => [...events].reverse().filter(e => (!evidenceIds || evidenceIds.has(e.id)) && (!level || e.level === level) && (!component || e.component === component) && (!kind || category(e) === kind)
     && (!from || Date.parse(e.timestamp) >= new Date(from).getTime()) && (!to || Date.parse(e.timestamp) <= new Date(to).getTime())
-    && (!query || [eventLabel(e), e.event, e.operationId, e.workspaceRef, e.source, e.errorCode].join(' ').toLowerCase().includes(query.toLowerCase()))), [events, query, level, component, kind, from, to]);
+    && (!query || [eventLabel(e), e.event, e.operationId, e.workspaceRef, e.source, e.errorCode].join(' ').toLowerCase().includes(query.toLowerCase()))), [events, evidenceIds, query, level, component, kind, from, to]);
   const visible = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
   const selected = visible.find(e => e.id === selectedId) ?? (view === 'events' ? visible[0] : undefined);
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  React.useEffect(() => { if (!reading) setPage(current => Math.min(current, pages - 1)); }, [pages, reading]);
   React.useEffect(() => { if (!selected || view !== 'events') return; const node = listRef.current?.querySelector(`[data-event-id="${selected.id}"]`); node?.scrollIntoView({ block: 'nearest' }); }, [selected?.id, page, view]);
   async function copy(value: string) { try { await navigator.clipboard.writeText(value); setMessage('已复制到剪贴板'); } catch { setMessage('剪贴板不可用，请使用导出诊断日志。'); } }
-  function focusEvidence(id: string) {
-    const index = [...events].reverse().findIndex(e => e.id === id);
-    if (index < 0) { setMessage('这条证据已不在当前记录中，请刷新或导入对应日志。'); return; }
+  function focusEvidence(id: string, issue?: IssueGroup, keepScope = false) {
+    const event = events.find(e => e.id === id);
+    if (!event) { if (!issue) { setEvidenceScope(null); setPage(0); } else setMessage('这条证据已不在当前记录中，请刷新或导入对应日志。'); return; }
+    const scope = issue ? { title: issue.representative.symptom, anchorId: id, ids: [...new Set([...issue.eventIds, ...evidenceForOperation(bundle, event).map(e => e.id)])] } : keepScope && evidenceScope ? { ...evidenceScope, ids: [...(evidenceIds ?? [])] } : null;
+    const ids = scope ? new Set(scope.ids) : null;
+    const index = [...events].reverse().filter(e => !ids || ids.has(e.id)).findIndex(e => e.id === id);
+    setEvidenceScope(scope);
     setQuery(''); setLevel(''); setComponent(''); setKind(''); setFrom(''); setTo('');
     setSelectedId(id); setPage(index >= 0 ? Math.floor(index / PAGE_SIZE) : 0);
     setView('events'); setMobileDetail(true);
@@ -167,7 +221,7 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: () => Pr
   ];
   return <main className="diagnostics">
     <header className="diag-header">
-      <div className="diag-heading"><div className="diag-wordmark"><span className="diag-mark">W</span> WindowStash <span className="diag-slash">/</span> 诊断</div><h1>诊断中心</h1><p>把分散的技术记录整理成可以排查的故障线索。</p></div>
+      <div className="diag-heading"><div className="diag-wordmark"><img className="diag-mark" src={logo} alt="" /> WindowStash <span className="diag-slash">/</span> 诊断</div><h1>诊断中心</h1><p>把分散的技术记录整理成可以排查的故障线索。</p></div>
       <div className="diag-actions"><button disabled={busy} className="diag-secondary" onClick={() => void refresh()}>刷新</button>
         <label className="diag-file diag-secondary">导入诊断文件<input type="file" accept=".json,application/json" onChange={e => { const revision = accountRevision.current, file = e.target.files?.[0]; if (!file) return; if (file.size > 20 * 1024 * 1024) { setMessage('诊断文件超过 20 MiB'); e.target.value = ''; return; }
           void file.text().then(raw => { if (revision !== accountRevision.current) return; const imported = importBundle(raw); importedEvents.current = [...new Map([...importedEvents.current, ...imported.events].map(event => [event.id, event])).values()].slice(-20_000);
@@ -175,6 +229,7 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: () => Pr
         <button className="diag-primary" disabled={busy} onClick={() => { setBusy(true); const revision = accountRevision.current; void load().then(latest => { if (revision !== accountRevision.current) throw new Error('account changed'); const safe = makeBundle([...latest.events, ...importedEvents.current], latest.coverage); setBundle(safe); return save ? save(safe).then(path => setMessage(`已导出：${path}`)) : download(safe); }).catch(() => setMessage('导出失败，诊断记录仍保留在本机')).finally(() => setBusy(false)); }}>导出诊断文件</button>
       </div>
     </header>
+    {reading && <div className="diag-loading" role="status"><span className="diag-loading-dot" aria-hidden="true"/>{hasRead ? '已显示本地记录，正在补齐其他组件；分析结果可能随记录更新。' : '正在读取本机诊断记录…'}</div>}
     {message && <div className="diag-message" role="status">{message}<button onClick={() => setMessage('')} aria-label="关闭提示">×</button></div>}
     <div className="diag-toolbar"><nav aria-label="诊断视图">
       <button className={view === 'issues' ? 'diag-tab-active' : ''} aria-current={view === 'issues' ? 'page' : undefined} onClick={() => switchView('issues')}>问题线索 <span>{currentIssueCount}</span></button>
@@ -189,28 +244,36 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: () => Pr
             <strong>{issue.representative.symptom}</strong><p>{issue.representative.hypothesis}</p>
             <span className="diag-issue-row-foot">{issue.anchor ? componentLabel(issue.anchor.component) : '来源不明'} <span>查看详情 →</span></span>
           </button>)}
-          {!issues.length && <div className="diag-empty"><strong>尚无可以归类的故障线索</strong><p>这不等于系统没有问题。可以查看事件记录或导入另一台设备的诊断文件。</p><button className="diag-secondary" onClick={() => switchView('events')}>查看事件记录</button></div>}
+          {!issues.length && <div className="diag-empty"><strong>{reading ? '正在整理问题线索…' : '尚无可以归类的故障线索'}</strong><p>{reading ? '正在读取可访问组件的日志。已读到的事件可以先在事件记录中查看。' : '这不等于系统没有问题。可以查看事件记录或导入另一台设备的诊断文件。'}</p><button className="diag-secondary" onClick={() => switchView('events')}>查看事件记录</button></div>}
         </div>
       </section>
       <aside className="diag-detail-pane" aria-label="故障详情">
         <button className="diag-back" onClick={() => setMobileDetail(false)}>← 返回问题列表</button>
-        {selectedIssue ? <IssueDetail issue={selectedIssue} bundle={bundle} onEvidence={focusEvidence} onCopy={value => void copy(value)}/> : <div className="diag-empty-small">选择一条线索查看详情。</div>}
+        {selectedIssue ? <IssueDetail issue={selectedIssue} bundle={bundle} onEvidence={id => focusEvidence(id, selectedIssue)} onCopy={value => void copy(value)}/> : <div className="diag-empty-small">选择一条线索查看详情。</div>}
       </aside>
     </div>}
     {view === 'events' && <div className={`diag-workspace ${mobileDetail ? 'diag-show-detail' : ''}`}>
       <section className="diag-list-pane" aria-label="事件记录列表">
-        <div className="diag-event-controls"><div className="diag-quick-filters"><input aria-label="搜索诊断记录" placeholder="搜索事件、源码或错误码" value={query} onChange={e => {setQuery(e.target.value); setPage(0);}} />
-          <select aria-label="日志级别" value={level} onChange={e => {setLevel(e.target.value);setPage(0);}}><option value="">所有级别</option>{['INFO','WARN','ERROR'].map(x=><option key={x}>{x}</option>)}</select>
-          <select aria-label="来源组件" value={component} onChange={e=>{setComponent(e.target.value);setPage(0);}}><option value="">所有组件</option>{['extension','companion','native-host','companion-rust'].map(x=><option key={x} value={x}>{componentLabel(x)}</option>)}</select>
+        <div className="diag-event-controls">
+          {evidenceScope && <div className="diag-evidence-scope" role="status"><div><strong>当前问题的关联证据</strong><p>{evidenceScope.title}</p><span>仅显示这条问题的记录，已隐藏其他事件。</span></div><button className="diag-secondary" onClick={() => focusEvidence(selected?.id ?? evidenceScope.ids[0]!)}>查看全部事件</button></div>}
+          <div className="diag-quick-filters"><input aria-label="搜索诊断记录" placeholder="搜索事件、源码或错误码" value={query} onChange={e => {setQuery(e.target.value); setPage(0);}} />
+          <DiagnosticSelect label="日志级别" value={level} options={[["", "所有级别"], ["INFO", "信息"], ["WARN", "警告"], ["ERROR", "错误"]]} onChange={value => {setLevel(value);setPage(0);}} />
+          <DiagnosticSelect label="来源组件" value={component} options={[["", "所有组件"], ...['extension','companion','native-host','companion-rust'].map(x => [x, componentLabel(x)] as [string,string])]} onChange={value => {setComponent(value);setPage(0);}} />
           <button className="diag-secondary diag-filter-button" aria-expanded={advanced} onClick={() => setAdvanced(v => !v)}>更多筛选 {advanced ? '−' : '+'}</button></div>
-          {advanced && <div className="diag-advanced"><select aria-label="事件分类" value={kind} onChange={e => {setKind(e.target.value);setPage(0);}}><option value="">全部分类</option>{['保存','修改','删除','连接','同步'].map(x=><option key={x}>{x}</option>)}</select><label>起始<input type="datetime-local" value={from} onChange={e => {setFrom(e.target.value);setPage(0);}}/></label><label>结束<input type="datetime-local" value={to} onChange={e => {setTo(e.target.value);setPage(0);}}/></label><button className="diag-secondary" onClick={() => {setQuery('');setLevel('');setComponent('');setKind('');setFrom('');setTo('');setPage(0);}}>重置</button></div>}
+          {advanced && <div className="diag-advanced">
+            <div className="diag-filter-field"><span>事件分类</span><DiagnosticSelect label="事件分类" value={kind} options={[["", "全部分类"], ...['保存','修改','删除','连接','同步'].map(x => [x,x] as [string,string])]} onChange={value => {setKind(value);setPage(0);}} /></div>
+            <button className="diag-secondary diag-filter-reset" onClick={() => {setQuery('');setLevel('');setComponent('');setKind('');setFrom('');setTo('');setPage(0);}}>重置筛选</button>
+            <label className="diag-filter-field diag-time-field">起始时间<input aria-label="起始时间" type="datetime-local" value={from} onChange={e => {setFrom(e.target.value);setPage(0);}}/></label>
+            <label className="diag-filter-field diag-time-field">结束时间<input aria-label="结束时间" type="datetime-local" value={to} onChange={e => {setTo(e.target.value);setPage(0);}}/></label>
+          </div>}
+
         </div>
-        <div ref={listRef} className="diag-scroller diag-event-scroll"><table className="diag-event-table"><thead><tr><th>时间</th><th>来源</th><th>事件</th><th>结果</th></tr></thead><tbody>
-          {visible.map(e => <tr key={e.id} data-event-id={e.id} className={selected?.id===e.id?'diag-current':''}><td>{timeOnly(e.timestamp)}</td><td>{componentLabel(e.component)}</td><td><button className="diag-event-choice" onClick={()=>{setSelectedId(e.id);setMobileDetail(true);}}>{eventLabel(e)}</button></td><td><span className={`diag-result diag-result--${e.result}`}>{stateLabel(e.result)}</span></td></tr>)}
-        </tbody></table>{!filtered.length && <div className="diag-empty-small">没有符合条件的事件。</div>}</div>
+        <div ref={listRef} className="diag-scroller diag-event-scroll"><table className="diag-event-table"><thead><tr><th>时间</th><th>来源</th><th>事件</th><th title="只表示这一条事件对应阶段的结果，不代表整次同步结果">阶段结果</th></tr></thead><tbody>
+          {visible.map(e => <tr key={e.id} data-event-id={e.id} className={selected?.id===e.id?'diag-current':''} onClick={()=>{setSelectedId(e.id);setMobileDetail(true);}}><td>{timeOnly(e.timestamp)}</td><td>{componentLabel(e.component)}</td><td><button className="diag-event-choice" aria-pressed={selected?.id===e.id}>{eventLabel(e)}</button></td><td><span className={`diag-result diag-result--${e.result}`}>{stateLabel(e.result)}</span></td></tr>)}
+        </tbody></table>{!filtered.length && <div className="diag-empty-small">{reading ? '正在读取事件，请稍候…' : '没有符合条件的事件。'}</div>}</div>
         <div className="diag-pagination"><span>第 {page+1} / {pages} 页 · 共 {filtered.length} 条</span><div><button disabled={page===0} onClick={()=>{setPage(p=>p-1);listRef.current?.scrollTo(0,0);}}>上一页</button><button disabled={page+1>=pages} onClick={()=>{setPage(p=>p+1);listRef.current?.scrollTo(0,0);}}>下一页</button></div></div>
       </section>
-      <aside className="diag-detail-pane" aria-label="操作追踪详情"><button className="diag-back" onClick={() => setMobileDetail(false)}>← 返回事件列表</button>{selected ? <TraceDetail key={selected.id} active={selected} bundle={bundle} onCopy={value => void copy(value)} /> : <div className="diag-empty-small">点击左侧事件即可查看对应操作的完整证据。无需滚动到表格底部。</div>}</aside>
+      <aside className="diag-detail-pane" aria-label="操作追踪详情"><button className="diag-back" onClick={() => setMobileDetail(false)}>← 返回事件列表</button>{selected ? <TraceDetail active={selected} bundle={bundle} problem={evidenceScope?.title} onSelect={id => focusEvidence(id, undefined, true)} onCopy={value => void copy(value)} /> : <div className="diag-empty-small">点击左侧事件即可查看对应操作的完整证据。无需滚动到表格底部。</div>}</aside>
     </div>}
     {view === 'status' && <section className="diag-status-page"><div className="diag-pane-intro"><strong>采集覆盖与最近记录</strong><p>这里只展示最后一次观察到的状态，不能代表组件当前在线，也不能证明另一台设备已完成同步。</p></div><div className="diag-observations">
       {observedStates.map(row => <div key={row.name} className="diag-observation"><div className="diag-observation-label">{row.name}</div><div className="diag-observation-value">{row.value}</div><div className="diag-observation-time">{row.at ? `记录于 ${stamp(row.at)}` : row.detail ?? '没有实时在线证据'}</div></div>)}
