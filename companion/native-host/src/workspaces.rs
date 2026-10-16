@@ -311,11 +311,20 @@ fn sync_action(root: &Path, grant: &Grant, action: &str, payload: Value) -> Resu
     if action == "diagnostics" {
         let events = diagnostics::read(&directory)?;
         let index = payload["index"].as_u64().unwrap_or(0) as usize;
-        // Each persisted entry is capped at 4096 bytes: 128 entries fit below Chrome's 1 MiB reply limit.
-        const PAGE: usize = 128;
-        let chunks = events.len().div_ceil(PAGE).max(1);
-        if index >= chunks { return Err("invalid_workspace_request"); }
-        return Ok(json!({"status":"diagnostics","index":index,"chunks":chunks,"events":events.into_iter().skip(index*PAGE).take(PAGE).collect::<Vec<_>>()}));
+        // Respect the Host's frame limit, including the response envelope and JSON separators.
+        let budget = crate::MAX_FRAME - 128;
+        let mut pages = vec![Vec::new()];
+        let mut used = 0;
+        for event in events {
+            let size = serde_json::to_vec(&event).map_err(|_| "invalid_response")?.len() + 1;
+            if size > budget { return Err("oversized_response"); }
+            if used + size > budget { pages.push(Vec::new()); used = 0; }
+            pages.last_mut().unwrap().push(event);
+            used += size;
+        }
+        let chunks = pages.len();
+        let page = pages.into_iter().nth(index).ok_or("invalid_workspace_request")?;
+        return Ok(json!({"status":"diagnostics","index":index,"chunks":chunks,"events":page}));
     }
     let trace = payload["diagnostic"].clone();
     let _lock = diagnostics::ObservedLock::acquire(&directory, &trace)?;
@@ -542,14 +551,44 @@ mod tests {
         let mut index = 0;
         while index < chunks {
             let page = local_action(root.path(), "diagnostics", json!({"index":index})).unwrap();
-            assert!(serde_json::to_vec(&page).unwrap().len() < 1024*1024);
+            let mut frame = Vec::new();
+            crate::write_frame(&mut frame, &page).unwrap();
             chunks = page["chunks"].as_u64().unwrap();
             ids.extend(page["events"].as_array().unwrap().iter().map(|e|e["id"].as_u64().unwrap()));
             index += 1;
         }
-        assert_eq!(chunks, 32);
+        assert!(chunks > 1 && chunks < 500);
         assert_eq!(ids, (0..4000).collect::<Vec<_>>());
         assert!(local_action(root.path(), "diagnostics", json!({"index":chunks})).is_err());
+    }
+    #[test]
+    fn diagnostic_pages_fit_the_host_frame_limit_with_large_entries() {
+        let root = setup();
+        auth::with_local_desktop(root.path(), &"b".repeat(64), |grant| {
+            let directory = location(root.path(), grant.unwrap())?;
+            private_directory(&directory)?;
+            let entries: String = (0..128).map(|id| {
+                let entry = json!({"timestamp":bridge::now()*1000,"id":id,"padding":"x".repeat(3800)});
+                assert!(serde_json::to_vec(&entry).unwrap().len() <= 4096);
+                format!("{entry}\n")
+            }).collect();
+            fs::write(directory.join("diagnostics.jsonl"), entries).unwrap();
+            Ok(())
+        }).unwrap();
+        let mut ids = Vec::new();
+        let mut chunks = 1;
+        let mut index = 0;
+        while index < chunks {
+            let page = local_action(root.path(), "diagnostics", json!({"index":index})).unwrap();
+            let mut frame = Vec::new();
+            crate::write_frame(&mut frame, &page).unwrap();
+            let decoded: Value = serde_json::from_slice(&crate::read_frame(&mut frame.as_slice()).unwrap()).unwrap();
+            assert_eq!(decoded, page);
+            ids.extend(page["events"].as_array().unwrap().iter().map(|e|e["id"].as_u64().unwrap()));
+            chunks = page["chunks"].as_u64().unwrap();
+            index += 1;
+        }
+        assert_eq!(ids, (0..128).collect::<Vec<_>>());
     }
     #[test]
     fn diagnostics_export_works_without_chrome_and_remains_account_authorized() {
