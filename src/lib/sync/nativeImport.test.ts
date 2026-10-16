@@ -13,6 +13,8 @@ vi.mock('@/lib/storage/windowAssociationRepository', () => ({ windowAssociationR
 vi.mock('@/features/workspaces/remoteDeletion', () => ({ notifyRemoteDeletion: vi.fn(), restoreDeletionNotices: async () => {} }));
 vi.mock('../../../shared/workspaceSync', () => ({ readLibrary: async () => structuredClone(fixture.library) }));
 import { importNativeLibrary } from './nativeImport';
+import { configureDiagnostics, flushDiagnostics } from '../../../shared/syncDiagnostics';
+import type { DiagnosticEvent } from '../../../shared/diagnostics';
 
 const scope = 'workspaces:["https://fixture.supabase.test","user-A"]';
 const recoveryKey = scope.replace('workspaces', 'syncRecovery');
@@ -27,6 +29,16 @@ beforeEach(() => {
   fixture.data = {};
   fixture.library = { revision: 1, generation: 1, digest: '', records: { one: record }, deleted: [], remote_deleted: {}, delete_ack: [], conflicts: {} };
   fixture.persist.mockReset().mockImplementation(async (_scope, changes) => { Object.assign(fixture.data, reordered(changes)); });
+});
+it('retains a failed import and records its safe reason while the next import can recover', async () => {
+  const events: DiagnosticEvent[] = [];
+  configureDiagnostics({ component: 'extension', sink: async event => { events.push(event); } });
+  fixture.persist.mockRejectedValueOnce(new Error('invalid_workspace_chunk'));
+  await expect(importNativeLibrary(scope, exchange)).rejects.toThrow('invalid_workspace_chunk');
+  await importNativeLibrary(scope, exchange);
+  await flushDiagnostics();
+  expect(events.find(e => e.event === 'native.import.failed')?.errorCode).toBe('invalid_workspace_chunk');
+  expect(events.some(e => e.event === 'native.import.done')).toBe(true);
 });
 
 it('does not echo unchanged native data back when Chrome reorders nested fields', async () => {

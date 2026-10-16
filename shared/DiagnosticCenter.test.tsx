@@ -4,6 +4,11 @@ import { parseHTML } from 'linkedom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { DiagnosticCenter } from './DiagnosticCenter';
 import { makeBundle, type DiagnosticEvent } from './diagnostics';
+vi.mock('./diagnosticTiming', () => ({ diagnosticTiming: vi.fn(), yieldDiagnosticUI: async () => {} }));
+vi.mock('./diagnosticExport', () => ({ prepareDiagnosticExport: vi.fn(async (latest, imported) => {
+  const bundle = imported.length ? makeBundle([...latest.events, ...imported], latest.coverage) : latest;
+  return { bundle, json: JSON.stringify(bundle, null, 2) };
+}) }));
 
 let root: ReturnType<typeof createRoot>, container: HTMLElement;
 const event: DiagnosticEvent = { id: '11111111-1111-4111-8111-111111111111', operationId: '22222222-2222-4222-8222-222222222222', timestamp: '2026-10-15T00:00:00Z', component: 'extension', level: 'ERROR', event: 'cloud.failed', result: 'failed', deviceId: 'a'.repeat(64), processId: '33333333-3333-4333-8333-333333333333', devicePlatform: 'windows', buildId: 'development', source: 'shared/syncCloud.ts:rpc', state: { action: 'remove' }, errorCode: '42501' };
@@ -149,6 +154,37 @@ async function click(text: string) {
   const button = [...container.querySelectorAll('button')].find(b => b.textContent === text)!;
   expect(button).toBeTruthy(); await act(async () => button.click());
 }
+it('shows export progress immediately, blocks duplicates and keeps navigation responsive', async () => {
+  let finish!: (bundle: ReturnType<typeof makeBundle>) => void;
+  const load = vi.fn().mockResolvedValueOnce(makeBundle([event])).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const save = vi.fn(async () => 'diagnostics.json');
+  await act(async () => root.render(<DiagnosticCenter load={load} save={save} enableDetails={async () => {}} />));
+  const button = container.querySelector<HTMLButtonElement>('.diag-primary')!;
+  await act(async () => { button.click(); button.click(); });
+  expect(button.textContent).toBe('正在导出…'); expect(button.disabled).toBe(true);
+  expect(button.querySelector('.diag-spinner')).not.toBeNull(); expect(load).toHaveBeenCalledTimes(2);
+  await click('采集状态'); expect(container.querySelector('.diag-status-page')).not.toBeNull();
+  await act(async () => finish(makeBundle([event])));
+  expect(save).toHaveBeenCalledOnce(); expect(button.disabled).toBe(false); expect(button.textContent).toBe('导出诊断文件');
+  expect(container.textContent).toContain('已导出：diagnostics.json');
+});
+it('restores the export button and reports a safe cause after save failure', async () => {
+  await act(async () => root.render(<DiagnosticCenter load={async () => makeBundle([event])} save={async () => { throw 'downloads_unavailable'; }} enableDetails={async () => {}} />));
+  await click('导出诊断文件');
+  expect(container.querySelector<HTMLButtonElement>('.diag-primary')!.disabled).toBe(false);
+  expect(container.textContent).toContain('导出失败：downloads_unavailable');
+});
+it('does not save old account evidence when the account changes during export', async () => {
+  let finish!: (bundle: ReturnType<typeof makeBundle>) => void;
+  const load = vi.fn().mockResolvedValueOnce(makeBundle([event])).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  const save = vi.fn(async () => 'diagnostics.json');
+  await act(async () => root.render(<DiagnosticCenter load={load} save={save} enableDetails={async () => {}} />));
+  await click('导出诊断文件');
+  await act(async () => window.dispatchEvent(new window.Event('windowstash-diagnostic-account-changed')));
+  await act(async () => finish(makeBundle([event])));
+  expect(save).not.toHaveBeenCalled(); expect(container.querySelector('.diag-spinner')).toBeNull();
+  expect(container.textContent).toContain('账号已变化');
+});
 it('renders an independent center, expands actual event evidence and refreshes before export', async () => {
   const load = vi.fn(async () => makeBundle([event], { 'native-host': '组件不可用' })), save = vi.fn(async (bundle: ReturnType<typeof makeBundle>) => bundle.schema + '.json');
   await act(async () => root.render(<DiagnosticCenter load={load} enableDetails={async () => {}} save={save} />));

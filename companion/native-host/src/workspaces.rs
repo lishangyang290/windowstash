@@ -311,9 +311,11 @@ fn sync_action(root: &Path, grant: &Grant, action: &str, payload: Value) -> Resu
     if action == "diagnostics" {
         let events = diagnostics::read(&directory)?;
         let index = payload["index"].as_u64().unwrap_or(0) as usize;
-        if index > 400 { return Err("invalid_workspace_request"); }
-        let chunks = events.len().div_ceil(8).max(1);
-        return Ok(json!({"status":"diagnostics","index":index,"chunks":chunks,"events":events.into_iter().skip(index*8).take(8).collect::<Vec<_>>()}));
+        // Each persisted entry is capped at 4096 bytes: 128 entries fit below Chrome's 1 MiB reply limit.
+        const PAGE: usize = 128;
+        let chunks = events.len().div_ceil(PAGE).max(1);
+        if index >= chunks { return Err("invalid_workspace_request"); }
+        return Ok(json!({"status":"diagnostics","index":index,"chunks":chunks,"events":events.into_iter().skip(index*PAGE).take(PAGE).collect::<Vec<_>>()}));
     }
     let trace = payload["diagnostic"].clone();
     let _lock = diagnostics::ObservedLock::acquire(&directory, &trace)?;
@@ -524,6 +526,30 @@ mod tests {
     }
     fn local_action(root: &Path, action: &str, payload: Value) -> Result<Value> {
         desktop_sync(root, &"b".repeat(64), &"a".repeat(64), "https://fixture.supabase.co", "user-A", action, payload)
+    }
+    #[test]
+    fn diagnostic_pages_are_complete_and_compatible_with_existing_clients() {
+        let root = setup();
+        auth::with_local_desktop(root.path(), &"b".repeat(64), |grant| {
+            let directory = location(root.path(), grant.unwrap())?;
+            private_directory(&directory)?;
+            let entries: String = (0..4000).map(|id| format!("{{\"timestamp\":{},\"id\":{}}}\n", bridge::now()*1000, id)).collect();
+            fs::write(directory.join("diagnostics.jsonl"), entries).unwrap();
+            Ok(())
+        }).unwrap();
+        let mut ids = Vec::new();
+        let mut chunks = 1;
+        let mut index = 0;
+        while index < chunks {
+            let page = local_action(root.path(), "diagnostics", json!({"index":index})).unwrap();
+            assert!(serde_json::to_vec(&page).unwrap().len() < 1024*1024);
+            chunks = page["chunks"].as_u64().unwrap();
+            ids.extend(page["events"].as_array().unwrap().iter().map(|e|e["id"].as_u64().unwrap()));
+            index += 1;
+        }
+        assert_eq!(chunks, 32);
+        assert_eq!(ids, (0..4000).collect::<Vec<_>>());
+        assert!(local_action(root.path(), "diagnostics", json!({"index":chunks})).is_err());
     }
     #[test]
     fn diagnostics_export_works_without_chrome_and_remains_account_authorized() {

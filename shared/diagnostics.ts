@@ -17,6 +17,17 @@ export interface DiagnosticEvent {
 const token = /^[a-zA-Z0-9_.:/-]{1,140}$/;
 const ref = /^[a-f0-9]{64}$/;
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
+const safeErrorCode = /^(?:[0-9A-Z]{5}|PGRST\d{3}|sync_lease_expired|stale_workspace_revision|local_store_[a-z_]+|invalid_workspace_[a-z_]+|lease-busy|lease-expired|stale-revision|validation|other|timeout|account-changed)$/;
+export function diagnosticErrorCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === 'string' && safeErrorCode.test(code)) return code;
+  if (safeErrorCode.test(message)) return message;
+  if (message.startsWith('账号已变化') || message === '请先登录 WindowStash') return 'account-changed';
+  if (message === '本机工作区通道超时；原数据已保留，请重试') return 'timeout';
+  if (message === '同步数据校验失败，本机数据已保留') return 'validation';
+  return 'other';
+}
 export async function diagnosticRef(value: string): Promise<string> {
   return [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)))].map(b => b.toString(16).padStart(2, '0')).join('');
 }
@@ -66,7 +77,7 @@ export function sanitizeEvent(value: unknown): DiagnosticEvent | null {
   if (Number.isSafeInteger(v.retryAttempt) && v.retryAttempt! >= 0) clean.retryAttempt = v.retryAttempt;
   if (v.trigger && enumValues.has(v.trigger)) clean.trigger = v.trigger;
   // Error codes are enums, SQLSTATE, or known transport codes; never arbitrary error text.
-  if (v.errorCode && /^(?:[0-9A-Z]{5}|PGRST\d{3}|sync_lease_expired|stale_workspace_revision|local_store_[a-z_]+|invalid_workspace_[a-z_]+|lease-busy|lease-expired|stale-revision|validation|other|timeout|account-changed)$/.test(v.errorCode)) clean.errorCode = v.errorCode;
+  if (v.errorCode && safeErrorCode.test(v.errorCode)) clean.errorCode = v.errorCode;
   return clean;
 }
 export function retainEvents(events: DiagnosticEvent[], now = Date.now()): DiagnosticEvent[] {
@@ -104,6 +115,26 @@ export function differentDevice(a: DiagnosticEvent, b: DiagnosticEvent): boolean
   return a.deviceSource === 'native' && b.deviceSource === 'native' && ref.test(a.deviceId) && ref.test(b.deviceId)
     || a.devicePlatform !== 'unknown' && b.devicePlatform !== 'unknown' && a.devicePlatform !== b.devicePlatform;
 }
+const stageEnds: Record<string, string[]> = {
+  'operation.start': ['operation.done'], 'sync.start': ['sync.done', 'sync.failed', 'sync.stop'],
+  'lease.start': ['lease.acquired', 'lease.busy'], 'lock.start': ['lock.acquired', 'lock.failed'],
+  'cloud.start': ['cloud.done', 'cloud.failed'], 'native.import.start': ['native.import.done', 'native.import.failed'],
+  'native.publish.start': ['native.publish.persisted', 'native.publish.failed', 'native.publish.skipped'],
+  'ui.refresh.start': ['ui.refresh.done', 'ui.refresh.failed'],
+};
+function hasStageEnd(group: DiagnosticEvent[], start: DiagnosticEvent): boolean {
+  const ends = stageEnds[start.event];
+  if (!ends) return false;
+  // Legacy writers used sibling parent IDs. Only match the same stage/context before its next start.
+  for (const event of group.slice(group.indexOf(start) + 1)) {
+    if (event.component !== start.component || event.processId !== start.processId) continue;
+    if (ends.includes(event.event) && event.parentEventId === start.id) return true;
+    if (event.workspaceRef !== start.workspaceRef || event.state.action !== start.state.action) continue;
+    if (event.event === start.event) return false;
+    if (ends.includes(event.event) && (event.parentEventId === start.id || event.parentEventId === start.parentEventId)) return true;
+  }
+  return false;
+}
 export function analyze(events: DiagnosticEvent[], now = Date.now()): Finding[] {
   const sorted = [...events].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
   const groups = new Map<string, DiagnosticEvent[]>();
@@ -118,7 +149,7 @@ export function analyze(events: DiagnosticEvent[], now = Date.now()): Finding[] 
     for (const e of group) {
       if (e.result === 'failed' || e.event === 'lease.busy') report(group, e, e.event === 'lease.busy' ? '同步被本机租约占用阻挡' : `${eventNames[e.event] ?? '操作异常'}${e.errorCode ? `（${e.errorCode}）` : ''}`, 'confirmed', e.event === 'lease.busy' ? '已证实存在有效租约；持有进程是否卡住仍需持有方证据。' : '已证实此阶段返回失败；错误的更深层原因需对照源码与前置状态。', ['未记录的内部调用不能视为未执行']);
       if (e.durationMs && e.durationMs > (e.event.startsWith('native.') || e.event.startsWith('lock.') ? 2_000 : 10_000)) report(group, e, '已记录阶段执行耗时异常', 'confirmed', `此阶段实际耗时 ${e.durationMs} ms；检查异步等待和锁竞争。`);
-      if (e.result === 'started' && e.event !== 'realtime.start' && e.event !== 'lifecycle.start' && now - Date.parse(e.timestamp) > 30_000 && !group.some(x => x.parentEventId === e.id && ['success', 'failed', 'cancelled'].includes(x.result))) {
+      if (e.result === 'started' && e.event !== 'realtime.start' && e.event !== 'lifecycle.start' && now - Date.parse(e.timestamp) > 30_000 && !hasStageEnd(group, e)) {
         report(group, e, '异步任务长时间缺少结束证据', 'suspected', '可能仍在等待，也可能进程中断或日志写入丢失；不能断言任务未执行。', ['结束/超时/取消记录', '进程存活证据']);
       }
       if (['queue.upload', 'queue.delete'].includes(e.event) && now - Date.parse(e.timestamp) > 30_000 && !group.some(x => x.event === 'cloud.start' && x.workspaceRef === e.workspaceRef && x.state.action === e.state.action)) report(group, e, '任务已排队但缺少请求开始证据', 'suspected', '检查同步队列调度、租约获取和前序任务是否未结束。', ['对应 RPC 开始记录']);
@@ -150,6 +181,7 @@ export interface DiagnosticBundle {
   links: { from: string; to: string; basis: 'parent-event' | 'workspace-cloud-version' }[];
 }
 export function makeBundle(input: DiagnosticEvent[], coverage: Record<string, string> = {}, now = Date.now()): DiagnosticBundle {
+  const started = performance.now();
   const events = [...new Map(input.map(sanitizeEvent).filter((e): e is DiagnosticEvent => !!e).map(e => [e.id, e])).values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp)).slice(-20000);
   const ids = new Set(events.map(e => e.id));
   const links: DiagnosticBundle['links'] = events.filter(e => e.parentEventId && ids.has(e.parentEventId)).map(e => ({ from: e.parentEventId!, to: e.id, basis: 'parent-event' }));
@@ -159,7 +191,10 @@ export function makeBundle(input: DiagnosticEvent[], coverage: Record<string, st
     const origins = [...new Map(group.filter(e => e.event === 'cloud.version').map(e => [e.deviceId, e])).values()].slice(-16);
     for (const b of group.filter(e => ['realtime.event', 'cloud.received', 'ui.committed', 'native.applied'].includes(e.event))) for (const a of origins) if (a.deviceId !== b.deviceId && links.length < 40000) links.push({ from: a.id, to: b.id, basis: 'workspace-cloud-version' });
   }
+  const analysisStart = performance.now();
   const findings = analyze(events, now);
+  performance.measure('windowstash.diagnostics.analyze', { start: analysisStart, duration: performance.now() - analysisStart });
+  performance.measure('windowstash.diagnostics.makeBundle', { start: started, duration: performance.now() - started });
   return { schema: DIAGNOSTIC_SCHEMA, exportedAt: new Date(now).toISOString(), events, coverage,
     environment: { platforms: [...new Set(events.map(e => e.devicePlatform))].join(', '), builds: [...new Set(events.map(e => e.buildId))].join(', '), retention: '7 days / 4000 events / 2 MiB per store', clock: 'UTC wall clock; cross-device differences include unknown clock skew' },
     range: { from: events[0]?.timestamp ?? null, to: events.at(-1)?.timestamp ?? null }, findings, links,

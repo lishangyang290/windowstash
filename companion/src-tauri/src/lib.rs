@@ -123,14 +123,18 @@ async fn local_workspaces() -> Result<serde_json::Value, String> {
 #[tauri::command]
 async fn export_diagnostics(app: tauri::AppHandle, bundle: serde_json::Value) -> Result<String, String> {
     if bundle["schema"] != "windowstash.diagnostics/1" || !bundle["events"].is_array() { return Err("invalid_diagnostic_bundle".into()); }
+    let serialization = std::time::Instant::now();
     let bytes = serde_json::to_vec_pretty(&bundle).map_err(|_| "invalid_diagnostic_bundle")?;
+    eprintln!("[diagnostics timing] serialize-rust {} ms", serialization.elapsed().as_millis());
     if bytes.len() > 20*1024*1024 { return Err("diagnostic_bundle_too_large".into()); }
     let directory = app.path().download_dir().map_err(|_| "downloads_unavailable")?;
     let name = format!("windowstash-diagnostics-{}-{}.json", windowstash_native_host::bridge::now(), &windowstash_native_host::bridge::random_id()[..8]);
     let path = directory.join(name);
+    let save = std::time::Instant::now();
     use std::io::Write;
     let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|_| "diagnostic_export_failed")?;
     file.write_all(&bytes).map_err(|_| "diagnostic_export_failed")?;
+    eprintln!("[diagnostics timing] file-save-rust {} ms", save.elapsed().as_millis());
     Ok(path.to_string_lossy().into_owned())
 }
 

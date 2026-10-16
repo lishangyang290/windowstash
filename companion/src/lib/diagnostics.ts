@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { configureDiagnostics, flushDiagnostics, syncTrace } from '../../../shared/syncDiagnostics';
 import { diagnosticRef, makeBundle, type DiagnosticEvent } from '../../../shared/diagnostics';
 import { currentBrowserGrant, grantIdentity, readBrowserGrant } from './browserAuth';
+import { diagnosticTiming } from '../../../shared/diagnosticTiming';
 
 let initialized = false;
 let lost = 0;
@@ -56,6 +57,7 @@ export function initializeDiagnostics() {
   syncTrace('lifecycle.start', { trigger: 'startup', source: 'companion/src/lib/diagnostics.ts:initializeDiagnostics' });
 }
 export async function companionDiagnostics() {
+  const localStart = performance.now();
   await bounded(flushDiagnostics(), 1000).catch(() => { lost++; });
   let grant;
   try { grant = await bounded(readBrowserGrant()); }
@@ -67,9 +69,12 @@ export async function companionDiagnostics() {
     return makeBundle(entries, { companion: session ? '本账号独立 Companion 本地记录' : '本机界面运行中；无已授权账号', 'native-host': '私人日志需要浏览器账号授权', extension: 'Chrome 关闭时不可访问扩展专属存储' });
   }
   const local = JSON.parse(localStorage.getItem('windowstash-diagnostics:v1:' + await diagnosticRef(accountOwner(grant.config.url, grant.session.user.id))) ?? '[]') as DiagnosticEvent[];
+  diagnosticTiming('companion-local-read', localStart);
   let result;
+  const nativeStart = performance.now();
   try { result = await bounded(invoke<{ events: DiagnosticEvent[]; dropped: number; nativeDropped: number }>('diagnostic_records', { instance: grant.instance_id, project: grant.config.url, user: grant.session.user.id, entries: [] })); }
   catch { return makeBundle(local, { companion: '已读取本账号前端本地记录', 'native-host': '组件不可用或读取超时；未合并 Rust / Host 文件', extension: '不可访问扩展专属存储' }); }
+  finally { diagnosticTiming('native-companion-read', nativeStart); }
   const deviceId = result.events.find(e => /^[a-f0-9]{64}$/.test(e.deviceId))?.deviceId;
   const merged = [...local.map(e => deviceId ? { ...e, deviceId, deviceSource: 'native' as const } : e), ...result.events];
   return makeBundle(merged, { companion: `本机界面运行中；写入丢失 ${lost} 条（当前进程）`, 'native-host': `已读取本账号共享持久化文件；无需 Chrome 运行；本进程后台写入丢失 ${result.nativeDropped} 条`, extension: '扩展专属存储不可访问；可导入 Chrome 导出的文件合并' });

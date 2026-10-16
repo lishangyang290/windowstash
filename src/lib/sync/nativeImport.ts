@@ -6,6 +6,7 @@ import { notifyRemoteDeletion, restoreDeletionNotices } from '@/features/workspa
 import type { DeleteTombstone, WorkspaceLocalRecord } from '@/types/workspace';
 import { readLibrary, type LocalExchange } from '../../../shared/workspaceSync';
 import { syncTrace } from '../../../shared/syncDiagnostics';
+import { diagnosticErrorCode } from '../../../shared/diagnostics';
 
 // Chrome storage and Rust serialize object fields in different orders.
 const serialized = (value: unknown) => JSON.stringify(value, (_key, item) =>
@@ -60,5 +61,5 @@ export function importNativeLibrary(scope: string, exchange: LocalExchange): Pro
     await withDataAccount(account, () => restoreDeletionNotices(scope));
     syncTrace('native.import.done', { trace, scope, generation: library.generation, elapsedMs: performance.now() - started });
   });
-  imports = task.catch(() => { syncTrace('native.import.failed', { trace, scope, elapsedMs: performance.now() - started }); }); return task;
+  imports = task.catch(error => { syncTrace('native.import.failed', { trace, scope, errorCode: diagnosticErrorCode(error), elapsedMs: performance.now() - started }); }); return task;
 }

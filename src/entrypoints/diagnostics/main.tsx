@@ -5,13 +5,17 @@ import { makeBundle, type DiagnosticBundle, type DiagnosticEvent } from '../../.
 import { extensionDiagnostics, detailedDiagnostics, initializeDiagnostics } from '@/lib/storage/diagnostics';
 import { accountStorageKey } from '@/lib/storage/accountScope';
 import { nativeLibraryExchange } from '@/lib/companion/workspaces';
+import { diagnosticTiming } from '../../../shared/diagnosticTiming';
 
 initializeDiagnostics();
 async function load(onPartial?: (bundle: DiagnosticBundle) => void) {
+  const localStart = performance.now();
   const local = await extensionDiagnostics();
+  diagnosticTiming('extension-read', localStart);
   onPartial?.(local);
   const native: DiagnosticEvent[] = [];
   const coverage = { ...local.coverage };
+  const nativeStart = performance.now();
   try {
     const exchange = await nativeLibraryExchange(await accountStorageKey('workspaces'));
     if (!exchange) coverage['native-host'] = '组件不可用；未配对或未授权';
@@ -26,6 +30,7 @@ async function load(onPartial?: (bundle: DiagnosticBundle) => void) {
       coverage.companion = '已合并当前账号可访问的持久化记录；运行状态未知';
     }
   } catch { coverage['native-host'] = '组件不可用或授权失败；Native Host 和 Companion 文件未完整读取'; }
+  diagnosticTiming('native-companion-read', nativeStart);
   const deviceId = native.find(e => /^[a-f0-9]{64}$/.test(e.deviceId))?.deviceId;
   return makeBundle([...local.events.map(e => deviceId ? { ...e, deviceId, deviceSource: 'native' as const } : e), ...native], coverage);
 }

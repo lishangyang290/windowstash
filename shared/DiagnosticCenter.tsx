@@ -4,6 +4,8 @@ import { evidenceForOperation, groupDiagnosticFindings, type IssueGroup } from '
 import logo from '../public/icon-128.png';
 import { DiagnosticSelect } from './DiagnosticSelect';
 import './diagnostics.css';
+import { prepareDiagnosticExport } from './diagnosticExport';
+import { diagnosticTiming, yieldDiagnosticUI } from './diagnosticTiming';
 
 type View = 'issues' | 'events' | 'status';
 function initialView(): View {
@@ -25,8 +27,8 @@ const eventLabel = (e?: DiagnosticEvent) => e ? eventNames[e.event] ?? e.event :
 const stateLabel = (result: string) => labels[result] ?? result;
 const componentLabel = (component: string) => labels[component] ?? component;
 
-function download(bundle: DiagnosticBundle) {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json;charset=utf-8' }));
+function download(bundle: DiagnosticBundle, json: string) {
+  const url = URL.createObjectURL(new Blob([json], { type: 'application/json;charset=utf-8' }));
   const anchor = document.createElement('a'); anchor.href = url;
   anchor.download = `windowstash-diagnostics-${bundle.exportedAt.replace(/[:.]/g, '-')}.json`;
   anchor.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
@@ -140,6 +142,8 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: (onParti
   const [bundle, setBundle] = useState<DiagnosticBundle>(() => makeBundle([]));
   const [view, setView] = useState<View>(initialView);
   const [busy, setBusy] = useState(false), [message, setMessage] = useState('');
+  const [exportStage, setExportStage] = useState('');
+  const exporting = useRef(false);
   const [reading, setReading] = useState(true), [hasRead, setHasRead] = useState(false);
   const [query, setQuery] = useState(''), [level, setLevel] = useState(''), [component, setComponent] = useState(''), [kind, setKind] = useState('');
   const [from, setFrom] = useState(''), [to, setTo] = useState(''), [page, setPage] = useState(0);
@@ -150,6 +154,45 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: (onParti
   const [advanced, setAdvanced] = useState(false);
   const accountRevision = useRef(0), readRevision = useRef(0), importedEvents = useRef<DiagnosticEvent[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
+  async function exportDiagnostics() {
+    if (busy || exporting.current) return;
+    exporting.current = true;
+    setBusy(true); setExportStage('正在读取日志'); setMessage('正在读取日志');
+    const revision = accountRevision.current, imported = importedEvents.current;
+    const current = () => revision === accountRevision.current;
+    const started = performance.now();
+    let stage = '读取日志';
+    try {
+      await yieldDiagnosticUI();
+      const readStart = performance.now();
+      const latest = await load();
+      diagnosticTiming('read-all', readStart);
+      if (!current()) return;
+      stage = '整理数据'; setExportStage('正在整理数据'); setMessage('正在整理数据');
+      await yieldDiagnosticUI();
+      const prepared = await prepareDiagnosticExport(latest, imported);
+      if (!current()) return;
+      stage = '生成文件'; setExportStage('正在生成文件'); setMessage('正在生成文件');
+      await yieldDiagnosticUI();
+      if (!current()) return;
+      const saveStart = performance.now();
+      if (save) {
+        const path = await save(prepared.bundle);
+        if (current()) setMessage(`已导出：${path}`);
+      } else { download(prepared.bundle, prepared.json); setMessage('诊断文件已生成，已交给浏览器下载；请查看下载列表。'); }
+      diagnosticTiming('file-save', saveStart);
+      if (current()) setBundle(prepared.bundle);
+    } catch (error) {
+      // File paths and arbitrary transport messages may contain private data.
+      const known = error instanceof Error && /^(诊断数据整理超时，请重试|诊断文件生成线程不可用，请重试|诊断数据整理或序列化失败)$/.test(error.message) ? error.message
+        : typeof error === 'string' && ['downloads_unavailable', 'diagnostic_export_failed', 'diagnostic_bundle_too_large', 'invalid_diagnostic_bundle'].includes(error) ? error : `${stage}未完成，请检查组件授权和下载目录权限后重试`;
+      if (current()) setMessage(`导出失败：${known}；诊断记录仍保留在本机。`);
+    } finally {
+      diagnosticTiming('export-total', started);
+      exporting.current = false;
+      if (current()) { setBusy(false); setExportStage(''); }
+    }
+  }
   const refresh = React.useCallback(async () => {
     setBusy(true); setReading(true); const revision = accountRevision.current, request = ++readRevision.current;
     const current = () => revision === accountRevision.current && request === readRevision.current;
@@ -171,7 +214,7 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: (onParti
     history.replaceState(history.state, '', url);
   }, [view]);
   React.useEffect(() => {
-    const clear = () => { accountRevision.current++; readRevision.current++; importedEvents.current = []; setBundle(makeBundle([])); setSelectedId(null); setSelectedIssueKey(null); setEvidenceScope(null); setHasRead(false); setReading(false); setBusy(false); setMessage('账号已变化，已隐藏旧账号诊断记录；请刷新。'); };
+    const clear = () => { accountRevision.current++; readRevision.current++; importedEvents.current = []; setBundle(makeBundle([])); setSelectedId(null); setSelectedIssueKey(null); setEvidenceScope(null); setHasRead(false); setReading(false); setBusy(false); setExportStage(''); setMessage('账号已变化，已隐藏旧账号诊断记录；请刷新。'); };
     window.addEventListener('windowstash-diagnostic-account-changed', clear);
     return () => window.removeEventListener('windowstash-diagnostic-account-changed', clear);
   }, []);
@@ -223,10 +266,10 @@ export function DiagnosticCenter({ load, enableDetails, save }: { load: (onParti
     <header className="diag-header">
       <div className="diag-heading"><div className="diag-wordmark"><img className="diag-mark" src={logo} alt="" /> WindowStash <span className="diag-slash">/</span> 诊断</div><h1>诊断中心</h1><p>把分散的技术记录整理成可以排查的故障线索。</p></div>
       <div className="diag-actions"><button disabled={busy} className="diag-secondary" onClick={() => void refresh()}>刷新</button>
-        <label className="diag-file diag-secondary">导入诊断文件<input type="file" accept=".json,application/json" onChange={e => { const revision = accountRevision.current, file = e.target.files?.[0]; if (!file) return; if (file.size > 20 * 1024 * 1024) { setMessage('诊断文件超过 20 MiB'); e.target.value = ''; return; }
+        <label className="diag-file diag-secondary">导入诊断文件<input type="file" disabled={!!exportStage} accept=".json,application/json" onChange={e => { const revision = accountRevision.current, file = e.target.files?.[0]; if (!file) return; if (file.size > 20 * 1024 * 1024) { setMessage('诊断文件超过 20 MiB'); e.target.value = ''; return; }
           void file.text().then(raw => { if (revision !== accountRevision.current) return; const imported = importBundle(raw); importedEvents.current = [...new Map([...importedEvents.current, ...imported.events].map(event => [event.id, event])).values()].slice(-20_000);
             setBundle(previous => makeBundle([...previous.events, ...imported.events], { ...previous.coverage, imported: '已导入另一份诊断记录；设备时钟可能存在偏差' })); setMessage('诊断文件已合并，可以按精确关联证据对照两台设备。'); }).catch(() => setMessage('无法导入：文件格式无效或超过容量限制')); e.target.value = ''; }} /></label>
-        <button className="diag-primary" disabled={busy} onClick={() => { setBusy(true); const revision = accountRevision.current; void load().then(latest => { if (revision !== accountRevision.current) throw new Error('account changed'); const safe = makeBundle([...latest.events, ...importedEvents.current], latest.coverage); setBundle(safe); return save ? save(safe).then(path => setMessage(`已导出：${path}`)) : download(safe); }).catch(() => setMessage('导出失败，诊断记录仍保留在本机')).finally(() => setBusy(false)); }}>导出诊断文件</button>
+        <button className="diag-primary" disabled={busy} aria-busy={!!exportStage} title={exportStage || undefined} onClick={() => void exportDiagnostics()}>{exportStage && <span className="diag-spinner" aria-hidden="true"/>}{exportStage ? '正在导出…' : '导出诊断文件'}</button>
       </div>
     </header>
     {reading && <div className="diag-loading" role="status"><span className="diag-loading-dot" aria-hidden="true"/>{hasRead ? '已显示本地记录，正在补齐其他组件；分析结果可能随记录更新。' : '正在读取本机诊断记录…'}</div>}

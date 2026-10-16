@@ -1,10 +1,25 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { configureDiagnostics, flushDiagnostics, diagnosticHealth, syncFailure, syncTrace, traceContext } from './syncDiagnostics';
-import { diagnosticRef, importBundle, makeBundle, MAX_EVENTS, MAX_STORE_BYTES, RETENTION_MS, retainEvents, sanitizeEvent, type DiagnosticEvent } from './diagnostics';
+import { diagnosticErrorCode, diagnosticRef, importBundle, makeBundle, MAX_EVENTS, MAX_STORE_BYTES, RETENTION_MS, retainEvents, sanitizeEvent, type DiagnosticEvent } from './diagnostics';
 import { diagnosticWriter } from './diagnosticStore';
 let events: DiagnosticEvent[];
 beforeEach(() => { events = []; configureDiagnostics({ component: 'extension', sink: async e => { events.push({ ...e, deviceId: 'a'.repeat(64) }); } }); });
 afterEach(async () => { await flushDiagnostics(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+it('matches legacy stage endings and lease contention without treating unrelated successes as completion', async () => {
+  const lease = syncTrace('lease.start'); syncTrace('lease.busy', { trace: lease });
+  const cloud = traceContext(); syncTrace('cloud.start', { trace: cloud, action: 'snapshot' }); syncTrace('cloud.done', { trace: cloud, action: 'snapshot' });
+  const pending = syncTrace('cloud.start', { action: 'put' }); syncTrace('native.applied', { trace: pending });
+  await flushDiagnostics();
+  const findings = makeBundle(events, {}, Date.now() + 60_000).findings.filter(f => f.symptom.includes('长时间缺少结束'));
+  expect(findings).toHaveLength(1);
+  expect(findings[0]?.firstAbnormal).toBe(pending.parentEventId);
+});
+it('records import failure codes without exporting raw error text', () => {
+  expect(diagnosticErrorCode(new Error('账号已变化，请重新操作'))).toBe('account-changed');
+  expect(diagnosticErrorCode(new Error('invalid_workspace_chunk'))).toBe('invalid_workspace_chunk');
+  expect(diagnosticErrorCode(new Error('同步数据校验失败，本机数据已保留'))).toBe('validation');
+  expect(diagnosticErrorCode(new Error('PRIVATE TOKEN / URL / WORKSPACE'))).toBe('other');
+});
 it('captures an actual operation span without recording workspace contents, identity or raw errors', async () => {
   const trace = syncTrace('operation.start', { trace: traceContext(), workspace: '11111111-1111-4111-8111-111111111111' });
   syncTrace('local.persisted', { trace, revision: 2 });

@@ -215,3 +215,5 @@ body:has(.diagnostics) { margin:0; overflow:hidden; }
 }
 /* Respect hidden sections in embedded previews and standalone contexts. */
 .diagnostics [hidden] { display:none!important; }
+.diag-spinner { display:inline-block; width:12px; height:12px; margin-right:7px; border:2px solid currentColor; border-right-color:transparent; border-radius:50%; vertical-align:-2px; animation:diag-spin .7s linear infinite; }
+@keyframes diag-spin { to { transform:rotate(360deg); } }
