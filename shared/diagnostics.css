@@ -137,7 +137,7 @@ body:has(.diagnostics) { margin:0; overflow:hidden; }
 .diag-event-table tbody tr.diag-current { background:#f1f1f4; }
 .diagnostics .diag-event-choice { padding:0; border:0; background:none; color:#3d404a; text-align:left; font-weight:600; max-width:100%; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
 .diag-event-choice:hover { text-decoration:underline; }
-.diag-result { color:#595959; font-weight:500; white-space:nowrap; font-size:var(--d-body); }
+.diag-result { color:#595959; font-weight:600; white-space:nowrap; font-size:var(--d-small); }
 .diag-result--started { color:#0958d9; }
 .diag-result--success { color:#389e0d; }
 .diag-result--waiting { color:#ad6800; }
