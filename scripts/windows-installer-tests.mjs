@@ -106,9 +106,14 @@ test('preparation with a missing payload leaves existing executable files intact
   } finally { cleanup(f); }
 });
 
-test('graceful Restart Manager wrapper compiles and uses the native 12-byte process identity', { skip: !windows }, () => {
-  const code = readFileSync(helper, 'utf8').match(/Add-Type -TypeDefinition @'\r?\n([\s\S]*?)\r?\n'@/)[1];
-  const command = `Add-Type -TypeDefinition @'\n${code}\n'@\n[Runtime.InteropServices.Marshal]::SizeOf([type][WindowStashInstallerRestart+Application])`;
-  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true });
-  assert.equal(result.status, 0, result.stdout + result.stderr); assert.equal(result.stdout.trim(), '12');
+test('graceful shutdown arguments and native identity work in installer Windows PowerShell', { skip: !windows }, () => {
+  const script = readFileSync(helper, 'utf8');
+  const code = script.match(/Add-Type -TypeDefinition @'\r?\n([\s\S]*?)\r?\n'@/)[1];
+  const argumentsCode = script.match(/      \$ids = [^\r\n]+\r?\n      \$starts = [^\r\n]+/)[0];
+  const command = `$ErrorActionPreference = 'Stop'\nAdd-Type -TypeDefinition @'\n${code}\n'@\n$companions = @([pscustomobject]@{ProcessId=$PID})\n${argumentsCode}\n$ids.GetType().FullName\n$starts.GetType().FullName\n[Runtime.InteropServices.Marshal]::SizeOf([type][WindowStashInstallerRestart+Application])`;
+  for (const executable of ['System32', 'SysWOW64'].map(dir => join(process.env.WINDIR, dir, 'WindowsPowerShell/v1.0/powershell.exe'))) {
+    const result = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.deepEqual(result.stdout.trim().split(/\r?\n/), ['System.UInt32[]', 'System.Int64[]', '12']);
+  }
 });

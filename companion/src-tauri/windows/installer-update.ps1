@@ -77,7 +77,7 @@ public static class WindowStashInstallerRestart {
   }
 }
 '@
-      $ids = [uint[]]@($companions | ForEach-Object ProcessId)
+      $ids = [uint32[]]@($companions | ForEach-Object ProcessId)
       $starts = [long[]]@($companions | ForEach-Object { (Get-Process -Id $_.ProcessId).StartTime.ToFileTimeUtc() })
       $result = [WindowStashInstallerRestart]::Close($ids, $starts)
       if ($result -ne 0) { throw "Companion did not accept normal shutdown (Windows error $result). No forced termination was performed." }
