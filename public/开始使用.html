@@ -13,6 +13,7 @@
     @media(max-width:900px){.site-header{height:58px}.site-header-inner{padding:0 16px}.hero{margin-left:0;padding:36px 0}.hero-inner{width:min(100% - 32px,760px)}.hero-layout{grid-template-columns:1fr;gap:20px}.guide-layout{width:min(100% - 32px,760px);margin:auto}.progress-shell{position:relative;top:auto;bottom:auto;left:auto;width:auto;margin:24px 0 0;padding:0;border:1px solid var(--line);border-radius:6px;background:#fff;overflow:hidden}.nav-toggle{display:flex;width:100%;align-items:center;justify-content:space-between;border:0;background:#fff;padding:15px 16px;color:var(--ink);font-weight:700;text-align:left;cursor:pointer}.nav-toggle::after{content:"+";font-size:20px;font-weight:400}.progress-shell.open .nav-toggle::after{content:"−"}.progress-wrap{display:none;padding:4px 16px 18px}.progress-shell.open .progress-wrap{display:block}#guide{width:100%}.step{padding:56px 0 64px}footer{width:min(100% - 32px,760px);margin:auto;padding-right:0;padding-left:0}.mobile-top{position:fixed;right:16px;bottom:16px;z-index:8;display:block;padding:10px 12px;border:1px solid var(--line);border-radius:4px;background:#fff;color:var(--ink);box-shadow:0 8px 24px rgba(24,24,27,.1);font-size:14px;text-decoration:none}}
     @media(max-width:600px){.guide-type{display:none}h1{font-size:40px}.guide-table{display:block;overflow-x:auto}.guide-table th{min-width:180px}.copy-row{flex-direction:column}.copy-row button{min-height:46px;border-top:1px solid var(--line);border-left:0}.actions{flex-direction:column}.actions .button{width:100%}.scene{grid-template-columns:1fr;gap:7px}}
     @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}
+    .upgrade-link{padding:0;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer}.upgrade-dialog{width:min(760px,calc(100vw - 32px));max-height:calc(100vh - 48px);padding:28px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);overflow:auto}.upgrade-dialog::backdrop{background:rgba(0,0,0,.45)}.upgrade-dialog form{text-align:right}.upgrade-dialog h2{font-size:28px}.upgrade-dialog code{overflow-wrap:anywhere}
   </style>
 </head>
 <body>
@@ -68,7 +69,7 @@
       </div></section>
 
       <section class="step" id="supabase"><div class="step-body">
-        <p class="eyebrow">04 · 创建数据空间</p><h2>在 Supabase 创建项目</h2><p class="intro">Supabase 用来在线保存和同步工作区。你需要创建自己的项目，并在后面的步骤中把它连接到 WindowStash。</p><p>已有用于 WindowStash 的项目时，请继续使用原项目，并按<a href="#database-upgrade">旧版数据库升级说明</a>检查是否需要升级，不必重新创建。</p>
+        <p class="eyebrow">04 · 创建数据空间</p><h2>在 Supabase 创建项目</h2><p class="intro">Supabase 用来在线保存和同步工作区。你需要创建自己的项目，并在后面的步骤中把它连接到 WindowStash。</p><p>已有用于 WindowStash 的项目时，请继续使用原项目，并按<button type="button" class="upgrade-link" data-open-upgrade aria-haspopup="dialog">旧版数据库升级说明</button>检查是否需要升级，不必重新创建。</p>
         <div class="actions"><a class="button primary" href="https://supabase.com/dashboard" target="_blank" rel="noopener noreferrer">打开 Supabase ↗</a></div>
         <p>点击后会在新标签页打开 Supabase。如果没有 Supabase 账号，按页面提示注册；如果已经有账号，直接登录。登录成功后会进入 <strong>Dashboard</strong>。</p>
         <h3>新建项目</h3><ol class="tasks"><li>确认你现在位于 Supabase Dashboard。</li><li>点击 <strong>New project</strong>，进入项目创建页面。</li></ol>
@@ -81,7 +82,7 @@
 
       <section class="step" id="database"><div class="step-body">
         <p class="eyebrow">05 · 设置数据库</p><h2>为新项目初始化数据库</h2><p class="intro">刚创建的 Supabase 项目需要运行一次初始化代码，用来建立工作区存储和账号访问规则。请完整复制下面的 SQL 代码，一次运行，不要分段执行。已有旧版项目请先阅读下方的升级说明。</p>
-        <details id="database-upgrade"><summary>已有旧版数据库：展开查看升级步骤</summary><p>不要重新初始化项目，也不需要新建项目或账号。升级保留原有工作区，请由管理这个 Supabase 项目的人按以下顺序操作。相关文件位于 GitHub 仓库的 <code>supabase/</code> 目录。</p><ol class="tasks"><li>使用 <code>supabase/inspect_workspace_sync.sql</code> 检查现有数据库，再按 <code>supabase/export_workspace_data.sql</code> 导出并保存备份。</li><li>暂时停止编辑工作区。先在独立测试项目中验证升级，确认后再为原项目完整运行 <code>supabase/migrations/20261014_workspace_sync_v1.sql</code>。</li><li>运行 <code>supabase/verify_workspace_sync_v1.sql</code> 检查升级结果，所有结果应为 <code>true</code>。若有失败项，先运行 <code>supabase/check_workspace_sync_state.sql</code> 核对状态，再排查原因，不要清空重建。</li></ol><p>升级过程中避免新旧客户端同时编辑。升级无法补建旧版本删除工作区时尚未记录的删除标记。</p></details>
+        <p><button type="button" class="upgrade-link" data-open-upgrade aria-haspopup="dialog">查看旧版数据库升级步骤</button></p><dialog class="upgrade-dialog" id="database-upgrade" aria-labelledby="upgrade-title"><form method="dialog"><button class="button" autofocus>关闭</button></form><h2 id="upgrade-title">旧版数据库升级步骤</h2><p>不要重新初始化项目，也不需要新建项目或账号。升级保留原有工作区，请由管理这个 Supabase 项目的人按以下顺序操作。相关文件位于 GitHub 仓库的 <code>supabase/</code> 目录。</p><ol class="tasks"><li>使用 <code>supabase/inspect_workspace_sync.sql</code> 检查现有数据库，再按 <code>supabase/export_workspace_data.sql</code> 导出并保存备份。</li><li>暂时停止编辑工作区。先在独立测试项目中验证升级，确认后再为原项目完整运行 <code>supabase/migrations/20261014_workspace_sync_v1.sql</code>。</li><li>运行 <code>supabase/verify_workspace_sync_v1.sql</code> 检查升级结果，所有结果应为 <code>true</code>。若有失败项，先运行 <code>supabase/check_workspace_sync_state.sql</code> 核对状态，再排查原因，不要清空重建。</li></ol><p>升级过程中避免新旧客户端同时编辑。升级无法补建旧版本删除工作区时尚未记录的删除标记。</p></dialog>
         <div class="code"><button class="code-copy" type="button" data-copy="#schema-code">复制代码</button><pre><code id="schema-code">-- WindowStash v0.6.0: NEW projects only. Existing v0.5.0 databases use the incremental migration.
 -- SQL Editor: run the entire file. Atomic, repeatable, and never clears workspaces.
 begin;
@@ -318,7 +319,7 @@ commit;</code></pre></div>
       <section class="step" id="update"><div class="step-body">
         <p class="eyebrow">12 · 更新版本</p><h2>更新已安装的 WindowStash</h2><p class="intro">按<a href="#download">下载说明</a>获取对应系统的新版 ZIP，完整解压后，按以下三步更新。继续使用原账号和原扩展目录。</p>
         <ol class="tasks"><li><strong>先更新 Companion 桌面应用。</strong>Windows 运行新版中文安装器，覆盖到原安装位置；macOS 按当前 <a href="#companion-macos">.app 安装方式</a>，正常退出 Companion 后替换“应用程序”中的旧应用并重新打开。</li><li><strong>覆盖原 Chrome 扩展目录。</strong>将新版 <span class="path">Chrome Extension</span> 文件夹内的文件覆盖到 Chrome 原来加载的同一目录，保留该目录位置。</li><li><strong>刷新原有扩展。</strong>打开 <span class="path">chrome://extensions</span>，点击原 WindowStash 卡片上的刷新按钮。</li></ol>
-        <div class="note"><strong>保留已有设置和数据</strong>更新时不用卸载或停用扩展，不需要退出 Chrome，也不需要重新配置账号。完成后检查原来的工作区是否仍在，以及同步状态是否正常。</div><p>更新软件不会自动升级 Supabase 数据库。如果原项目仍使用旧版数据库，请先按<a href="#database-upgrade">数据库升级步骤</a>完成检查和升级，不要重新初始化。</p>
+        <div class="note"><strong>保留已有设置和数据</strong>更新时不用卸载或停用扩展，不需要退出 Chrome，也不需要重新配置账号。完成后检查原来的工作区是否仍在，以及同步状态是否正常。</div><p>更新软件不会自动升级 Supabase 数据库。如果原项目仍使用旧版数据库，请先按<button type="button" class="upgrade-link" data-open-upgrade aria-haspopup="dialog">数据库升级步骤</button>完成检查和升级，不要重新初始化。</p>
       </div></section>
 
       <section class="faq" id="faq"><p class="eyebrow">需要帮助时</p><h2>常见问题</h2><div class="faq-list">
@@ -335,6 +336,8 @@ commit;</code></pre></div>
   <footer><span>WindowStash · 开始使用</span><span>数据保存在你自己的 Supabase 中</span></footer>
   <a class="mobile-top" href="#top">返回顶部</a>
   <script>
+    const upgradeDialog=document.querySelector('#database-upgrade');
+    document.querySelectorAll('[data-open-upgrade]').forEach(button=>button.addEventListener('click',()=>upgradeDialog.showModal()));
     const copyToast=document.querySelector('.copy-toast');let copyToastTimer;
     const showCopyToast=message=>{clearTimeout(copyToastTimer);copyToast.textContent=message;copyToast.classList.add('show');copyToastTimer=setTimeout(()=>copyToast.classList.remove('show'),2000)};
     const copyText=async text=>{try{await navigator.clipboard.writeText(text);return true}catch{const area=document.createElement('textarea');try{area.value=text;area.style.position='fixed';area.style.opacity='0';document.body.append(area);area.select();return document.execCommand('copy')}catch{return false}finally{area.remove()}}};

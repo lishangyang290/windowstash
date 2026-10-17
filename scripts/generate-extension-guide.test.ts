@@ -83,6 +83,18 @@ describe('externalizeGuideScript', () => {
     const extension = document.querySelector('#extension')!;
     observerCallback([{ isIntersecting: true, target: extension } as IntersectionObserverEntry], {} as IntersectionObserver);
     expect(document.querySelector('.progress a[href="#extension"]')!.classList.contains('active')).toBe(true);
+    const dialog = document.querySelector<HTMLDialogElement>('#database-upgrade')!;
+    dialog.showModal = vi.fn();
+    const upgradeButtons = document.querySelectorAll<HTMLButtonElement>('[data-open-upgrade]');
+    expect(upgradeButtons).toHaveLength(3);
+    for (const trigger of upgradeButtons) {
+      expect(trigger.tagName).toBe('BUTTON');
+      trigger.click();
+    }
+    expect(dialog.showModal).toHaveBeenCalledTimes(3);
+    expect(dialog.tagName).toBe('DIALOG');
+    expect(dialog.querySelector('form[method="dialog"] button')?.textContent).toBe('关闭');
+    expect(dialog.querySelector('details')).toBeNull();
   });
 });
 
