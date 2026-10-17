@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { describe, expect, it, vi } from 'vitest';
-import { applySetupResources, externalizeGuideScript, generateExtensionGuide, upgradeSqlFiles } from './generate-extension-guide';
+import { applySetupResources, externalizeGuideScript, generateExtensionGuide } from './generate-extension-guide';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -83,37 +83,13 @@ describe('externalizeGuideScript', () => {
     const extension = document.querySelector('#extension')!;
     observerCallback([{ isIntersecting: true, target: extension } as IntersectionObserverEntry], {} as IntersectionObserver);
     expect(document.querySelector('.progress a[href="#extension"]')!.classList.contains('active')).toBe(true);
-    const dialog = document.querySelector<HTMLDialogElement>('#database-upgrade')!;
-    dialog.showModal = vi.fn();
-    const upgradeButtons = document.querySelectorAll<HTMLButtonElement>('[data-open-upgrade]');
-    expect(upgradeButtons).toHaveLength(3);
-    for (const trigger of upgradeButtons) {
-      expect(trigger.tagName).toBe('BUTTON');
-      trigger.click();
-    }
-    expect(dialog.showModal).toHaveBeenCalledTimes(3);
-    expect(dialog.tagName).toBe('DIALOG');
-    expect(dialog.querySelector('form[method="dialog"] button')?.textContent).toBe('关闭');
-    expect(dialog.querySelector('details')).toBeNull();
-    expect(toast.parentElement).toBe(dialog);
-    for (const trigger of dialog.querySelectorAll<HTMLButtonElement>('[data-copy]')) {
-      copyFails = false;
-      trigger.click();
-      await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
-      expect(clipboard).toBe(document.querySelector(trigger.dataset.copy!)!.textContent);
-      expect(clipboard).toContain('begin');
-    }
-    dialog.dispatchEvent(new document.defaultView!.Event('close'));
-    expect(toast.parentElement).toBe(document.body);
   });
 });
 
 it('keeps the standalone guide SQL and project settings aligned with shared setup resources', async () => {
   const source = await readFile('public/开始使用.html', 'utf8');
   const schema = await readFile('supabase/schema.sql', 'utf8');
-  const upgrades = Object.fromEntries(await Promise.all(Object.entries(upgradeSqlFiles)
-    .map(async ([id, file]) => [id, await readFile(file, 'utf8')])));
-  expect(applySetupResources(source, schema, upgrades)).toBe(source);
+  expect(applySetupResources(source, schema)).toBe(source);
   const stale = source.replace('create extension if not exists pgcrypto;', 'outdated SQL');
   expect(applySetupResources(stale, schema)).toBe(source);
 });
@@ -131,11 +107,11 @@ it('ships the complete initialization and separate upgrade instructions through 
     for (const html of [source, generated, standalone]) {
       const { document } = parseHTML(html);
       expect(document.querySelector('#schema-code')?.textContent).toBe(schema.trimEnd());
-      for (const [id, file] of Object.entries(upgradeSqlFiles)) {
-        expect(document.querySelector(`#${id}`)?.textContent).toBe((await readFile(file, 'utf8')).trimEnd());
-        expect(document.querySelector(`[data-copy="#${id}"]`)).not.toBeNull();
-      }
-      expect(document.querySelector('#upgrade-intro')?.textContent).toContain('不要重新初始化');
+      const reminder = document.querySelector('#database-upgrade')!;
+      expect(reminder.textContent).toContain('不要重复执行');
+      expect(reminder.textContent).toContain('不要删除原来的数据库');
+      expect(reminder.querySelector('a')?.getAttribute('href')).toBe('https://github.com/lishangyang290/windowstash/blob/main/README.md#旧版本升级说明');
+      expect(document.querySelector('dialog')).toBeNull();
     }
     expect(generated).toBe(externalizeGuideScript(source).html);
     expect(externalizeGuideScript(standalone)).toEqual(externalizeGuideScript(source));

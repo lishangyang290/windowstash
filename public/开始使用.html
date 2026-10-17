@@ -13,12 +13,6 @@
     @media(max-width:900px){.site-header{height:58px}.site-header-inner{padding:0 16px}.hero{margin-left:0;padding:36px 0}.hero-inner{width:min(100% - 32px,760px)}.hero-layout{grid-template-columns:1fr;gap:20px}.guide-layout{width:min(100% - 32px,760px);margin:auto}.progress-shell{position:relative;top:auto;bottom:auto;left:auto;width:auto;margin:24px 0 0;padding:0;border:1px solid var(--line);border-radius:6px;background:#fff;overflow:hidden}.nav-toggle{display:flex;width:100%;align-items:center;justify-content:space-between;border:0;background:#fff;padding:15px 16px;color:var(--ink);font-weight:700;text-align:left;cursor:pointer}.nav-toggle::after{content:"+";font-size:20px;font-weight:400}.progress-shell.open .nav-toggle::after{content:"−"}.progress-wrap{display:none;padding:4px 16px 18px}.progress-shell.open .progress-wrap{display:block}#guide{width:100%}.step{padding:56px 0 64px}footer{width:min(100% - 32px,760px);margin:auto;padding-right:0;padding-left:0}.mobile-top{position:fixed;right:16px;bottom:16px;z-index:8;display:block;padding:10px 12px;border:1px solid var(--line);border-radius:4px;background:#fff;color:var(--ink);box-shadow:0 8px 24px rgba(24,24,27,.1);font-size:14px;text-decoration:none}}
     @media(max-width:600px){.guide-type{display:none}h1{font-size:40px}.guide-table{display:block;overflow-x:auto}.guide-table th{min-width:180px}.copy-row{flex-direction:column}.copy-row button{min-height:46px;border-top:1px solid var(--line);border-left:0}.actions{flex-direction:column}.actions .button{width:100%}.scene{grid-template-columns:1fr;gap:7px}}
     @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}
-    .upgrade-link{padding:0;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer}
-    .upgrade-dialog{width:min(720px,calc(100vw - 32px));max-height:calc(100dvh - 48px);padding:0;border:1px solid var(--line);border-radius:12px;background:#fff;color:var(--ink);box-shadow:0 24px 80px rgba(0,0,0,.2);overflow:hidden}.upgrade-dialog[open]{display:flex;flex-direction:column}.upgrade-dialog::backdrop{background:rgba(24,24,27,.5)}
-    .upgrade-header{display:flex;flex-shrink:0;align-items:flex-start;justify-content:space-between;gap:20px;padding:24px 28px;border-bottom:1px solid var(--line)}.upgrade-header .eyebrow{margin-bottom:8px;font-size:12px}.upgrade-header h2{margin:0;font-size:26px;line-height:1.3;letter-spacing:-.03em}.upgrade-header form{margin:0}.upgrade-close{padding:6px 12px;border:1px solid var(--line);border-radius:6px;background:#fff;color:var(--ink);font-size:14px;white-space:nowrap;cursor:pointer}.upgrade-close:hover{background:var(--soft)}
-    .upgrade-body{min-height:0;padding:22px 28px;overflow:auto;overscroll-behavior:contain}.upgrade-intro{margin:0;color:var(--muted);font-size:14px;line-height:1.7}.upgrade-steps{margin:20px 0 0;padding:0;list-style:none;counter-reset:upgrade}.upgrade-steps>li{display:grid;grid-template-columns:28px minmax(0,1fr);gap:14px;padding:18px 0;border-top:1px solid var(--line);counter-increment:upgrade}.upgrade-steps>li::before{content:counter(upgrade,decimal-leading-zero);display:grid;width:28px;height:28px;place-items:center;border-radius:50%;background:var(--soft);color:var(--muted);font:600 11px/1 ui-monospace,monospace}.upgrade-steps h3{margin:2px 0 8px;font-size:16px;line-height:1.4;letter-spacing:0}.upgrade-steps p{margin:0 0 10px;font-size:14px;line-height:1.7}.upgrade-steps p:last-child{margin-bottom:0}.upgrade-file{display:block;margin:6px 0;padding:8px 10px;border:1px solid var(--line);border-radius:5px;background:#fafafa;font:12px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace;overflow-wrap:anywhere}.upgrade-file:last-child{margin-bottom:0}.upgrade-check{margin-top:14px;padding-top:12px;border-top:1px dashed var(--line)}
-    .upgrade-footer{flex-shrink:0;margin:0;padding:14px 28px;border-top:1px solid var(--line);background:#fafafa;color:var(--muted);font-size:12px;line-height:1.7}@media(max-width:600px){.upgrade-dialog{max-height:calc(100dvh - 24px)}.upgrade-header{padding:18px 20px}.upgrade-header h2{font-size:22px}.upgrade-body{padding:18px 20px}.upgrade-footer{padding:12px 20px}.upgrade-steps>li{gap:10px}}
-    .upgrade-sql{margin:12px 0;border:1px solid #3f3f46;border-radius:8px;background:#18181b;overflow:hidden}.upgrade-sql-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;background:#27272a;color:#fafafa;font-size:13px;font-weight:600}.upgrade-sql-bar>span::before{content:"SQL";display:inline-block;margin-right:8px;padding:2px 5px;border:1px solid #52525b;border-radius:3px;color:#d4d4d8;font:600 10px/1.4 ui-monospace,monospace;vertical-align:middle}.upgrade-sql-bar button{flex-shrink:0;padding:8px 12px;border:1px solid #3b82f6;border-radius:5px;background:#2563eb;color:#fff;font-size:13px;font-weight:700;cursor:pointer}.upgrade-sql-bar button:hover{background:#1d4ed8}.upgrade-sql-bar button:focus-visible{outline:2px solid #93c5fd;outline-offset:3px}.upgrade-sql pre{max-height:200px;margin:0;padding:16px;border-top:1px solid #3f3f46;background:#18181b;color:#e4e4e7;overflow:auto;font:13px/1.75 ui-monospace,SFMono-Regular,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;scrollbar-width:thin;scrollbar-color:#71717a #18181b}.upgrade-sql code{font:inherit}
   </style>
 </head>
 <body>
@@ -40,7 +34,7 @@
         <div class="actions"><a class="button primary" href="https://github.com/lishangyang290/windowstash/releases" target="_blank" rel="noopener noreferrer">打开下载页面 ↗</a></div>
         <table class="guide-table"><thead><tr><th>你的电脑</th><th>应下载的文件</th></tr></thead><tbody><tr><th>Windows x64</th><td><span class="path">WindowStash-v0.5.0-Windows-x64.zip</span></td></tr><tr><th>macOS · Apple 芯片（M 系列）</th><td><span class="path">WindowStash-v0.5.0-macOS-arm64.zip</span></td></tr></tbody></table>
         <p>文件名中的版本号以下载页面为准。macOS 安装包目前适用于 Apple 芯片的 Mac；可在苹果菜单的“关于本机”中查看芯片类型。</p>
-        <div class="note"><strong>Windows 首次安装请下载 ZIP</strong><p>下载页面还提供单独的 <span class="path">.exe</span> 文件，它只安装桌面应用，不含 Chrome 扩展。仅运行这个文件无法完成全部安装；请选择上面的 ZIP，里面也已经包含同一个桌面安装程序。</p></div>
+        <div class="note"><strong>Windows 首次安装请选择 ZIP</strong><p>单独的 <span class="path">.exe</span> 只安装桌面应用，不包含 Chrome 扩展。ZIP 中两部分都有。</p></div>
         <h3>解压后检查文件</h3><p>将 ZIP 完整解压到准备长期保留的位置，再打开其中的文件夹。不要直接在压缩包内运行安装程序或加载扩展。</p>
         <h3>Windows x64 安装包</h3><pre class="package-tree">WindowStash-v0.5.0/
 ├── 开始使用.html
@@ -52,7 +46,6 @@
 ├── Chrome Extension/
 ├── WindowStash Companion.app
 └── README.txt</pre>
-        <p>接下来先安装 Companion 桌面应用，再把 <span class="path">Chrome Extension</span> 文件夹加载到 Chrome。</p>
       </div></section>
 
       <section class="step" id="companion"><div class="step-body">
@@ -66,409 +59,23 @@
         <h3>在 Chrome 中加载扩展</h3><ol class="tasks"><li>打开 Chrome，新建一个标签页。</li><li>把下面的地址复制到 Chrome 地址栏并按回车。不要粘贴到搜索框或本教程页面里。</li></ol>
         <div class="copy-row"><code id="chrome-address">chrome://extensions</code><button type="button" data-copy="#chrome-address">复制地址</button></div>
         <ol class="tasks"><li>进入“扩展程序”页面后，找到右上角的 <strong>开发者模式</strong> 开关并打开。打开后，页面上方会出现几个新按钮。</li><li>点击页面上方的 <strong>加载已解压的扩展程序</strong>。</li><li>Chrome 会打开文件选择窗口。回到刚才的 <span class="path">WindowStash-v0.5.0</span> 安装包文件夹。</li><li>单击选中 <span class="path">Chrome Extension</span> 文件夹，然后点击“选择”。<strong>选择这个文件夹本身，不要进入文件夹后再选某个文件。</strong></li></ol>
-        <div class="note"><strong>确认扩展已加载</strong>页面中出现 WindowStash 卡片，且开关处于开启状态，就可以继续设置数据空间。请保留刚才加载的文件夹，不要移动或删除。</div>
+        <p>看到 WindowStash 卡片且开关已开启，就可以继续。加载的文件夹需要保留在原位置。</p>
       </div></section>
 
       <section class="step" id="supabase"><div class="step-body">
-        <p class="eyebrow">04 · 创建数据空间</p><h2>在 Supabase 创建项目</h2><p class="intro">Supabase 用来在线保存和同步工作区。你需要创建自己的项目，并在后面的步骤中把它连接到 WindowStash。</p><p>已有用于 WindowStash 的项目时，请继续使用原项目，并按<button type="button" class="upgrade-link" data-open-upgrade aria-haspopup="dialog">旧版数据库升级说明</button>检查是否需要升级，不必重新创建。</p>
+        <p class="eyebrow">04 · 创建数据空间</p><h2>在 Supabase 创建项目</h2><p class="intro">Supabase 用来在线保存和同步工作区。你需要创建自己的项目，并在后面的步骤中把它连接到 WindowStash。</p><p>已有用于 WindowStash 的项目时，请继续使用原项目，并按<a href="#database-upgrade">旧版升级提示</a>检查是否需要升级，不必重新创建。</p>
         <div class="actions"><a class="button primary" href="https://supabase.com/dashboard" target="_blank" rel="noopener noreferrer">打开 Supabase ↗</a></div>
         <p>点击后会在新标签页打开 Supabase。如果没有 Supabase 账号，按页面提示注册；如果已经有账号，直接登录。登录成功后会进入 <strong>Dashboard</strong>。</p>
         <h3>新建项目</h3><ol class="tasks"><li>确认你现在位于 Supabase Dashboard。</li><li>点击 <strong>New project</strong>，进入项目创建页面。</li></ol>
         <h3>Project name</h3><p>填写：</p><div class="copy-row"><code id="project-name">WindowStash</code><button type="button" data-copy="#project-name">复制名称</button></div>
         <h3>Database password</h3><p>点击 <strong>Generate a password</strong> 生成强密码，并保存到密码管理器。这是数据库管理密码，不是 WindowStash 登录密码，后续配置 WindowStash 时不会使用。</p>
         <h3>创建前照着这张表检查</h3><table class="guide-table" id="project-settings"><tbody><tr><th>Organization</th><td>保持页面已经选择的默认 Organization</td></tr><tr><th>GitHub (optional)</th><td>先不选，保持 Choose GitHub repository</td></tr><tr><th>Project name</th><td>WindowStash</td></tr><tr><th>Database password</th><td>点击 Generate a password 生成强密码并保存好</td></tr><tr><th>Region</th><td>选择离主要使用地点最近的区域</td></tr><tr><th>Enable Data API</th><td>✓ 开启</td></tr><tr><th>Automatically expose new tables</th><td>□ 关闭</td></tr><tr><th>Enable automatic RLS</th><td>✓ 开启</td></tr><tr><th>Advanced Configuration</th><td>不用打开</td></tr></tbody></table>
-        <p>如果页面要求先创建 Organization，可选择免费方案。Region 决定数据存放地区，选择离主要使用地点最近的区域即可。</p><ol class="tasks"><li>对照上表检查后，点击 <strong>Create new project</strong>。</li><li>等待 Supabase 自动进入新项目的 Dashboard。</li></ol>
-        <div class="note"><strong>什么时候算完成？</strong>页面已经进入 WindowStash 项目的管理后台，并且能看到左侧导航栏，就说明项目创建成功。</div>
+        <p>如果页面要求先创建 Organization，可选择免费方案。</p><ol class="tasks"><li>对照上表检查后，点击 <strong>Create new project</strong>。</li><li>等待页面进入新项目的 Dashboard。</li></ol>
       </div></section>
 
       <section class="step" id="database"><div class="step-body">
-        <p class="eyebrow">05 · 设置数据库</p><h2>为新项目初始化数据库</h2><p class="intro">刚创建的 Supabase 项目需要运行一次初始化代码，用来建立工作区存储和账号访问规则。请完整复制下面的 SQL 代码，一次运行，不要分段执行。已有旧版项目请先阅读下方的升级说明。</p>
-        <p><button type="button" class="upgrade-link" data-open-upgrade aria-haspopup="dialog">查看旧版数据库升级步骤</button></p>
-        <dialog class="upgrade-dialog" id="database-upgrade" aria-labelledby="upgrade-title" aria-describedby="upgrade-intro">
-          <header class="upgrade-header"><div><p class="eyebrow">SUPABASE · 已有项目</p><h2 id="upgrade-title">升级旧版数据库</h2></div><form method="dialog"><button class="upgrade-close" autofocus>关闭</button></form></header>
-          <div class="upgrade-body">
-            <p class="upgrade-intro" id="upgrade-intro">继续使用原项目和账号，不要重新初始化。按顺序复制下方代码，在 Supabase 的 SQL Editor 中新建查询、完整粘贴，再点击 Run。每段代码单独运行。</p>
-            <ol class="upgrade-steps">
-              <li><div><h3>检查数据库，保存备份</h3><p>先检查现有数据库，再运行备份查询。</p>
-                <div class="upgrade-sql"><div class="upgrade-sql-bar"><span>检查现有数据库 · 只读</span><button type="button" data-copy="#upgrade-inspect-code">复制代码</button></div><pre><code id="upgrade-inspect-code">-- SQL Editor: select the intended project, then run this read-only inspection.
--- Contains no workspace titles, tabs, tokens or passwords. Safe before migration.
-begin read only;
-select 'settings' as section, jsonb_build_object(
-  'server_version', current_setting('server_version'), 'wal_level', current_setting('wal_level')
-) as details
-union all
-select 'tables', coalesce(jsonb_agg(jsonb_build_object(
-  'name', c.relname, 'rls', c.relrowsecurity, 'force_rls', c.relforcerowsecurity
-)), '[]'::jsonb)
-from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace
-where n.nspname = 'public' and c.relname in ('workspaces', 'workspace_tombstones')
-union all
-select 'columns', coalesce(jsonb_agg(to_jsonb(c)), '[]'::jsonb)
-from information_schema.columns c where table_schema = 'public'
-and table_name in ('workspaces', 'workspace_tombstones')
-union all
-select 'constraints', coalesce(jsonb_agg(jsonb_build_object(
-  'table', c.conrelid::regclass::text, 'name', c.conname,
-  'definition', pg_catalog.pg_get_constraintdef(c.oid)
-)), '[]'::jsonb) from pg_catalog.pg_constraint c
-where c.conrelid in (to_regclass('public.workspaces'), to_regclass('public.workspace_tombstones'))
-union all
-select 'policies', coalesce(jsonb_agg(to_jsonb(p)), '[]'::jsonb)
-from pg_catalog.pg_policies p where schemaname = 'public'
-and tablename in ('workspaces', 'workspace_tombstones')
-union all
-select 'grants', coalesce(jsonb_agg(to_jsonb(g)), '[]'::jsonb)
-from information_schema.table_privileges g where table_schema = 'public'
-and table_name in ('workspaces', 'workspace_tombstones')
-union all
-select 'reachable_workspace_privileges', coalesce(jsonb_agg(jsonb_build_object(
-  'client', client.rolname, 'reachable_role', reachable.rolname,
-  'inherited', pg_catalog.pg_has_role(client.oid, reachable.oid, 'USAGE'),
-  'set_role', pg_catalog.pg_has_role(client.oid, reachable.oid, 'SET'),
-  'privilege', required.privilege,
-  'granted', has_table_privilege(reachable.oid, to_regclass('public.workspaces'), required.privilege),
-  'superuser', reachable.rolsuper, 'bypass_rls', reachable.rolbypassrls
-)), '[]'::jsonb)
-from pg_catalog.pg_roles client cross join pg_catalog.pg_roles reachable
-cross join (values ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE'), ('TRUNCATE'), ('REFERENCES'), ('TRIGGER')) as required(privilege)
-where client.rolname in ('anon', 'authenticated')
-  and (pg_catalog.pg_has_role(client.oid, reachable.oid, 'USAGE') or pg_catalog.pg_has_role(client.oid, reachable.oid, 'SET'))
-union all
-select 'table_owners_and_acl', coalesce(jsonb_agg(jsonb_build_object(
-  'table', c.relname, 'owner', pg_catalog.pg_get_userbyid(c.relowner), 'acl', c.relacl
-)), '[]'::jsonb)
-from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace
-where n.nspname = 'public' and c.relname in ('workspaces', 'workspace_tombstones')
-union all
-select 'schema_acl', coalesce(jsonb_agg(jsonb_build_object(
-  'schema', n.nspname, 'owner', pg_catalog.pg_get_userbyid(n.nspowner), 'acl', n.nspacl
-)), '[]'::jsonb) from pg_catalog.pg_namespace n where n.nspname in ('public', 'auth')
-union all
-select 'client_role_memberships', coalesce(jsonb_agg(jsonb_build_object(
-  'member', member.rolname, 'role', parent.rolname, 'membership', to_jsonb(m)
-)), '[]'::jsonb)
-from pg_catalog.pg_auth_members m
-join pg_catalog.pg_roles member on member.oid = m.member
-join pg_catalog.pg_roles parent on parent.oid = m.roleid
-where exists (select 1 from pg_catalog.pg_roles client
-  where client.rolname in ('anon', 'authenticated')
-    and pg_catalog.pg_has_role(client.oid, member.oid, 'MEMBER'))
-union all
-select 'functions', coalesce(jsonb_agg(jsonb_build_object(
-  'signature', p.oid::regprocedure::text, 'owner', pg_catalog.pg_get_userbyid(p.proowner),
-  'acl', p.proacl, 'definition', pg_catalog.pg_get_functiondef(p.oid)
-)), '[]'::jsonb) from pg_catalog.pg_proc p
-join pg_catalog.pg_namespace n on n.oid = p.pronamespace
-where n.nspname = 'public' and p.proname in ('set_updated_at', 'windowstash_guard_workspace',
-  'windowstash_snapshot_v1', 'windowstash_put_v1', 'windowstash_delete_v1')
-union all
-select 'triggers', coalesce(jsonb_agg(jsonb_build_object(
-  'table', t.tgrelid::regclass::text, 'name', t.tgname,
-  'enabled', t.tgenabled, 'definition', pg_catalog.pg_get_triggerdef(t.oid)
-)), '[]'::jsonb) from pg_catalog.pg_trigger t
-where not t.tgisinternal and (t.tgrelid = to_regclass('public.workspaces')
-  or t.tgfoid = to_regprocedure('public.set_updated_at()'))
-union all
-select 'indexes', coalesce(jsonb_agg(to_jsonb(i)), '[]'::jsonb)
-from pg_catalog.pg_indexes i where schemaname = 'public'
-and tablename in ('workspaces', 'workspace_tombstones')
-union all
-select 'publication', coalesce(jsonb_agg(to_jsonb(p)), '[]'::jsonb)
-from pg_catalog.pg_publication p where pubname = 'supabase_realtime'
-union all
-select 'published_tables', coalesce(jsonb_agg(to_jsonb(p)), '[]'::jsonb)
-from pg_catalog.pg_publication_tables p where pubname = 'supabase_realtime';
-commit;</code></pre></div>
-                <div class="upgrade-sql"><div class="upgrade-sql-bar"><span>导出工作区数据 · 只读</span><button type="button" data-copy="#upgrade-backup-code">复制代码</button></div><pre><code id="upgrade-backup-code">-- READ ONLY. Copy the data_sql cell to a UTF-8 .sql file; do not send its private contents in chat.
--- Data-only supplement, NOT a full project backup. Auth users/schema/ACL must be preserved separately.
--- Restore ONLY into an isolated EMPTY compatible table with matching auth.users IDs after approval.
--- Plain INSERT deliberately refuses existing IDs. Never use as an in-place rollback or overwrite tool.
-begin read only;
-set local time zone 'UTC';
-select count(*) as workspace_count,
-  md5(coalesce(string_agg(md5(to_jsonb(w)::text), '' order by w.id), '')) as workspace_digest,
-  count(*) filter (where not exists(select 1 from auth.users u where u.id = w.user_id)) as missing_auth_users,
-  E'begin;\nDO $restore$ BEGIN IF EXISTS (SELECT 1 FROM public.workspaces) THEN RAISE EXCEPTION ''restore_requires_empty_isolated_table''; END IF; END $restore$;\n' || coalesce(string_agg(format(
-    'INSERT INTO public.workspaces (id,user_id,name,status,tabs,active_tab_index,content_hash,created_at,updated_at) VALUES (%L::uuid,%L::uuid,%L,%L,%L::jsonb,%s,%L,%L::timestamptz,%L::timestamptz);',
-    w.id, w.user_id, w.name, w.status, w.tabs::text, w.active_tab_index, w.content_hash, w.created_at, w.updated_at
-  ), E'\n' order by w.id), '') || E'\ncommit;\n' as data_sql
-from public.workspaces w;
-commit;</code></pre></div>
-                <p>运行备份查询后，将结果中 <code>data_sql</code> 单元格的完整内容保存为 UTF-8 编码的 <code>.sql</code> 文件。这只是工作区数据备份，账号、数据库结构和权限需另外保留；不要将导出的内容当作升级代码运行。</p>
-              </div></li>
-              <li><div><h3>验证后执行升级</h3><p>暂停编辑工作区。先在独立测试项目中验证下方升级代码，经项目管理员确认后，再为原项目完整运行。</p>
-                <div class="upgrade-sql"><div class="upgrade-sql-bar"><span>升级旧版数据库</span><button type="button" data-copy="#upgrade-migrate-code">复制代码</button></div><pre><code id="upgrade-migrate-code">-- Run only after isolated integration tests and explicit production approval.
--- Atomic and repeatable; preserves workspaces. Historical deletes cannot be inferred.
-begin;
-set local lock_timeout = '5s';
-set local statement_timeout = '30s';
--- RLS does not protect TRUNCATE. Remove only unnecessary table privileges.
-revoke truncate, references, trigger on table public.workspaces from public, anon, authenticated;
-grant select, insert, update, delete on table public.workspaces to authenticated;
--- Do not silently alter shared roles or memberships: inherited privileges abort the transaction.
-do $$
-declare client record; reachable record;
-begin
-  for client in select oid, rolname from pg_catalog.pg_roles where rolname in ('anon', 'authenticated') loop
-    for reachable in select oid, rolname from pg_catalog.pg_roles
-      where pg_catalog.pg_has_role(client.oid, oid, 'USAGE') or pg_catalog.pg_has_role(client.oid, oid, 'SET') loop
-      if pg_catalog.has_table_privilege(reachable.oid, 'public.workspaces', 'TRUNCATE,REFERENCES,TRIGGER') then
-        raise exception 'workspace_extra_privileges: client=%, reachable_role=%; review grants or membership', client.rolname, reachable.rolname;
-      end if;
-    end loop;
-  end loop;
-end $$;
-create table if not exists public.workspace_tombstones (
-  workspace_id uuid primary key,
-  user_id uuid not null,
-  deleted_at timestamptz not null default clock_timestamp()
-);
-create index if not exists workspace_tombstones_user_idx on public.workspace_tombstones(user_id);
-alter table public.workspace_tombstones enable row level security;
-revoke all on public.workspace_tombstones from public, anon, authenticated;
-grant select on public.workspace_tombstones to authenticated;
-drop policy if exists "Read own deletion markers" on public.workspace_tombstones;
-create policy "Read own deletion markers" on public.workspace_tombstones for select to authenticated
-using ((select auth.uid()) = user_id);
-
--- Definer is needed to write markers while clients only have SELECT permission.
--- ID locks also serialize new RPC writes with old clients' direct writes.
-create or replace function public.windowstash_guard_workspace()
-returns trigger language plpgsql security definer set search_path = '' as $$
-declare workspace uuid;
-begin
-  workspace := case when TG_OP = 'DELETE' then OLD.id else NEW.id end;
-  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(workspace::text, 0));
-  if TG_OP = 'DELETE' then
-    insert into public.workspace_tombstones(workspace_id, user_id) values (OLD.id, OLD.user_id)
-      on conflict (workspace_id) do nothing;
-    return OLD;
-  end if;
-  if exists (select 1 from public.workspace_tombstones where workspace_id = workspace) then
-    raise exception using errcode = 'P0001', message = 'workspace_deleted';
-  end if;
-  if TG_OP = 'UPDATE' and (NEW.id &lt;&gt; OLD.id or NEW.user_id &lt;&gt; OLD.user_id) then
-    raise exception using errcode = 'P0001', message = 'workspace_identity_immutable';
-  end if;
-  return NEW;
-end $$;
-revoke all on function public.windowstash_guard_workspace() from public, anon, authenticated;
-drop trigger if exists windowstash_workspace_guard on public.workspaces;
-create trigger windowstash_workspace_guard before insert or update or delete on public.workspaces
-for each row execute function public.windowstash_guard_workspace();
-
--- A real wall-clock stamp is the compare-and-swap token, including multiple writes in one transaction.
-create or replace function public.set_updated_at()
-returns trigger language plpgsql security invoker set search_path = '' as $$
-begin
-  NEW.updated_at = greatest(clock_timestamp(), OLD.updated_at + interval '1 microsecond');
-  return NEW;
-end $$;
-
-drop trigger if exists workspaces_set_updated_at on public.workspaces;
-create trigger workspaces_set_updated_at before update on public.workspaces
-for each row execute function public.set_updated_at();
-
-create or replace function public.windowstash_snapshot_v1()
-returns jsonb language sql stable security invoker set search_path = '' as $$
-select jsonb_build_object('protocol', 1, 'user_id', auth.uid(),
-  'records', coalesce((select jsonb_agg(to_jsonb(w)) from public.workspaces w where w.user_id = auth.uid()), '[]'::jsonb),
-  'deleted', coalesce((select jsonb_agg(to_jsonb(t)) from public.workspace_tombstones t where t.user_id = auth.uid()), '[]'::jsonb))
-$$;
-
-create or replace function public.windowstash_put_v1(workspace jsonb, expected_updated_at timestamptz)
-returns jsonb language plpgsql security invoker set search_path = '' as $$
-declare current_row public.workspaces; result public.workspaces; target_id uuid := (workspace-&gt;&gt;'id')::uuid;
-begin
-  if auth.uid() is null then raise exception using errcode = '42501', message = 'authorization_required'; end if;
-  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(target_id::text, 0));
-  if exists(select 1 from public.workspace_tombstones where workspace_id = target_id) then
-    raise exception using errcode = 'P0001', message = 'workspace_deleted';
-  end if;
-  select * into current_row from public.workspaces where id = target_id and user_id = auth.uid() for update;
-  if found then
-    -- Retry after a lost reply is idempotent only for the same complete content.
-    if current_row.content_hash = workspace-&gt;&gt;'content_hash'
-      and current_row.name = workspace-&gt;&gt;'name' and current_row.status = workspace-&gt;&gt;'status'
-      and current_row.tabs = workspace-&gt;'tabs' and current_row.active_tab_index = (workspace-&gt;&gt;'active_tab_index')::integer then
-      return to_jsonb(current_row);
-    end if;
-    if expected_updated_at is null or current_row.updated_at &lt;&gt; expected_updated_at then
-      raise exception using errcode = 'P0001', message = 'workspace_conflict';
-    end if;
-    update public.workspaces set name = workspace-&gt;&gt;'name', status = workspace-&gt;&gt;'status', tabs = workspace-&gt;'tabs',
-      active_tab_index = (workspace-&gt;&gt;'active_tab_index')::integer, content_hash = workspace-&gt;&gt;'content_hash'
-      where id = target_id and user_id = auth.uid() returning * into result;
-  else
-    if expected_updated_at is not null then raise exception using errcode = 'P0001', message = 'workspace_missing'; end if;
-    insert into public.workspaces(id,user_id,name,status,tabs,active_tab_index,content_hash,created_at)
-      values(target_id,auth.uid(),workspace-&gt;&gt;'name',workspace-&gt;&gt;'status',workspace-&gt;'tabs',
-        (workspace-&gt;&gt;'active_tab_index')::integer,workspace-&gt;&gt;'content_hash',(workspace-&gt;&gt;'created_at')::timestamptz)
-      returning * into result;
-  end if;
-  return to_jsonb(result);
-end $$;
-
-create or replace function public.windowstash_delete_v1(workspace_id uuid)
-returns void language plpgsql security definer set search_path = '' as $$
-declare target_id uuid := workspace_id;
-begin
-  if auth.uid() is null then raise exception using errcode = '42501', message = 'authorization_required'; end if;
-  perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(target_id::text, 0));
-  -- Definer must explicitly check ownership, including nonexistent/offline-created IDs.
-  if exists(select 1 from public.workspaces w where w.id = target_id and w.user_id &lt;&gt; auth.uid())
-    or exists(select 1 from public.workspace_tombstones t where t.workspace_id = target_id and t.user_id &lt;&gt; auth.uid()) then
-    raise exception using errcode = '42501', message = 'wrong_account';
-  end if;
-  insert into public.workspace_tombstones(workspace_id,user_id) values(target_id,auth.uid()) on conflict on constraint workspace_tombstones_pkey do nothing;
-  delete from public.workspaces where id = target_id and user_id = auth.uid();
-end $$;
-
-revoke all on function public.windowstash_snapshot_v1(), public.windowstash_put_v1(jsonb,timestamptz), public.windowstash_delete_v1(uuid) from public, anon;
-grant execute on function public.windowstash_snapshot_v1(), public.windowstash_put_v1(jsonb,timestamptz), public.windowstash_delete_v1(uuid) to authenticated;
-
--- Publish INSERT/UPDATE signals, including tombstone INSERTs. Clients never trust DELETE payloads.
-do $$
-begin
-  if not exists(select 1 from pg_catalog.pg_publication where pubname = 'supabase_realtime') then
-    create publication supabase_realtime;
-  end if;
-  if exists(select 1 from pg_catalog.pg_publication where pubname = 'supabase_realtime' and (not pubinsert or not pubupdate)) then
-    raise exception 'supabase_realtime must publish INSERT and UPDATE; review publication settings before retrying';
-  end if;
-  if not exists(select 1 from pg_catalog.pg_publication where pubname = 'supabase_realtime' and puballtables) then
-    if not exists(select 1 from pg_catalog.pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='workspaces') then
-      alter publication supabase_realtime add table public.workspaces;
-    end if;
-    if not exists(select 1 from pg_catalog.pg_publication_tables where pubname='supabase_realtime' and schemaname='public' and tablename='workspace_tombstones') then
-      alter publication supabase_realtime add table public.workspace_tombstones;
-    end if;
-  end if;
-end $$;
-commit;</code></pre></div>
-              </div></li>
-              <li><div><h3>检查升级结果</h3><p>运行下方代码，检查结果应全部为 <code>true</code>。</p>
-                <div class="upgrade-sql"><div class="upgrade-sql-bar"><span>验证升级结果 · 只读</span><button type="button" data-copy="#upgrade-verify-code">复制代码</button></div><pre><code id="upgrade-verify-code">-- Read-only post-initialization/upgrade checks, including production after approval.
--- Every result must be true; this does not replace behavioral/API tests.
-begin read only;
-with functions as (
-  select p.*, pg_catalog.pg_get_functiondef(p.oid) as definition
-  from pg_catalog.pg_proc p
-  join pg_catalog.pg_namespace n on n.oid = p.pronamespace
-  where n.nspname = 'public' and p.oid in (
-    to_regprocedure('public.windowstash_snapshot_v1()'),
-    to_regprocedure('public.windowstash_put_v1(jsonb,timestamptz)'),
-    to_regprocedure('public.windowstash_delete_v1(uuid)'),
-    to_regprocedure('public.windowstash_guard_workspace()'),
-    to_regprocedure('public.set_updated_at()')
-  )
-)
-select 'functions_and_security_mode' as check_name,
-  count(*) = 5 and bool_and(prosecdef = (proname in (
-    'windowstash_delete_v1', 'windowstash_guard_workspace'
-  ))) as passed from functions
-union all
-select 'fixed_empty_search_path', count(*) = 5
-  and bool_and(coalesce('search_path=""' = any(proconfig), false)) from functions
-union all
-select 'rpc_execute_permissions', count(*) = 3 and bool_and(
-  has_function_privilege('authenticated', oid, 'EXECUTE')
-  and not has_function_privilege('anon', oid, 'EXECUTE')
-) from functions where proname in (
-  'windowstash_snapshot_v1', 'windowstash_put_v1', 'windowstash_delete_v1'
-)
-union all
-select 'trigger_function_not_client_callable', count(*) = 1 and bool_and(
-  not has_function_privilege('authenticated', oid, 'EXECUTE')
-  and not has_function_privilege('anon', oid, 'EXECUTE')
-) from functions where proname = 'windowstash_guard_workspace'
-union all
-select 'monotonic_update_timestamp', count(*) = 1 and bool_and(
-  definition like '%clock_timestamp()%'
-  and definition like '%1 microsecond%'
-) from functions where proname = 'set_updated_at'
-union all
-select 'rls_enabled', count(*) = 2 and bool_and(relrowsecurity)
-from pg_catalog.pg_class
-where oid in (to_regclass('public.workspaces'), to_regclass('public.workspace_tombstones'))
-union all
-select 'workspace_policies', count(*) = 4 and count(distinct cmd) = 4
-  and bool_and(roles = array['authenticated']::name[]
-    and coalesce(qual, with_check, '') like '%auth.uid()%'
-    and coalesce(qual, with_check, '') like '%user_id%')
-from pg_catalog.pg_policies where schemaname = 'public' and tablename = 'workspaces'
-union all
-select 'tombstone_policy', count(*) = 1 and bool_and(cmd = 'SELECT'
-  and roles = array['authenticated']::name[]
-  and qual like '%auth.uid()%' and qual like '%user_id%')
-from pg_catalog.pg_policies where schemaname = 'public' and tablename = 'workspace_tombstones'
-union all
-select 'tombstone_table_permissions',
-  has_table_privilege('authenticated', 'public.workspace_tombstones', 'SELECT')
-  and not has_table_privilege('authenticated', 'public.workspace_tombstones', 'INSERT,UPDATE,DELETE,TRUNCATE')
-  and not has_table_privilege('anon', 'public.workspace_tombstones', 'SELECT,INSERT,UPDATE,DELETE,TRUNCATE')
-union all
-select 'workspace_crud_permissions', bool_and(has_table_privilege('authenticated', 'public.workspaces', privilege))
-from (values ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')) as required(privilege)
-union all
-select 'workspace_no_extra_client_privileges', not exists (
-  select 1 from pg_catalog.pg_roles client cross join pg_catalog.pg_roles reachable
-  where client.rolname in ('anon', 'authenticated')
-    and (pg_catalog.pg_has_role(client.oid, reachable.oid, 'USAGE') or pg_catalog.pg_has_role(client.oid, reachable.oid, 'SET'))
-    and has_table_privilege(reachable.oid, 'public.workspaces', 'TRUNCATE,REFERENCES,TRIGGER')
-)
-union all
-select 'enabled_guard_and_timestamp_triggers', count(*) = 2 and bool_and(
-  t.tgenabled = 'O' and (
-    (t.tgname = 'windowstash_workspace_guard' and t.tgtype = 31
-      and t.tgfoid = to_regprocedure('public.windowstash_guard_workspace()'))
-    or (t.tgname = 'workspaces_set_updated_at' and t.tgtype = 19
-      and t.tgfoid = to_regprocedure('public.set_updated_at()'))
-  ))
-from pg_catalog.pg_trigger t where t.tgrelid = 'public.workspaces'::regclass and not t.tgisinternal
-union all
-select 'realtime_tables', count(*) = 2 from pg_catalog.pg_publication_tables
-where pubname = 'supabase_realtime' and schemaname = 'public'
-  and tablename in ('workspaces', 'workspace_tombstones')
-union all
-select 'realtime_events', count(*) = 1 and bool_and(pubinsert and pubupdate)
-from pg_catalog.pg_publication where pubname = 'supabase_realtime'
-union all
-select 'required_indexes', count(*) = 5 from pg_catalog.pg_indexes
-where schemaname = 'public' and indexname in (
-  'workspaces_pkey', 'workspaces_user_id_idx', 'workspaces_updated_at_idx',
-  'workspace_tombstones_pkey', 'workspace_tombstones_user_idx'
-)
-order by check_name;
-commit;</code></pre></div>
-                <div class="upgrade-check"><p>如果有失败项，先用下方代码核对当前状态，再排查原因。不要清空重建数据库。</p>
-                  <div class="upgrade-sql"><div class="upgrade-sql-bar"><span>检查失败后的数据库状态 · 只读</span><button type="button" data-copy="#upgrade-state-code">复制代码</button></div><pre><code id="upgrade-state-code">-- Read-only baseline BEFORE migration and persisted-state inspection AFTER success/failure.
--- If the same session is in an aborted transaction, issue ROLLBACK first, or open a new query session.
--- Compare count/digest with the saved baseline only while writers are paused.
--- Object presence alone cannot prove a migration committed successfully; also run inspect/verify SQL.
-begin read only;
-set local time zone 'UTC';
-select count(*) as workspace_count,
-  md5(coalesce(string_agg(md5(to_jsonb(w)::text), '' order by w.id), '')) as workspace_digest,
-  count(*) filter (where not exists(select 1 from auth.users u where u.id = w.user_id)) as missing_auth_users,
-  to_regclass('public.workspace_tombstones') is not null as tombstone_table_present,
-  to_regprocedure('public.windowstash_guard_workspace()') is not null as guard_function_present,
-  to_regprocedure('public.windowstash_snapshot_v1()') is not null as snapshot_rpc_present,
-  to_regprocedure('public.windowstash_put_v1(jsonb,timestamptz)') is not null as put_rpc_present,
-  to_regprocedure('public.windowstash_delete_v1(uuid)') is not null as delete_rpc_present,
-  (select pg_get_functiondef(p.oid) from pg_catalog.pg_proc p
-    where p.oid = to_regprocedure('public.set_updated_at()')) as timestamp_function,
-  (select count(*) from pg_catalog.pg_publication_tables
-    where pubname = 'supabase_realtime' and schemaname = 'public'
-      and tablename in ('workspaces', 'workspace_tombstones')) as published_table_count
-from public.workspaces w;
-commit;</code></pre></div>
-                </div>
-              </div></li>
-            </ol>
-          </div>
-          <p class="upgrade-footer">升级期间请勿使用新旧客户端同时编辑。升级前未记录的历史删除标记无法补建。</p>
-        </dialog>
+        <p class="eyebrow">05 · 设置数据库</p><h2>为新项目初始化数据库</h2><p class="intro">新创建的 Supabase 项目需要运行下面的代码，才能保存工作区。请按步骤完整复制并运行。</p>
+        <div class="note" id="database-upgrade"><strong>已经使用过旧版本？</strong><p>如果你已经创建过 WindowStash 数据库，请不要重复执行下面的初始化代码，也不要删除原来的数据库。升级方法请查看<a href="https://github.com/lishangyang290/windowstash/blob/main/README.md#旧版本升级说明" target="_blank" rel="noopener noreferrer">旧版本升级说明</a>。</p></div>
         <div class="code"><button class="code-copy" type="button" data-copy="#schema-code">复制代码</button><pre><code id="schema-code">-- WindowStash v0.6.0: NEW projects only. Existing v0.5.0 databases use the incremental migration.
 -- SQL Editor: run the entire file. Atomic, repeatable, and never clears workspaces.
 begin;
@@ -667,19 +274,19 @@ begin
 end $$;
 commit;</code></pre></div>
         <ol class="tasks"><li>在 Supabase 左侧导航栏打开 <strong>SQL Editor</strong>。</li><li>点击查询列表中的 <span class="demo-control demo-plus" aria-label="加号按钮示意">＋</span>（<strong>New query</strong>）新建查询。如果已经有空白编辑区，可以直接使用。</li><li>点击本教程上方的 <strong>复制代码</strong>，将完整代码粘贴到 Supabase 的编辑区。</li><li>点击绿色的 <span class="demo-control demo-run" aria-label="Run 按钮示意">Run</span>，等待执行结束。</li></ol>
-        <div class="note"><strong>检查初始化结果</strong>页面显示执行成功，且没有红色 Error 后，再从 GitHub 仓库找到 <code>supabase/verify_workspace_sync_v1.sql</code>，在 SQL Editor 中运行。检查结果应全部为 <code>true</code>。初始化代码可以在同一新项目中重复运行，无需清空数据；旧版项目仍应使用上面的升级步骤。</div>
+        <p>页面显示执行成功，且没有红色 Error，就可以继续。如果出现错误，请先处理错误，不要删除数据库重试。</p>
       </div></section>
 
       <section class="step" id="credentials"><div class="step-body">
         <p class="eyebrow">06 · 获取连接信息</p><h2>找到 Project URL 和 Publishable Key</h2><p class="intro">WindowStash 需要这两项信息来连接刚才创建的 Supabase 项目。</p>
-        <h3>先打开 WindowStash 的连接页面</h3><p>点击 Chrome 工具栏中的 WindowStash，再点击<strong>开始设置</strong>。前面已经完成项目创建和数据库初始化，这里选择<strong>快速配置</strong>，打开 <strong>Project URL</strong> 和 <strong>Publishable Key</strong> 输入框，不必再做一次初始化。</p><p>如果以后需要修改连接信息，可在工作区管理器顶部点击<strong>数据存储</strong>。</p>
+        <h3>先打开 WindowStash 的连接页面</h3><p>点击 Chrome 工具栏中的 WindowStash，再点击<strong>开始设置 → 快速配置</strong>，打开 <strong>Project URL</strong> 和 <strong>Publishable Key</strong> 输入框。</p><p>以后需要修改时，可在工作区管理器顶部点击<strong>数据存储</strong>。</p>
         <h3>回到 Project Overview，打开 Copy 菜单</h3><p>看 Supabase 左侧导航菜单，点击第一项 <span class="demo-control demo-overview" aria-label="Project Overview 菜单项示意"><svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M9 18V42H39V18L24 6L9 18Z" stroke="#333" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 29V42H29V29H19Z" stroke="#333" stroke-width="3" stroke-linejoin="round"/><path d="M9 42H39" stroke="#333" stroke-width="3" stroke-linecap="round"/></svg>Project Overview</span>，回到 WindowStash 项目首页。如果侧栏没有展开，只看到图标，就点击最上面的房子图标。</p>
         <ol class="tasks"><li>点击项目地址右边的 <span class="demo-control demo-copy" aria-label="Copy 下拉按钮示意">Copy<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="m3 4.5 3 3 3-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>。</li><li>点击 <span class="demo-control demo-menu-item" aria-label="Project URL 菜单项示意"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.1.1l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1M14 11a5 5 0 0 0-7.1-.1l-2 2A5 5 0 0 0 12 20l1.1-1.1" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>Project URL</span>，切换到 Chrome 中的 WindowStash，粘贴到 <strong>Supabase Project URL</strong> 输入框。</li><li>回到 Supabase，再次打开 <span class="demo-control demo-copy" aria-label="Copy 下拉按钮示意">Copy<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="m3 4.5 3 3 3-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg></span>，点击 <span class="demo-control demo-menu-item" aria-label="Publishable key 菜单项示意"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="8" cy="12" r="3.5" stroke="currentColor" stroke-width="1.7"/><path d="M11.5 12H21m-3 0v3m-3-3v2" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>Publishable key</span>。</li><li>回到 WindowStash，粘贴到 <strong>Publishable Key</strong> 输入框。</li></ol>
       </div></section>
 
       <section class="step" id="connect"><div class="step-body">
         <p class="eyebrow">07 · 连接数据空间</p><h2>让扩展连接 Supabase</h2><p class="intro">回到 WindowStash，确认刚才复制的两项信息已填入对应输入框。</p>
-        <ol class="tasks"><li>点击 <strong>验证连接</strong>。Chrome 如果询问是否允许 WindowStash 访问你的 Supabase 地址，请允许。</li><li>看到“验证成功”后，点击 <strong>下一步</strong> 保存配置，进入注册或登录页面。</li></ol><div class="note"><strong>如果验证失败</strong>先检查网络和 Chrome 的访问授权，再核对 Project URL 和 Publishable Key 是否来自同一个 Supabase 项目。修正后重新验证即可。</div>
+        <ol class="tasks"><li>点击 <strong>验证连接</strong>。Chrome 如果询问是否允许 WindowStash 访问你的 Supabase 地址，请允许。</li><li>看到“验证成功”后，点击 <strong>下一步</strong>，进入注册或登录页面。</li></ol><p>如果验证失败，检查网络和 Chrome 的访问授权，并确认两项连接信息来自同一个 Supabase 项目。</p>
       </div></section>
 
       <section class="step" id="account"><div class="step-body">
@@ -689,32 +296,32 @@ commit;</code></pre></div>
 
       <section class="step" id="companion-connect"><div class="step-body">
         <p class="eyebrow">09 · 授权桌面应用</p><h2>让 Companion 使用刚才的账号</h2><p class="intro">回到已经安装的 Companion，通过浏览器确认授权。桌面应用会使用扩展中已有的项目和账号，不需要重新填写连接信息。</p>
-        <ol class="tasks"><li>在 Companion 中点击 <strong>在浏览器中登录</strong>。如需选择 Chrome 用户，选择刚才加载扩展并登录账号的那个用户。</li><li>Chrome 会打开授权页面。核对显示的账号；如果需要登录，使用前一步的 WindowStash 账号。</li><li>点击 <strong>确认并返回 Companion</strong>，等待页面显示登录完成。</li><li>回到 Companion，确认已进入工作区列表。首次使用、尚未保存工作区时，列表为空是正常的。</li></ol><div class="note"><strong>如果提示授权已失效</strong>回到 Companion，再点击一次“在浏览器中登录”，按新打开的页面完成授权。</div>
+        <ol class="tasks"><li>在 Companion 中点击 <strong>在浏览器中登录</strong>。如需选择 Chrome 用户，选择刚才加载扩展并登录账号的那个用户。</li><li>Chrome 会打开授权页面。核对显示的账号；如果需要登录，使用前一步的 WindowStash 账号。</li><li>点击 <strong>确认并返回 Companion</strong>，等待页面显示登录完成。</li><li>回到 Companion，确认已进入工作区列表。首次使用时，列表为空是正常的。</li></ol><p>如果提示授权已失效，回到 Companion，重新点击“在浏览器中登录”。</p>
       </div></section>
 
       <section class="step" id="first-workspace"><div class="step-body">
         <p class="eyebrow">10 · 保存工作区</p><h2>保存第一个工作区</h2><p class="intro">工作区（Workspace）记录一个 Chrome 窗口中的标签页，方便以后继续使用。</p><div class="rule">一个 Chrome 窗口 = 一个工作区</div>
-        <div class="scenes"><article class="scene"><b>场景 01</b><p><strong>保存并保持窗口打开</strong><br>在要保存的 Chrome 窗口中点击工具栏上的 WindowStash，再点击“保存当前状态”。</p></article><article class="scene"><b>场景 02</b><p><strong>保存后关闭窗口</strong><br>点击 WindowStash，再点击“保存并关闭窗口”。本地保存成功后，当前窗口会关闭。</p></article><article class="scene"><b>场景 03</b><p><strong>再次打开工作区</strong><br>从 Windows 通知区域或 macOS 菜单栏打开 WindowStash，选择要恢复的工作区；也可从扩展管理器恢复。</p></article></div><div class="note"><strong>先保存到本地，再同步到云端</strong>断网时，已保存的工作区仍会保留，恢复连接后继续同步。请留意同步状态，不要在尚未同步时卸载扩展或清理本地数据。桌面应用中的列表可能稍后更新。</div>
+        <div class="scenes"><article class="scene"><b>场景 01</b><p><strong>保存并保持窗口打开</strong><br>在要保存的 Chrome 窗口中点击工具栏上的 WindowStash，再点击“保存当前状态”。</p></article><article class="scene"><b>场景 02</b><p><strong>保存后关闭窗口</strong><br>点击 WindowStash，再点击“保存并关闭窗口”。保存成功后，当前窗口会关闭。</p></article><article class="scene"><b>场景 03</b><p><strong>再次打开工作区</strong><br>从 Windows 通知区域或 macOS 菜单栏打开 WindowStash，选择要恢复的工作区；也可从扩展管理器恢复。</p></article></div><div class="note"><strong>保存后留意同步状态</strong>断网时已保存的工作区仍会保留，恢复连接后继续同步。尚未同步完成时，不要卸载扩展或清理数据。</div>
       </div></section>
 
       <section class="step" id="restore"><div class="step-body">
-        <p class="eyebrow">11 · 恢复工作区</p><h2>继续之前的工作</h2><ol class="tasks"><li>点击 Windows 通知区域或 macOS 菜单栏里的 WindowStash 图标。</li><li>在工作区列表中找到要继续的工作区并点击。</li><li>如果之前打开的窗口仍与这个工作区关联，WindowStash 会切换到它；否则重新打开窗口和标签页。</li></ol><div class="note"><strong>为什么有些网页没有立即加载？</strong>为减少内存占用，暂未使用的标签页会等你点击后再加载。工作区不保存网站密码或登录状态，需要时仍要在网站中登录。</div><p>如果遇到同步冲突，先查看不同版本，再选择需要保留的内容。不要通过清空缓存或删除冲突副本解决问题。</p>
+        <p class="eyebrow">11 · 恢复工作区</p><h2>继续之前的工作</h2><ol class="tasks"><li>点击 Windows 通知区域或 macOS 菜单栏里的 WindowStash 图标。</li><li>在工作区列表中找到要继续的工作区并点击。</li><li>WindowStash 会切换到对应窗口，或重新打开其中的标签页。</li></ol><p>有些网页会在点击标签页后加载；需要时，请重新登录网站。</p><p>如果提示版本冲突，先查看不同版本，再选择要保留的内容。</p>
         <section class="finish"><div class="check">✓</div><p class="eyebrow">设置完成</p><h2>WindowStash 已经可以使用</h2><ul><li>Chrome 扩展已安装并连接</li><li>Supabase 数据库已初始化或按流程升级</li><li>Companion 已安装并完成浏览器授权</li><li>工作区可以保存、同步和恢复</li></ul></section>
       </div></section>
 
       <section class="step" id="update"><div class="step-body">
         <p class="eyebrow">12 · 更新版本</p><h2>更新已安装的 WindowStash</h2><p class="intro">按<a href="#download">下载说明</a>获取对应系统的新版 ZIP，完整解压后，按以下三步更新。继续使用原账号和原扩展目录。</p>
-        <ol class="tasks"><li><strong>先更新 Companion 桌面应用。</strong>Windows 运行新版中文安装器，覆盖到原安装位置；macOS 按当前 <a href="#companion-macos">.app 安装方式</a>，正常退出 Companion 后替换“应用程序”中的旧应用并重新打开。</li><li><strong>覆盖原 Chrome 扩展目录。</strong>将新版 <span class="path">Chrome Extension</span> 文件夹内的文件覆盖到 Chrome 原来加载的同一目录，保留该目录位置。</li><li><strong>刷新原有扩展。</strong>打开 <span class="path">chrome://extensions</span>，点击原 WindowStash 卡片上的刷新按钮。</li></ol>
-        <div class="note"><strong>保留已有设置和数据</strong>更新时不用卸载或停用扩展，不需要退出 Chrome，也不需要重新配置账号。完成后检查原来的工作区是否仍在，以及同步状态是否正常。</div><p>更新软件不会自动升级 Supabase 数据库。如果原项目仍使用旧版数据库，请先按<button type="button" class="upgrade-link" data-open-upgrade aria-haspopup="dialog">数据库升级步骤</button>完成检查和升级，不要重新初始化。</p>
+        <ol class="tasks"><li><strong>更新 Companion 桌面应用。</strong>安装并打开新版 Companion，覆盖原来的应用。macOS 替换前先退出 Companion。</li><li><strong>更新 Chrome 扩展文件。</strong>将新版 <span class="path">Chrome Extension</span> 文件夹中的文件覆盖到原来加载的目录，不要移动原目录。</li><li><strong>刷新原有扩展。</strong>打开 <span class="path">chrome://extensions</span>，点击原 WindowStash 卡片上的刷新按钮。</li></ol>
+        <p>更新完成后，打开 WindowStash，确认原来的工作区正常显示即可。</p>
       </div></section>
 
       <section class="faq" id="faq"><p class="eyebrow">需要帮助时</p><h2>常见问题</h2><div class="faq-list">
-        <details><summary>Supabase 创建页面的 Security 选项怎么设置？</summary><p>Enable Data API 开启，Automatically expose new tables 关闭，Enable automatic RLS 开启。初始化代码还会授予 WindowStash 所需的权限，并建立每位用户只能访问自己数据的保护规则。</p></details>
+        <details><summary>Supabase 创建页面的 Security 选项怎么设置？</summary><p>Enable Data API 开启，Automatically expose new tables 关闭，Enable automatic RLS 开启。</p></details>
         <details><summary>Database password 和 WindowStash 登录密码有什么区别？</summary><p>Database password 是 Supabase 数据库的管理密码，设置后保存到密码管理器，日常使用不会再填写。WindowStash 登录密码是你用邮箱注册 WindowStash 时设置的密码，在 Chrome 扩展中登录时使用；Companion 通过浏览器授权复用账号，不需要再次填写密码。</p></details>
         <details><summary>找不到 Project URL 或 Publishable Key 怎么办？</summary><p>点击 Supabase 左侧导航菜单第一项 Project Overview，回到项目首页，再打开项目地址右边的 Copy 菜单。如果首页没有这个菜单，从左侧导航底部进入 Project Settings → API Keys。</p></details>
         <details><summary>为什么恢复后有些网页没有立即加载？</summary><p>为了避免大量标签页同时占用内存，WindowStash 会在你点击标签页时再加载网页。</p></details>
         <details><summary>为什么 Chrome 提示这是开发者模式扩展？</summary><p>当前版本还没有发布到 Chrome Web Store，因此使用 Chrome 官方提供的“加载已解压的扩展程序”方式安装。</p></details>
-        <details><summary>为什么 macOS 桌面应用第一次打不开？</summary><p>当前应用尚未通过 Apple 公证，系统可能阻止首次打开。请参照<a href="#companion-macos">macOS 安装步骤</a>处理系统安全提示。</p></details>
+        <details><summary>macOS 提示无法打开怎么办？</summary><p>请查看<a href="https://blog.csdn.net/weixin_60605738/article/details/138607675" target="_blank" rel="noopener noreferrer">这篇教程</a>中的处理方法。</p></details>
         <details><summary>卸载 WindowStash 后工作区会丢吗？</summary><p>已同步到 Supabase 的工作区不会因卸载扩展而从云端删除，重新连接原项目和账号后可以同步回来。但卸载会失去扩展的本地数据，尚未同步的修改和本地冲突副本可能无法找回。更新时不要卸载扩展；如果删除了 Supabase 项目，WindowStash 也无法恢复其中的云端数据。</p></details>
       </div></section>
     </main>
@@ -722,9 +329,6 @@ commit;</code></pre></div>
   <footer><span>WindowStash · 开始使用</span><span>数据保存在你自己的 Supabase 中</span></footer>
   <a class="mobile-top" href="#top">返回顶部</a>
   <script>
-    const upgradeDialog=document.querySelector('#database-upgrade');
-    document.querySelectorAll('[data-open-upgrade]').forEach(button=>button.addEventListener('click',()=>{upgradeDialog.prepend(copyToast);upgradeDialog.showModal()}));
-    upgradeDialog.addEventListener('close',()=>document.body.prepend(copyToast));
     const copyToast=document.querySelector('.copy-toast');let copyToastTimer;
     const showCopyToast=message=>{clearTimeout(copyToastTimer);copyToast.textContent=message;copyToast.classList.add('show');copyToastTimer=setTimeout(()=>copyToast.classList.remove('show'),2000)};
     const copyText=async text=>{try{await navigator.clipboard.writeText(text);return true}catch{const area=document.createElement('textarea');try{area.value=text;area.style.position='fixed';area.style.opacity='0';document.body.append(area);area.select();return document.execCommand('copy')}catch{return false}finally{area.remove()}}};

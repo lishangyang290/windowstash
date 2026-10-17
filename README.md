@@ -120,12 +120,16 @@ Windows 安装器输出在 `companion/src-tauri/target/x86_64-pc-windows-msvc/re
 | 新项目 | 在 SQL Editor 一次完整执行 [schema.sql](supabase/schema.sql)，再用 [verify_workspace_sync_v1.sql](supabase/verify_workspace_sync_v1.sql) 只读核验；启用 Email 登录，邮件确认按项目设置完成 |
 | 已有旧版数据库 | 先检查、备份并在隔离项目验证，经明确批准后执行增量迁移，最后只读核验；不要用完整初始化替代升级 |
 
-已有数据库按以下顺序升级：
+### 旧版本升级说明
+
+已有数据库按以下顺序升级。软件更新不会自动执行数据库迁移，请保留原项目和账号，不要重复运行新项目的初始化脚本。
 
 1. 使用 [inspect_workspace_sync.sql](supabase/inspect_workspace_sync.sql) 检查现有结构、权限与发布配置。
 2. 按 [export_workspace_data.sql](supabase/export_workspace_data.sql) 导出并保存备份；暂停编辑，避免升级期间新旧客户端同时写入。
 3. 在隔离项目验证后，经项目所有者确认，完整执行 [20261014_workspace_sync_v1.sql](supabase/migrations/20261014_workspace_sync_v1.sql)。
 4. 执行 [verify_workspace_sync_v1.sql](supabase/verify_workspace_sync_v1.sql)，所有检查均应为 `true`；若有失败项，使用 [check_workspace_sync_state.sql](supabase/check_workspace_sync_state.sql) 核对当前状态，再排查原因，不要清空重建。
+
+导出查询返回的 `data_sql` 内容应完整保存为 UTF-8 `.sql` 文件。它只备份工作区数据，不包含 Auth 用户、数据库结构或权限，不能代替完整项目备份。恢复只能在经批准的独立、空白且结构兼容的表中进行，并保留匹配的用户 ID；不能用它覆盖原库或作为原地回滚脚本。
 
 初始化脚本包含增量迁移的完整定义，两者均使用事务及超时控制。升级保留已有工作区，但无法为升级前已删除的记录补建删除标记。静态 SQL 检查之外，仍需在隔离数据库验证 PostgreSQL 执行、RLS、并发和 Realtime 行为。
 
