@@ -2,6 +2,7 @@ import { cp, copyFile, mkdir, mkdtemp, writeFile, readdir } from 'node:fs/promis
 import { resolve, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { generateReleaseGuide } from './generate-release-guide.mjs';
+import { copyReleaseSql } from './release-package.mjs';
 
 const version = process.env.RELEASE_VERSION;
 if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version ?? '')) throw new Error('无效发布版本');
@@ -13,6 +14,7 @@ await mkdir(output, { recursive: true });
 const staging = await mkdtemp(resolve(process.env.RUNNER_TEMP, 'windowstash-release-'));
 const packageDir = join(staging, name);
 await mkdir(packageDir);
+await copyReleaseSql(packageDir);
 await cp('.output/chrome-mv3', join(packageDir, 'Chrome Extension'), { recursive: true });
 await generateReleaseGuide('.output/chrome-mv3', join(packageDir, '开始使用.html'));
 await writeFile(join(packageDir, 'README.txt'), `WindowStash v${version}\n\n请先双击打开：\n开始使用.html\n\n按照教程完成 Chrome Extension、Supabase 和 WindowStash Companion 的安装。\n`, 'utf8');

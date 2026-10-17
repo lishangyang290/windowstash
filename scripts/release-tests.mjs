@@ -6,14 +6,84 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Readable, Writable } from 'node:stream';
 import { spawnSync } from 'node:child_process';
+import { Buffer } from 'node:buffer';
 import { command, npmInvocation, parseRelease, validateInput, planFiles, applyFiles, restoreFiles, saveJournal, recoverPrepared, preflight, runChecks, publish } from './release-core.mjs';
 import { terminalUI, presentedCommand, workflowProgress, liveProgress } from './release-ui.mjs';
 import { inputLines, editRelease, showResult } from './release.mjs';
+import { copyReleaseSql, validateReleaseSql, releaseSqlFiles, packageEntries, validateGuidePackageTrees } from './release-package.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const standard = '当前版本：v0.3.0\n目标版本：0.4.0\n\n更新内容：\n- 修复重启后关联丢失\n- 新增教程入口\n\nmain HEAD：\n56b8e2fe30517972e54cfe9a5ba4befd822f924c\n测试：\n224 项通过';
 const silent = new Writable({ write(chunk, encoding, done) { done(); } });
 const releaseAssets = () => ['macOS-arm64.zip', 'Windows-x64.zip', 'Windows-x64-setup.exe'].map((suffix) => ({ name: `WindowStash-v0.4.0-${suffix}`, size: 100, url: 'https://example.test/download.zip' }));
+
+for (const [windows, version] of [[true, '0.6.0'], [false, '7.8.9']]) {
+  test(`SQL 完整 ZIP 保留仓库原始字节及教程目录：${windows ? 'Windows' : 'macOS'}`, async (t) => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'windowstash-sql-package-'));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const packageRoot = resolve(directory, `WindowStash-v${version}`);
+    const archive = resolve(directory, 'fixture.zip'), extracted = resolve(directory, 'extracted');
+    await copyReleaseSql(packageRoot);
+    const guide = (await readFile(resolve(root, 'public/开始使用.html'), 'utf8')).replace(/WindowStash-v\d+\.\d+\.\d+/g, `WindowStash-v${version}`);
+    validateGuidePackageTrees(guide, version);
+    await writeFile(resolve(packageRoot, '开始使用.html'), guide, 'utf8');
+    await writeFile(resolve(packageRoot, 'README.txt'), 'fixture', 'utf8');
+    await mkdir(resolve(packageRoot, 'Chrome Extension'));
+    await writeFile(resolve(packageRoot, 'Chrome Extension/manifest.json'), JSON.stringify({ version }), 'utf8');
+    if (windows) await writeFile(resolve(packageRoot, `WindowStash-v${version}-Windows-x64-setup.exe`), 'fixture');
+    else {
+      await mkdir(resolve(packageRoot, 'WindowStash Companion.app'));
+      await writeFile(resolve(packageRoot, 'WindowStash Companion.app/fixture'), 'fixture');
+    }
+    assert.deepEqual((await readdir(packageRoot)).sort(), packageEntries(version, windows));
+    validateReleaseSql(packageRoot);
+    const result = process.platform === 'win32'
+      ? spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
+        $ErrorActionPreference = 'Stop'
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $package = $env:SQL_PACKAGE_ROOT
+        $zip = [IO.Compression.ZipFile]::Open($env:SQL_ARCHIVE, 'Create')
+        try {
+          Get-ChildItem -LiteralPath $package -Recurse -File | ForEach-Object {
+            $entry = $_.FullName.Substring((Split-Path $package -Parent).Length + 1).Replace('\\', '/')
+            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, $entry)
+          }
+        } finally { $zip.Dispose() }
+        [IO.Compression.ZipFile]::ExtractToDirectory($env:SQL_ARCHIVE, $env:SQL_EXTRACTED)
+      `], { encoding: 'utf8', windowsHide: true, env: { ...process.env, SQL_PACKAGE_ROOT: packageRoot, SQL_ARCHIVE: archive, SQL_EXTRACTED: extracted } })
+      : spawnSync('ditto', ['-c', '-k', '--keepParent', packageRoot, archive], { encoding: 'utf8' });
+    assert.equal(result.status, 0, result.stderr);
+    if (process.platform !== 'win32') {
+      const unpack = spawnSync('ditto', ['-x', '-k', archive, extracted], { encoding: 'utf8' });
+      assert.equal(unpack.status, 0, unpack.stderr);
+    }
+    const unpackedRoot = resolve(extracted, `WindowStash-v${version}`);
+    validateReleaseSql(unpackedRoot);
+    assert.deepEqual((await readdir(unpackedRoot)).sort(), packageEntries(version, windows));
+    for (const [destination, source] of Object.entries(releaseSqlFiles)) {
+      assert((await readFile(resolve(unpackedRoot, destination))).equals(await readFile(resolve(root, source))), destination);
+    }
+    await writeFile(resolve(unpackedRoot, 'schema.sql'), '\n', { flag: 'a' });
+    assert.throws(() => validateReleaseSql(unpackedRoot), /不一致/);
+    assert.throws(() => validateGuidePackageTrees(guide.replace('├── schema.sql', '├── missing.sql'), version), /不一致/);
+  });
+}
+
+test('SQL 校验拒绝缺失、改动及多余文件', async (t) => {
+  const directory = await mkdtemp(resolve(tmpdir(), 'windowstash-sql-integrity-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await copyReleaseSql(directory);
+  for (const destination of Object.keys(releaseSqlFiles)) {
+    const path = resolve(directory, destination), original = await readFile(path);
+    await writeFile(path, Buffer.concat([original, Buffer.from('\n')]));
+    assert.throws(() => validateReleaseSql(directory), /不一致/);
+    await rm(path);
+    assert.throws(() => validateReleaseSql(directory));
+    await writeFile(path, original);
+  }
+  await writeFile(resolve(directory, '旧版本升级/unexpected.sql'), '');
+  assert.throws(() => validateReleaseSql(directory), /清单不正确/);
+});
 
 for (const target of ['', 'aarch64-apple-darwin', 'x86_64-pc-windows-msvc']) {
   test(`正式 Host 路径使用目标架构，避免读取默认目录中的旧程序：${target || '本机默认'}`, () => {

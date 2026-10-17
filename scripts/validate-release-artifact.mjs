@@ -10,6 +10,7 @@ import {
 } from 'node:fs';
 import { basename, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
+import { packageEntries, validateReleaseSql, validateGuidePackageTrees } from './release-package.mjs';
 
 const [packageRootArgument, zipArgument, version] = process.argv.slice(2);
 if (!packageRootArgument || !zipArgument || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version ?? '')) {
@@ -19,7 +20,7 @@ if (!packageRootArgument || !zipArgument || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1
 const packageName = `WindowStash-v${version}`;
 const windows = process.platform === 'win32';
 const installerName = `${packageName}-Windows-x64-setup.exe`;
-const expectedTopLevel = ['Chrome Extension', 'README.txt', windows ? installerName : 'WindowStash Companion.app', '开始使用.html'].sort();
+const expectedTopLevel = packageEntries(version, windows);
 const errors = [];
 
 function walk(root) {
@@ -73,6 +74,8 @@ function validateContents(root, label) {
 }
 
 function validateStructure(root, label) {
+  try { validateReleaseSql(root); }
+  catch (error) { errors.push(`${label} SQL 校验失败：${error.message}`); }
   if (basename(root) !== packageName) errors.push(`${label} 根目录必须命名为 ${packageName}`);
   const actual = readdirSync(root).sort();
   if (JSON.stringify(actual) !== JSON.stringify(expectedTopLevel)) {
@@ -145,10 +148,11 @@ function validateStructure(root, label) {
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
     for (const html of [guide, readFileSync(join(root, 'Chrome Extension', '开始使用.html'), 'utf8')]) {
       if (html.match(/<code id="schema-code">([\s\S]*?)<\/code>/)?.[1] !== schema) throw new Error('教程 SQL 与 schema.sql 不一致');
+      validateGuidePackageTrees(html, version);
     }
     if (!/<script>[\s\S]+<\/script>/.test(guide) || /<script\s+src=/.test(guide)) throw new Error('根教程必须可独立打开');
-  } catch {
-    errors.push(`${label} 缺少可独立发布的 开始使用.html`);
+  } catch (error) {
+    errors.push(`${label} 教程校验失败：${error.message}`);
   }
 
   const expectedReadme = `WindowStash v${version}\n\n请先双击打开：\n开始使用.html\n\n按照教程完成 Chrome Extension、Supabase 和 WindowStash Companion 的安装。\n`;
