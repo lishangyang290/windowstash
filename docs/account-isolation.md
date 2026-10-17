@@ -23,11 +23,17 @@
 | 实际同步引擎、实际 Supabase SDK、模拟 HTTP；离线失败恢复、错误账号任务拒绝、延迟上传与删除 | `src/lib/sync/supabaseIsolation.test.ts` |
 | Companion 实际 SDK、模拟 HTTP、完整切换、最近使用、旧缓存迁移、重启与延迟响应拒绝 | `companion/src/features/accountIsolation.test.ts` |
 | 旧版归属识别、缺失分区恢复、匿名副本保护、同 ID 合并、恢复提示与取消 | `src/lib/storage/__tests__/accountScope.test.ts`、`src/entrypoints/__tests__/supabaseSetup.test.tsx` |
-| Native Host 的临时存储、授权路由、旧事件拒绝与注销 | `cargo test --offline --manifest-path companion/native-host/Cargo.toml` |
+| Native Host 的临时存储、授权路由、旧事件拒绝与注销 | `cargo test --locked --manifest-path companion/native-host/Cargo.toml` |
 
-运行：`npm test`、`npm --prefix companion test`，以及两端 `typecheck`、`lint`、`build`。
+按修改范围运行对应测试文件；两端命令与平台要求见[根 README](../README.md)。账号隔离修改应覆盖切换、迟到响应和旧数据恢复；不要求文档维护重复执行全部构建。Rust 命令须使用对应平台工具链，`--offline` 只适用于依赖已缓存的环境。
 
-以上验证使用内存存储、模拟浏览器/原生接口与模拟认证状态。尚未验证真实 Supabase Auth/RLS 策略、真实 Chrome storage/Web Locks 多进程时序、已安装扩展与 Companion 的完整界面联动。此次不操作真实项目，不要求额外账号或数据库，不发布产物。
+上表自动化用例使用内存存储、模拟浏览器/原生接口与模拟认证状态，不能替代真实 Supabase RLS、Chrome storage/Web Locks 的并发和跨设备验证。Windows 已完成中文 NSIS 覆盖安装、实际运行 Host 更新、原账号只读认证和后台同步核对，并核对工作区及冲突副本保留；这些结果不代表所有平台和并发场景均已验收。macOS `.pkg` 尚待实机验收，当前分发仍为 `.app`。
+
+## 关联后的共享本机库
+
+关联的扩展与 Companion 使用 Native Host 的账号分区工作区库，并通过同一租约协调同步；扩展仍保留浏览器本地投影。账号授权在 Rust 层再次检查实例、路由、项目和用户，Refresh Token 轮换使用独立文件锁。未关联扩展保留独立兼容路径。
+
+云端使用工作区 RPC 与持久删除标记，Realtime 只触发校准。冲突保存版本副本，远端缺失不能直接推断删除，也不能绕过服务器基线强制重新上传。升级数据库前执行备份、隔离验证及批准，参见[初始化与升级](../README.md#supabase-初始化与升级)；不要将清空本地库或冲突记录作为隔离修复方法。
 
 ## 未登录保存保护
 

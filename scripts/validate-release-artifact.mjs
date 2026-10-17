@@ -141,6 +141,12 @@ function validateStructure(root, label) {
   try {
     const guide = readFileSync(join(root, '开始使用.html'), 'utf8');
     if (!/<html[\s>]/i.test(guide)) throw new Error();
+    const schema = readFileSync('supabase/schema.sql', 'utf8').trimEnd()
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    for (const html of [guide, readFileSync(join(root, 'Chrome Extension', '开始使用.html'), 'utf8')]) {
+      if (html.match(/<code id="schema-code">([\s\S]*?)<\/code>/)?.[1] !== schema) throw new Error('教程 SQL 与 schema.sql 不一致');
+    }
+    if (!/<script>[\s\S]+<\/script>/.test(guide) || /<script\s+src=/.test(guide)) throw new Error('根教程必须可独立打开');
   } catch {
     errors.push(`${label} 缺少可独立发布的 开始使用.html`);
   }

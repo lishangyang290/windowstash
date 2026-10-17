@@ -1,22 +1,46 @@
 # WindowStash Companion
 
-macOS 菜单栏和 Windows 系统托盘工作区启动器。恢复、窗口绑定和 Lazy Restore 仍由 Chrome 扩展负责。
+Windows 系统托盘与 macOS 菜单栏工作区入口，使用 Tauri 2、React 和 Rust。恢复标签页、窗口关联与 Lazy Restore 仍由 Chrome 扩展执行。整体架构、数据库流程和数据安全边界见[根 README](../README.md)，账号分区见[隔离说明](../docs/account-isolation.md)。
 
-首次使用点击「在浏览器中登录」，在 Chrome Options 配置 Supabase 和登录。Chrome 已登录时复用已有 Session，不重复输入。授权后 Companion 查询工作区；关闭 Chrome 或重启 Companion 后仍可继续使用。账号管理在 Chrome Options 中进行。
+## 运行与授权
 
-多个 Chrome 用户环境无法自动确定时选择一次，之后保留关联。正式应用包含 Native Host，启动和发起登录时自动注册当前用户的 Chrome 通信组件，无需终端配置。登录请求 URL 仅包含一次性请求标识，不包含凭据。
+首次点击「在浏览器中登录」，在 Chrome 完成 Supabase 配置、登录及授权确认，Companion 复用该账号，无需再输入项目密钥或密码。多个 Chrome Profile 无法自动确定时，用户选择一次，之后保留路由。
 
-Refresh Token 由本机组件在文件锁下集中轮换，Chrome 的刷新请求也交给该组件。Companion WebView 只收到短期 Access Token。认证文件使用用户私有目录和权限；按产品约定接受同一系统用户恶意替换组件的残余风险，不声称抵御此类冒充。
+应用启动或发起登录时自动注册当前用户的 Native Messaging 组件。正式应用内含 Host，开发运行会把当前用户的注册路径指向开发产物；切回安装版后应核对其运行路径与注册。授权 URL 不包含凭据。
 
-`.env` 只在开发模式中使用。`npm run build` 是唯一前端正式构建，并会自动扫描产物，防止 Supabase URL 或 Publishable Key 泄漏。`npm run tauri:build:mac` 打包 macOS 应用（原有 `npm run tauri:build` 仍指向该命令），`npm run tauri:build:windows` 在 Windows x64 上生成 NSIS 安装包。
+Rust 库管理账号授权、集中 Token 刷新、本地工作区库和同步租约，Companion WebView 仅接收短期 Access Token。Chrome 关闭后 Companion 仍能后台同步，恢复浏览器工作区时会使用已关联的 Chrome 和扩展。默认开机启动可在设置中关闭。
 
-旧版已登录用户保留原有入口，可在设置中选择「改用浏览器登录」迁移；原配置及数据不自动删除。新登录用户只有浏览器登录入口。新链路已完成隔离联动验收，真实 macOS / Supabase 验收仍待用户执行。
+旧版独立登录用户保留原入口，可在设置中选择「改用浏览器登录」迁移，原配置和数据不自动删除。新用户使用浏览器授权入口。对同一系统用户恶意替换组件的风险边界见根 README。
 
-## 开发与验收
+## 开发与构建
 
-- `npm run dev`：前端开发。
-- `npm run tauri dev`：本机开发运行，会执行用户级 Host 注册。
-- `npm run tauri:build`：构建 macOS 应用；Windows x64 使用 `npm run tauri:build:windows`。构建不启动应用、不注册 Host。
-- 根目录运行 `node scripts/build-native-host.mjs` 后运行 `node scripts/verify-browser-auth.mjs`：正式 Host 对接临时模拟服务，验证凭据交接、并发刷新、持久化、退出和切换账号，不修改系统注册。
+先在仓库根目录执行 `npm ci`、`npm --prefix companion ci`。下表命令在 `companion/` 中执行：
 
-正式构建继续扫描产物中的私人 Supabase 配置。`.env` 仅用于开发。默认开机启动仍可在应用设置中关闭。
+| 命令 | 作用 |
+| --- | --- |
+| `npm run dev` | Vite 前端服务，不提供原生命令 |
+| `npm run tauri -- dev` | 准备 Host 并运行完整桌面应用，会执行用户级组件注册 |
+| `npm run build` | 前端正式构建及私人配置扫描，不生成桌面安装包 |
+| `npm run tauri:build:windows` | Windows x64 + MSVC 构建中文 NSIS 安装器 |
+| `npm run tauri:build:mac` | macOS 构建 `.app`；`tauri:build` 是此命令的别名 |
+| `npm test` / `npm run typecheck` / `npm run lint` | 前端测试及静态检查，按任务范围选择 |
+
+Tauri hook 自动运行 [build-native-host.mjs](../scripts/build-native-host.mjs) 和前端构建。构建不会启动应用或注册 Host；运行应用才会注册。Windows 脚本要求已安装 MSVC x64 工具链；macOS CI 当前目标为 arm64，应用配置最低 macOS 12.0。不要将不同目标的 Host 混装。
+
+开发环境配置与正式构建隐私规则见根 README；`.env` 只供开发使用，正式连接配置来自用户界面。单独调试认证可在根目录执行：
+
+```sh
+node scripts/build-native-host.mjs
+node scripts/verify-browser-auth.mjs
+```
+
+该检查使用临时本机 HTTP 服务和临时存储，不读取真实账号或修改注册。Windows 可设置进程环境变量 `WINDOWSTASH_VERIFY_WINDOWS_CONSOLE=1`，短时检查验证及刷新 curl 的实际窗口；可将已安装 Host 的完整路径作为脚本第一个参数。生产 curl 已设置 Windows `CREATE_NO_WINDOW`，macOS 调用行为不变。
+
+## 安装与更新状态
+
+- **Windows：**中文 NSIS 当前用户安装、Companion/Host 覆盖及哈希核验已验证。安装器正常关闭 Companion，旧 Host 可保持原请求直至连接结束；后续请求使用新文件。扩展刷新后重新建立连接，避免依赖旧常驻进程。首次补装 WebView2 需要网络。
+- **macOS：**当前发行脚本打包 `.app`，使用 ad-hoc 签名，未配置 Apple 公证；`.pkg` 的安装、升级及系统安全提示尚待实机验收，不能视为已发布功能。
+
+用户更新按「更新 Companion → 覆盖原扩展目录 → 在 `chrome://extensions` 刷新原扩展」执行，无需停用扩展、退出 Chrome、手动结束 Host 或重新配置原账号。详细操作集中在[用户教程源文件](../public/开始使用.html)，不在这里重复。
+
+Windows 最近验证已核对新运行 Host、真实账号只读认证、后台同步及既有工作区/冲突副本保留；自动化隔离认证覆盖并发刷新、断网、临时失败、退出和账号切换。此结果不替代 macOS 实机验收或所有跨设备并发场景测试。诊断中心入口及日志边界见根 README。

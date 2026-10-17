@@ -1,34 +1,36 @@
 # WindowStash 交互式发布
 
-验收并合并这套工具后，日常发布只需要：在 Finder 双击项目根目录的 **WindowStash Release.command**，粘贴发布信息，以单独一行 `:end` 结束，检查解析结果，最后输入提示要求的完整确认文字。无需再使用 Codex。程序只在这次终端会话内运行，结束后保留结果供查看。
+发布入口：Windows 双击根目录的 **WindowStash Release.cmd**，macOS 在 Finder 双击 **WindowStash Release.command**，或在终端运行 `npm run release`。粘贴发布信息，以单独一行 `:end` 结束，检查解析结果，最后输入提示要求的完整确认文字。程序只在本次终端会话内运行，结束后保留结果供查看。
 
 ## 首次准备
 
-需要 Node.js 22 或更新的 LTS、npm、Git，以及对 `lishangyang290/windowstash` 的推送权限。首次在根目录和 companion 目录分别运行 `npm ci` 安装项目依赖；工具不会自动安装。建议安装 GitHub CLI 并执行 `gh auth login`，以自动查询构建和附件状态。未安装或未认证 gh 时仍可发布，但须通过显示的网页确认 Release 是否完成。
+需要 Node.js 22.12+、npm、Git，以及对发布仓库的推送权限。首次在根目录和 companion 目录分别运行 `npm ci` 安装项目依赖；工具不会自动安装。GitHub CLI 已安装并认证时可自动查询构建和附件状态；不可用时须通过显示的网页确认 Release 是否完成。桌面构建环境见[根 README](../README.md#开发环境)。
 
-启动文件兼容 Homebrew（Apple Silicon / Intel）、Volta、fnm 默认别名、nvm 与 asdf 常见路径。使用自定义 Node 安装目录时，请使 Node/npm 位于终端 PATH 内。文件必须保留可执行权限（755）；Git 添加该文件时会记录为 100755。
+macOS 启动文件兼容 Homebrew（Apple Silicon / Intel）、Volta、fnm 默认别名、nvm 与 asdf 常见路径，须保留 `.command` 的 Git 可执行模式 100755。Windows 入口调用 Node 脚本；使用自定义安装目录时，应自行确认当前终端能找到 Node/npm/Git，不由发布工具修改系统环境。
 
 正式发布前必须位于干净的 main，本地 main、origin/main 和实时远端 main 均一致。工具不自动 pull、merge、rebase，也不清理用户文件。如果 tracking 引用过期，请自行检查并同步。网络、权限、Tag 或 Release 检查失败会停止。
 
 ## 推荐粘贴格式
 
+以下仅为版本升级示例，不表示已批准发布 v0.6.0；实际版本、HEAD 和测试结果必须重新核对。
+
 ```text
-当前版本：v0.3.0
-目标版本：0.4.0
+当前版本：v0.5.0
+目标版本：0.6.0
 
 更新说明：
-- 修复 Chrome 重启后的工作区关联问题
-- 新增教程入口，优化复制体验
+- 增加 Windows Companion 安装支持
+- 完善共享工作区同步及冲突保护
 
 main HEAD：
-56b8e2fe30517972e54cfe9a5ba4befd822f924c
+填写本次核对的 main 提交
 
 测试：
-224 项通过
+填写本次实际检查结果
 :end
 ```
 
-目标版本也可写成 `版本：v0.4.0`、`WindowStash v0.4.0`、Markdown 标题或明确的版本升级描述。支持 Markdown 列表、常见 ChatGPT 文案和 Codex 开发总结；测试、文件、合并报告与代码日志会尽量排除。text / markdown 围栏中的发布文本也可识别。文字不会被当作 Shell 命令执行，不使用 AI API，不联网识别。
+目标版本也可写成 `版本：v0.6.0`、`WindowStash v0.6.0`、Markdown 标题或明确的版本升级描述。支持 Markdown 列表、常见粘贴文案和开发总结；测试、文件、合并报告与代码日志会尽量排除。text / markdown 围栏中的发布文本也可识别。文字不会被当作 Shell 命令执行，不使用 AI API，不联网识别。
 
 版本依上下文识别，多个候选会要求人工选择；缺少版本或说明会要求补充。菜单可修改版本、说明或重新粘贴。不确定的自然语言应使用标准格式，并人工检查结果。Git 提交和测试信息仅作参考，工具会重新读取 Git 状态并执行项目检查。
 
@@ -38,7 +40,19 @@ main HEAD：
 2. 生成七个版本文件的更新（九处正式声明），只改 JSON 版本键和 Cargo 对应包的版本；生成新 Release Notes，更新教程中的 `WindowStash-vX.Y.Z` 安装包名称。
 3. 执行既有版本一致性检查、发布工具测试、Extension 与 Companion 的 Test / Lint / Typecheck / Build、git diff --check。各端 Build 已包含正式隐私检查，避免重复运行。不在本地构建 macOS .app。
 4. 展示修改、说明、检查与 Commit / Tag，要求明确输入 `发布 vX.Y.Z`。确认后再次检查文件与远端，才暂存本次文件、提交、推送 main，在准确的发布提交上创建和推送 Tag。
-5. 继续使用原有 `.github/workflows/release.yml` 构建正式 ZIP 和 Release，不创建空 Release。gh 可用时等待最多 15 分钟，每约 12 秒查询匹配 Tag 和发布提交的真实 Job/Step，显示当前任务、已结束/总步骤数及成功、跳过、未成功数量。支持刷新的终端原地更新四行进度，等待耗时每秒刷新；重定向输出、`TERM=dumb` 或 `NO_COLOR` 使用纯文本查询摘要。单次查询超过 30 秒会停止等待并保留最后确认的状态。只有 Workflow 成功且对应正式 ZIP 非空才报告成功，并显示 Release 与 ZIP 下载链接。等待超时或状态无法确认时给出网页，不把 Tag 推送等同于 Release 成功。Ctrl+C 可结束等待。
+5. 使用现有 [release.yml](../.github/workflows/release.yml) 构建 Windows x64 与 macOS arm64 附件；两端均成功后才发布，不创建空 Release。gh 可用时等待最多 15 分钟，每约 12 秒查询匹配 Tag 和提交的真实 Job/Step，显示当前任务及成功、跳过、未成功数量。支持终端原地进度更新；重定向、`TERM=dumb` 或 `NO_COLOR` 使用纯文本摘要。单次查询超过 30 秒会停止等待并保留最后确认状态。仅 Workflow 成功且所需 ZIP 非空才报告成功。等待超时或状态无法确认时给出网页，不把 Tag 推送等同于 Release 成功。Ctrl+C 可结束等待。
+
+## 当前附件与教程
+
+[assemble-release.mjs](../scripts/assemble-release.mjs) 生成 `WindowStash-vX.Y.Z-Windows-x64.zip`、`WindowStash-vX.Y.Z-macOS-arm64.zip`，Windows 另附独立 `WindowStash-vX.Y.Z-Windows-x64-setup.exe`。ZIP 根文件夹内为：
+
+- `Chrome Extension/`。
+- Windows 中文 NSIS 安装器，或 macOS `WindowStash Companion.app`。
+- `开始使用.html` 和只引导打开 HTML 的 `README.txt`。
+
+macOS 当前打包 `.app`，未配置 Apple 公证；`.pkg` 尚待实机验收，不在现有附件中。Windows 中文安装与 Host 自动覆盖已验证，但发布仍须完成对应版本检查。
+
+教程包名由现有版本替换机制更新，不提前修改开发版本声明。WXT 构建先由 [generate-extension-guide.ts](../scripts/generate-extension-guide.ts) 注入 `schema.sql` 和项目设置并外置脚本；Release 根教程再从同一生成结果内联脚本，保持可独立双击。产物校验同时核对两份教程的 SQL 与仓库 schema。数据库行为不由发布脚本修改，旧库升级按[受控流程](../README.md#supabase-初始化与升级)另行确认。
 
 ## 终端入口和预演
 
@@ -71,12 +85,12 @@ npm run release -- --restore
 
 main 已推送但 Tag 未推送时，核实发布提交与现有本地 Tag；如果远端确实缺少 Tag，在记录的发布提交上创建/核实本地 Tag，然后仅推送该 Tag。若 Tag 已存在，禁止覆盖。构建失败时查看 Actions 日志，禁止删除/覆盖历史版本。问题处理完成并核实记录后，再手动删除恢复记录。
 
-## 开源解析能力
+## 解析能力
 
-调查了 [remark/unified](https://github.com/remarkjs/remark)、[mdast-util-from-markdown](https://github.com/syntax-tree/mdast-util-from-markdown) 和 [Marked](https://github.com/markedjs/marked)。前两者适合 AST 插件管线；本工具只需要标题、段落、列表与代码块，因此选用仍在维护、MIT 许可且没有运行时依赖的 Marked，锁定在 package-lock 中。仅使用 lexer，不渲染 HTML。上下文版本判断与元数据排除使用少量规则，不引入完整 Markdown 转换管线。进程、交互、文件读写与自动测试使用 Node.js 自带能力。
+文本解析使用 [Marked](https://github.com/markedjs/marked) lexer，依赖锁定在 package-lock 中，不渲染 HTML。上下文规则处理版本候选和元数据排除；进程、交互、文件读写与发布工具测试使用 Node.js 内置能力。
 
-## 本次手动验收
+## 验证边界
 
-不要为验收运行正式发布。双击 .command，确认版本 0.3.0、路径和中文提示，粘贴示例并用 :end 结束，尝试菜单修改和取消。也可运行 --dry-run，确认开发分支被安全拦截。成功的 main 预演、版本更新、取消恢复、测试失败、推送失败均通过临时 Git 仓库自动测试，无需改动真实 main。
+不要为文档或入口验收运行正式发布。可运行发布工具测试，并在明确允许联网查询时使用 `--dry-run`；开发分支会被正式发布前提拦截。版本准备、取消恢复、测试及推送失败等路径使用临时 Git 仓库验证，无需改动真实 main。
 
-当前自动化环境不能访问 Terminal 图形界面，因此真实 Finder 双击还需要用户手动确认；受限 PATH 启动、暂停保留结果与 Git 可执行模式已独立验证。开发分支完成验收后可提交并推送；合并 main 和正式发布由用户另行决定。
+真实 Finder / Windows 双击体验与 macOS `.pkg` 安装验收属于人工平台检查，不能由 CLI 自动化结果代替。是否合并 main、推送或正式发布均需单独授权；文档维护不触发 Actions，也不创建 Tag 或 Release。

@@ -25,14 +25,20 @@
       <li class="nav-group">浏览器</li><li><a href="#extension"><small>01</small>安装 Chrome 扩展</a></li>
       <li class="nav-group">数据空间</li><li><a href="#supabase"><small>02</small>创建 Supabase 项目</a></li><li><a href="#database"><small>03</small>初始化数据库</a></li><li><a href="#credentials"><small>04</small>获取连接信息</a></li>
       <li class="nav-group">Chrome 扩展</li><li><a href="#connect"><small>05</small>连接数据存储</a></li><li><a href="#account"><small>06</small>注册或登录</a></li>
-      <li class="nav-group">macOS 桌面应用</li><li><a href="#companion"><small>07</small>安装桌面应用</a></li><li><a href="#companion-connect"><small>08</small>连接并登录</a></li>
+      <li class="nav-group">桌面应用</li><li><a href="#companion"><small>07</small>安装桌面应用</a></li><li><a href="#companion-connect"><small>08</small>连接并登录</a></li>
       <li class="nav-group">开始使用</li><li><a href="#first-workspace"><small>09</small>保存 Workspace</a></li><li><a href="#restore"><small>10</small>恢复 Workspace</a></li>
+      <li class="nav-group">已有用户</li><li><a href="#update"><small>11</small>更新已有安装</a></li>
     </ol><div class="sidebar-footer"><a href="#faq">常见问题</a></div></div></nav>
     <main id="guide">
       <section class="step" id="extension"><div class="step-body">
-        <p class="eyebrow">01 · 先安装浏览器部分</p><h2>把 WindowStash 放进 Chrome</h2><p class="intro">Chrome 扩展是你保存当前窗口和标签页的入口。安装包已经准备好所有文件，不需要下载其他内容。</p>
+        <p class="eyebrow">01 · 先安装浏览器部分</p><h2>把 WindowStash 放进 Chrome</h2><p class="intro">Chrome 扩展负责保存和恢复标签页。请下载与你的系统匹配的完整 ZIP 安装包并先解压；单独下载 Windows 桌面安装器不包含扩展文件夹。已有用户直接查看<a href="#update">更新已有安装</a>。</p>
         <h3>先确认安装包位置</h3><p>你现在打开的 <span class="path">开始使用.html</span> 与需要选择的 Chrome 扩展文件夹 <span class="path">Chrome Extension</span> 在同一个文件夹。安装包结构应当是：</p>
-        <pre class="package-tree">WindowStash-v0.5.0/
+        <h3>Windows x64 安装包</h3><pre class="package-tree">WindowStash-v0.5.0/
+├── 开始使用.html
+├── Chrome Extension/
+├── WindowStash-v0.5.0-Windows-x64-setup.exe
+└── README.txt</pre>
+        <h3>macOS Apple Silicon 安装包</h3><pre class="package-tree">WindowStash-v0.5.0/
 ├── 开始使用.html
 ├── Chrome Extension/
 ├── WindowStash Companion.app
@@ -62,7 +68,7 @@
 
       <section class="step" id="database"><div class="step-body">
         <p class="eyebrow">03 · 复制、粘贴、运行</p><h2>初始化 WindowStash 数据库</h2><p class="intro">以下完整 SQL 仅用于新建项目，包含 v0.6.0 所需的数据表、账号隔离、同步函数、删除标记和 Realtime 配置。请在 Supabase SQL Editor 中一次完整执行，不要分段运行。</p>
-        <div class="note"><strong>已有 v0.5.0 数据库？</strong><p>不要重新初始化项目。先备份现有工作区并暂停编辑，再单独执行仓库中的 <code>supabase/migrations/20261014_workspace_sync_v1.sql</code> 增量升级；升级后执行 <code>supabase/verify_workspace_sync_v1.sql</code> 只读检查，所有结果应为 true。升级不会清空工作区；升级期间避免新旧客户端同时编辑同一工作区。</p></div>
+        <div class="note"><strong>已有旧版数据库？请走增量升级</strong><p>不要重新初始化项目，也不要为升级创建新项目或新账号。先由项目维护者使用仓库中的 <code>supabase/inspect_workspace_sync.sql</code> 检查现状，并按 <code>supabase/export_workspace_data.sql</code> 保存备份；暂停编辑，在隔离项目验证并确认后，完整执行 <code>supabase/migrations/20261014_workspace_sync_v1.sql</code>。最后执行 <code>supabase/verify_workspace_sync_v1.sql</code> 只读检查，所有结果应为 true。失败时先核对 <code>supabase/check_workspace_sync_state.sql</code>，不要清空重建或猜测成功。升级保留工作区，但无法补回升级前的历史删除标记；期间避免新旧客户端同时编辑。</p></div>
         <div class="code"><button class="code-copy" type="button" data-copy="#schema-code">复制代码</button><pre><code id="schema-code">-- WindowStash v0.6.0: NEW projects only. Existing v0.5.0 databases use the incremental migration.
 -- SQL Editor: run the entire file. Atomic, repeatable, and never clears workspaces.
 begin;
@@ -261,7 +267,7 @@ begin
 end $$;
 commit;</code></pre></div>
         <ol class="tasks"><li>看 Supabase 页面最左侧的导航栏，找到并点击 <strong>SQL Editor</strong>。</li><li>进入 SQL Editor 后，看左侧的查询列表。在 <strong>Search queries...</strong> 搜索框右边找到这个小方形按钮 <span class="demo-control demo-plus" aria-label="加号按钮示意">＋</span>；鼠标移到它上面时会显示 <strong>New query</strong>。点击它，新建一条查询。</li><li>点击后，页面中间会出现空白的代码编辑区域，上方通常会显示 <strong>New</strong>。如果进入 SQL Editor 时已经看到这个空白编辑区域，就不需要再点加号，可以直接继续。</li><li>点击本教程上方的 <strong>复制代码</strong>，回到 Supabase 将代码完整粘贴到编辑区域，不要修改任何内容，然后点击右上角绿色的 <span class="demo-control demo-run" aria-label="Run 按钮示意">Run</span> 并等待执行结束。</li></ol>
-        <div class="note"><strong>什么时候算完成？</strong>结果区域没有出现红色的 Error，并显示执行成功或成功完成，就可以继续。如果以前运行过一次，也可以再次运行：这份代码支持重复执行，不需要先清空数据库。</div>
+        <div class="note"><strong>什么时候算完成？</strong>完整 SQL 执行成功且没有红色 Error 后，再运行仓库中的 <code>supabase/verify_workspace_sync_v1.sql</code> 只读核验，结果应全部为 true。新项目的初始化脚本支持重复执行，不需要清空数据；这不代表旧版数据库可以跳过上面的受控升级流程。</div>
       </div></section>
 
       <section class="step" id="credentials"><div class="step-body">
@@ -278,14 +284,17 @@ commit;</code></pre></div>
 
       <section class="step" id="account"><div class="step-body">
         <p class="eyebrow">06 · 让 Workspace 可以同步</p><h2>注册或登录 WindowStash</h2><p class="intro">账户窗口默认显示登录页面。</p>
-        <ol class="tasks"><li>第一次使用时，点击登录按钮下方的 <strong>还没有账号？注册</strong>。</li><li>进入注册页面后，填写邮箱和 WindowStash 登录密码，再点击 <strong>注册</strong>。</li><li>如果收到 Supabase 发来的验证邮件，按邮件提示完成验证，再回到 WindowStash 登录。</li><li>已经注册过的用户直接填写原来的邮箱和密码，点击 <strong>登录</strong>。</li></ol><div class="note"><strong>macOS 桌面应用通过浏览器登录</strong>在 Companion 点击「在浏览器中登录」，使用同一个 WindowStash 账号，并在浏览器确认授权。</div>
+        <ol class="tasks"><li>第一次使用时，点击登录按钮下方的 <strong>还没有账号？注册</strong>。</li><li>进入注册页面后，填写邮箱和 WindowStash 登录密码，再点击 <strong>注册</strong>。</li><li>如果收到 Supabase 发来的验证邮件，按邮件提示完成验证，再回到 WindowStash 登录。</li><li>已经注册过的用户直接填写原来的邮箱和密码，点击 <strong>登录</strong>。</li></ol><div class="note"><strong>两个平台的桌面应用都通过浏览器登录</strong>在 Companion 点击「在浏览器中登录」，使用同一个 WindowStash 账号，并在浏览器确认授权。不需要另建账号。</div>
       </div></section>
 
       <section class="step" id="companion"><div class="step-body">
-        <div class="note"><strong>Windows x64 安装方式</strong><p>Windows 用户请先解压完整安装包，再双击本教程旁边的 <span class="path">WindowStash-v0.5.0-Windows-x64-setup.exe</span>，按安装向导完成当前用户安装。首次安装 WebView2 时需要网络。安装后从开始菜单打开 WindowStash Companion；图标位于任务栏通知区域，可能需要展开隐藏图标。下方拖入“应用程序”的步骤仅适用于 macOS，Windows 用户直接继续第 08 步登录。后续教程所说的 macOS 菜单栏，在 Windows 上对应任务栏通知区域。</p></div>
-        <p class="eyebrow">07 · 把恢复入口放到 macOS 菜单栏</p><h2>安装 macOS 桌面应用</h2><p class="intro">WindowStash 的 macOS 桌面应用与本教程位于安装包的同一级目录，文件名为 <span class="path">WindowStash Companion.app</span>。</p>
-        <ol class="tasks"><li>回到包含 <span class="path">开始使用.html</span> 的 <span class="path">WindowStash-v0.5.0</span> 文件夹。</li><li>你会在旁边直接看到 <span class="path">WindowStash Companion.app</span>。</li><li>打开 Finder 的“应用程序”文件夹，把 <span class="path">WindowStash Companion.app</span> 拖进去。</li><li>复制完成后，从“应用程序”文件夹打开 WindowStash Companion。</li></ol>
-        <div class="note"><strong>如果 macOS 第一次阻止打开</strong>在 Finder 的“应用程序”中找到 WindowStash Companion，右键点击它，选择“打开”，再在弹窗中确认“打开”。不需要输入终端命令。</div><p>打开后，macOS 顶部菜单栏会出现 WindowStash 图标，或者屏幕会显示桌面应用的连接窗口。看到其中任一项就表示应用已经运行。</p>
+        <p class="eyebrow">07 · 安装系统对应的桌面应用</p><h2>安装 WindowStash Companion</h2><p class="intro">按你的系统选择下面一个平台区块，完成后继续第 08 步。扩展文件夹请保留在固定位置。</p>
+        <div id="companion-windows" data-platform="windows">
+          <h3>Windows x64 · 中文安装向导</h3><ol class="tasks"><li>双击本教程旁边的 <span class="path">WindowStash-v0.5.0-Windows-x64-setup.exe</span>。</li><li>按中文向导完成当前用户安装。首次需要下载 WebView2 时请保持联网。</li><li>从开始菜单打开 WindowStash Companion。图标位于任务栏通知区域，可能需要展开隐藏图标。</li></ol><div class="note"><strong>本机通信组件自动安装</strong>安装器会覆盖并核验 Companion 与 Native Host 文件，应用会自动注册浏览器通信组件，无需手动复制 Host 或修改注册表。</div>
+        </div>
+        <div id="companion-macos" data-platform="macos">
+          <h3>macOS Apple Silicon · 当前为 .app 分发</h3><ol class="tasks"><li>在解压后的安装包中找到 <span class="path">WindowStash Companion.app</span>。</li><li>打开 Finder 的“应用程序”，将该应用拖入。</li><li>从“应用程序”打开 Companion，图标会出现在 macOS 顶部菜单栏。</li></ol><div class="note"><strong>首次打开与分发状态</strong>当前应用未进行 Apple 公证。若被阻止，可尝试 Finder 右键“打开”，并按系统安全提示确认；不要运行来源不明的绕过命令。<code>.pkg</code> 安装方式尚待实机验收，本教程目前不将它作为可用安装方式。</div>
+        </div>
       </div></section>
 
       <section class="step" id="companion-connect"><div class="step-body">
@@ -295,12 +304,18 @@ commit;</code></pre></div>
 
       <section class="step" id="first-workspace"><div class="step-body">
         <p class="eyebrow">09 · 开始真正使用</p><h2>保存第一个 Workspace</h2><div class="rule">一个 Chrome 窗口 = 一个 Workspace</div>
-        <div class="scenes"><article class="scene"><b>场景 01</b><p><strong>只记录现在的标签页</strong><br>点击 Chrome 工具栏中的 WindowStash，再点击“保存当前状态”。当前 Chrome 窗口会保持打开。</p></article><article class="scene"><b>场景 02</b><p><strong>保存后把整个窗口关掉</strong><br>点击 WindowStash，再点击“保存并关闭窗口”。等待保存完成后，当前窗口会关闭。</p></article><article class="scene"><b>场景 03</b><p><strong>以后继续之前的工作</strong><br>点击 macOS 菜单栏中的 WindowStash，再选择要继续的 Workspace。</p></article></div><div class="note"><strong>什么时候算保存成功？</strong>WindowStash 中出现刚保存的 Workspace，桌面应用的 Workspace 列表里也能看到它。</div>
+        <div class="scenes"><article class="scene"><b>场景 01</b><p><strong>只记录现在的标签页</strong><br>点击 Chrome 工具栏中的 WindowStash，再点击“保存当前状态”。当前 Chrome 窗口会保持打开。</p></article><article class="scene"><b>场景 02</b><p><strong>保存后把整个窗口关掉</strong><br>点击 WindowStash，再点击“保存并关闭窗口”。等待本地保存完成后，当前窗口会关闭。</p></article><article class="scene"><b>场景 03</b><p><strong>以后继续之前的工作</strong><br>点击 Windows 通知区域或 macOS 菜单栏中的 WindowStash，再选择要继续的 Workspace，也可从扩展管理器恢复。</p></article></div><div class="note"><strong>保存与同步是两件事</strong>本地保存成功后，即使暂时断网也能保留工作区；云端同步失败会保留副本并重试。请留意同步状态，不要在未同步时卸载扩展或清理本地数据。Companion 列表可能稍后更新。</div>
       </div></section>
 
       <section class="step" id="restore"><div class="step-body">
-        <p class="eyebrow">10 · 从菜单栏回到现场</p><h2>恢复一个 Workspace</h2><ol class="tasks"><li>点击 macOS 顶部菜单栏里的 WindowStash 图标。</li><li>在展开的 Workspace 列表中找到你要继续的项目并点击。</li><li>如果对应的 Chrome 窗口已经打开，WindowStash 会切换到它；如果窗口已经关闭，WindowStash 会重新打开它和其中的标签页。</li></ol><div class="note"><strong>如果 Workspace 有很多标签页</strong>WindowStash 不会一次加载所有网页。暂时没使用的标签页会保持休眠，点击它时才加载，这是正常现象。</div>
-        <section class="finish"><div class="check">✓</div><p class="eyebrow">设置完成</p><h2>WindowStash 已经可以使用</h2><ul><li>Chrome 扩展已安装并连接</li><li>Supabase 数据库已初始化</li><li>macOS 桌面应用已放入“应用程序”并登录</li><li>Workspace 可以保存、同步和恢复</li></ul></section>
+        <p class="eyebrow">10 · 从桌面入口回到现场</p><h2>恢复一个 Workspace</h2><ol class="tasks"><li>点击 Windows 通知区域或 macOS 菜单栏里的 WindowStash 图标。</li><li>在 Workspace 列表中找到要继续的项目并点击。</li><li>如果有效关联的 Chrome 窗口已经打开，WindowStash 会切换到它；否则通过扩展重新打开工作区。</li></ol><div class="note"><strong>如果 Workspace 有很多标签页</strong>WindowStash 会延迟加载暂未使用的标签页，点击后再加载；网站是否保持登录由网站和浏览器决定，工作区不会保存密码或网页 Session。遇到冲突时先检查并选择需要的版本，不要清空缓存或删除冲突副本。</div>
+        <section class="finish"><div class="check">✓</div><p class="eyebrow">设置完成</p><h2>WindowStash 已经可以使用</h2><ul><li>Chrome 扩展已安装并连接</li><li>Supabase 数据库已初始化或按流程升级</li><li>对应平台的 Companion 已安装并完成浏览器授权</li><li>Workspace 可以保存、同步和恢复</li></ul></section>
+      </div></section>
+
+      <section class="step" id="update"><div class="step-body">
+        <p class="eyebrow">11 · 保留原账号与数据</p><h2>更新已有安装</h2><p class="intro">下载并解压对应系统的新版完整安装包，按下面顺序更新。保留原扩展目录和原账号配置。</p>
+        <ol class="tasks"><li><strong>先更新 Companion 桌面应用。</strong>Windows 运行新版中文安装器，覆盖到原安装位置；macOS 按当前 <a href="#companion-macos">.app 安装方式</a>，正常退出 Companion 后替换“应用程序”中的旧应用并重新打开。</li><li><strong>覆盖原 Chrome 扩展目录。</strong>将新版 <span class="path">Chrome Extension</span> 文件夹内的文件覆盖到 Chrome 原来加载的同一目录，保留该目录位置。</li><li><strong>刷新原有扩展。</strong>打开 <span class="path">chrome://extensions</span>，点击原 WindowStash 卡片上的刷新按钮。</li></ol>
+        <div class="note"><strong>无需额外重置</strong>不要卸载或停用扩展，不需要退出 Chrome、手动结束 Native Host，也不用重新填写原账号。Windows 安装器自动覆盖通信组件，刷新扩展会重新建立连接。更新后核对账号、工作区与同步状态；已有旧版数据库的用户还需由维护者按<a href="#database">增量升级流程</a>核对数据库，软件更新本身不会执行 SQL。</div>
       </div></section>
 
       <section class="faq" id="faq"><p class="eyebrow">需要帮助时</p><h2>常见问题</h2><div class="faq-list">
@@ -310,7 +325,7 @@ commit;</code></pre></div>
         <details><summary>为什么恢复后有些网页没有立即加载？</summary><p>为了避免大量标签页同时占用内存，WindowStash 会在你点击标签页时再加载网页。</p></details>
         <details><summary>为什么 Chrome 提示这是开发者模式扩展？</summary><p>当前版本还没有发布到 Chrome Web Store，因此使用 Chrome 官方提供的“加载已解压的扩展程序”方式安装。</p></details>
         <details><summary>为什么 macOS 桌面应用第一次打不开？</summary><p>当前测试版暂未进行 Apple notarization。请在 Finder 的“应用程序”中找到 WindowStash Companion，右键选择“打开”，再确认“打开”。</p></details>
-        <details><summary>卸载 WindowStash 后 Workspace 会丢吗？</summary><p>如果 Workspace 已同步到你自己的 Supabase，卸载 Extension 不会删除 Supabase 中的数据。重新安装后连接原来的 Supabase，再登录原来的账号，就可以重新同步。但如果你删除了 Supabase Project，WindowStash 无法恢复已删除的云端数据。</p></details>
+        <details><summary>卸载 WindowStash 后 Workspace 会丢吗？</summary><p>已同步到 Supabase 的工作区不会因卸载扩展而从云端删除，重新连接原项目和账号后可同步。但卸载会失去扩展本地数据，尚未同步的修改和本地冲突副本不能依赖云端找回。不要将卸载作为更新步骤；删除 Supabase Project 后也无法由 WindowStash 恢复云端数据。</p></details>
       </div></section>
     </main>
   </div>

@@ -6,6 +6,7 @@ import { applySetupResources, externalizeGuideScript, generateExtensionGuide } f
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 describe('externalizeGuideScript', () => {
   it('moves the guide JavaScript into an external file', () => {
@@ -99,8 +100,11 @@ it('ships the complete initialization and separate upgrade instructions through 
     const source = await readFile('public/开始使用.html', 'utf8');
     await generateExtensionGuide('public/开始使用.html', directory);
     const generated = await readFile(join(directory, '开始使用.html'), 'utf8');
+    const standalonePath = join(directory, 'release-guide.html');
+    execFileSync(process.execPath, ['scripts/generate-release-guide.mjs', directory, standalonePath]);
+    const standalone = await readFile(standalonePath, 'utf8');
     const schema = await readFile('supabase/schema.sql', 'utf8');
-    for (const html of [source, generated]) {
+    for (const html of [source, generated, standalone]) {
       const { document } = parseHTML(html);
       expect(document.querySelector('#schema-code')?.textContent).toBe(schema.trimEnd());
       expect(document.body.textContent).toContain('20261014_workspace_sync_v1.sql');
@@ -108,5 +112,6 @@ it('ships the complete initialization and separate upgrade instructions through 
       expect(document.body.textContent).toContain('不要重新初始化项目');
     }
     expect(generated).toBe(externalizeGuideScript(source).html);
+    expect(externalizeGuideScript(standalone)).toEqual(externalizeGuideScript(source));
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
