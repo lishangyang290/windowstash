@@ -4,10 +4,10 @@ import { dirname, join } from 'node:path';
 import { URL } from 'node:url';
 
 export const releaseSqlFiles = {
-  'schema.sql': 'supabase/schema.sql',
+  '初始化数据库.sql': 'supabase/schema.sql',
 };
 
-export const packageEntries = (version, windows) => ['Chrome Extension', 'README.txt', 'schema.sql',
+export const packageEntries = (version, windows) => ['Chrome Extension', 'README.txt', '初始化数据库.sql',
   windows ? `WindowStash-v${version}-Windows-x64-setup.exe` : 'WindowStash Companion.app', '开始使用.html'].sort();
 
 export async function copyReleaseSql(root) {
@@ -19,7 +19,7 @@ export async function copyReleaseSql(root) {
 
 export function validateReleaseSql(root) {
   const files = readdirSync(root).filter(name => name.endsWith('.sql') || name === '旧版本升级').sort();
-  if (JSON.stringify(files) !== JSON.stringify(Object.keys(releaseSqlFiles).sort())) throw new Error('SQL 文件清单不正确：完整 ZIP 只包含 schema.sql');
+  if (JSON.stringify(files) !== JSON.stringify(Object.keys(releaseSqlFiles).sort())) throw new Error('SQL 文件清单不正确：完整 ZIP 只包含 初始化数据库.sql');
   for (const [destination, source] of Object.entries(releaseSqlFiles)) {
     const path = join(root, destination);
     if (!lstatSync(path).isFile() || !readFileSync(path).equals(readFileSync(new URL(`../${source}`, import.meta.url)))) {

@@ -111,7 +111,7 @@ it('ships the complete initialization and separate upgrade instructions through 
       expect(reminder.textContent).toContain('不要重复初始化');
       expect(reminder.textContent).toContain('不要删除原来的数据库');
       expect(reminder.textContent).toContain('旧版本升级');
-      expect(document.querySelector('#database')?.textContent).toContain('schema.sql');
+      expect(document.querySelector('#database')?.textContent).toContain('初始化数据库.sql');
       expect(document.querySelector('a[href$=".sql"]')).toBeNull();
       expect(reminder.querySelector('a')?.getAttribute('href')).toBe('https://github.com/lishangyang290/windowstash/blob/main/README.md#旧版本升级说明');
       expect(document.querySelector('dialog')).toBeNull();

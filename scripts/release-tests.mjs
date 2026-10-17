@@ -63,9 +63,9 @@ for (const [windows, version] of [[true, '0.6.0'], [false, '7.8.9']]) {
     for (const [destination, source] of Object.entries(releaseSqlFiles)) {
       assert((await readFile(resolve(unpackedRoot, destination))).equals(await readFile(resolve(root, source))), destination);
     }
-    await writeFile(resolve(unpackedRoot, 'schema.sql'), '\n', { flag: 'a' });
+    await writeFile(resolve(unpackedRoot, '初始化数据库.sql'), '\n', { flag: 'a' });
     assert.throws(() => validateReleaseSql(unpackedRoot), /不一致/);
-    assert.throws(() => validateGuidePackageTrees(guide.replace('├── schema.sql', '├── missing.sql'), version), /不一致/);
+    assert.throws(() => validateGuidePackageTrees(guide.replace('├── 初始化数据库.sql', '├── missing.sql'), version), /不一致/);
   });
 }
 
