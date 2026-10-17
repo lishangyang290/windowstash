@@ -1,16 +1,27 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { mkdtemp, readFile, writeFile, stat, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Buffer } from 'node:buffer';
-import { nativeHostBinary as binary } from './native-host-paths.mjs';
+import { nativeHostBinary } from './native-host-paths.mjs';
+// Optional installed Host path; WINDOWSTASH_VERIFY_WINDOWS_CONSOLE=1 probes only held fixture requests.
+const binary=process.argv[2]||nativeHostBinary;
 const root=await mkdtemp(join(tmpdir(),'windowstash-auth-flow-'));
 const origin='chrome-extension://'+'a'.repeat(32)+'/';
 const id='b'.repeat(64),route='c'.repeat(64),login='d'.repeat(64);
 let refreshes=0,user='account-A',mode='online',pendingRefresh,refreshStarted;
+const consoleChecks=[], hosts=new Set();
+async function checkConsole(path) {
+ if(process.platform!=='win32'||process.env.WINDOWSTASH_VERIFY_WINDOWS_CONSOLE!=='1'||consoleChecks.some(check=>check.path===path))return;
+ const {stdout}=await promisify(execFile)('powershell.exe',['-NoProfile','-NonInteractive','-File',fileURLToPath(new URL('./windows-console-probe.ps1',import.meta.url)),'-ParentIds',[...hosts].join(',')],{windowsHide:true,timeout:10000});
+ const check={path,...JSON.parse(stdout)};consoleChecks.push(check);console.log(JSON.stringify(check));
+}
 const server=createServer(async(req,res)=>{let body='';for await(const chunk of req)body+=chunk;
+ try {await checkConsole(req.url)}catch(error){res.destroy(error);return;}
  res.setHeader('Content-Type','application/json');
  if(req.url==='/auth/v1/user')return res.end(JSON.stringify({id:user}));
  if(req.url==='/auth/v1/token?grant_type=refresh_token') {
@@ -27,7 +38,7 @@ const server=createServer(async(req,res)=>{let body='';for await(const chunk of 
 async function exchange(action,extra={}) {
  const request={version:1,type:'auth',action,instance_id:id,capability:null,login_request:null,route_id:null,config:null,session:null,...extra};
  const payload=Buffer.from(JSON.stringify(request));const header=Buffer.alloc(4);header.writeUInt32LE(payload.length);
- return await new Promise((done,reject)=>{const child=spawn(binary,[origin],{env:{...process.env,WINDOWSTASH_BRIDGE_DIR:root},stdio:['pipe','pipe','ignore']});const chunks=[];child.stdout.on('data',c=>chunks.push(c));child.on('error',reject);child.on('close',()=>{try {const result=Buffer.concat(chunks);assert.equal(result.readUInt32LE(),result.length-4);done(JSON.parse(result.subarray(4).toString()))}catch(e){reject(e)}});child.stdin.end(Buffer.concat([header,payload]));});
+ return await new Promise((done,reject)=>{const child=spawn(binary,[origin],{windowsHide:true,detached:process.platform==='win32',env:{...process.env,WINDOWSTASH_BRIDGE_DIR:root},stdio:['pipe','pipe','ignore']});hosts.add(child.pid);const chunks=[];child.stdout.on('data',c=>chunks.push(c));child.on('error',reject);child.on('close',()=>{hosts.delete(child.pid);try {const result=Buffer.concat(chunks);assert.equal(result.readUInt32LE(),result.length-4);done(JSON.parse(result.subarray(4).toString()))}catch(e){reject(e)}});child.stdin.end(Buffer.concat([header,payload]));});
 }
 try {
  await new Promise((done,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',done)});
@@ -53,6 +64,10 @@ const initial={access_token:'fixture-access-1',refresh_token:'fixture-refresh-1'
  const stored=JSON.parse(await readFile(join(root,'accounts',id+'.json'),'utf8'));stored.session.expires_at=1;await writeFile(join(root,'accounts',id+'.json'),JSON.stringify(stored),{mode:0o600});
  assert.equal((await exchange('local',{capability})).session.expires_at,1);assert.equal(refreshes,0);
  const responses=await Promise.all(Array.from({length:6},()=>exchange('refresh',{capability})));assert.equal(refreshes,1);assert(responses.every(r=>r.session.refresh_token==='fixture-refresh-2'));
+ if(process.platform==='win32'&&process.env.WINDOWSTASH_VERIFY_WINDOWS_CONSOLE==='1') {
+  assert.equal(consoleChecks.length,2,'probe must capture both validation and refresh curl processes');
+  assert(consoleChecks.every(check=>check.window===0&&check.visible===false&&((check.consoleAttached&&check.error===0)||(!check.consoleAttached&&check.error===6))),'curl must have no console window');
+ }
  const resumed=await exchange('read',{capability});assert.equal(resumed.session.user.id,'account-A');
  await exchange('clear',{capability});assert.equal((await exchange('read',{capability})).session,null);
  user='account-B';const next={...initial,user:{id:user}};const changed=await exchange('replace',{capability,config,session:next});assert.equal(changed.session.user.id,'account-B');

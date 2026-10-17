@@ -84,7 +84,14 @@ fn network(
             json!(data.to_string())
         ));
     }
-    let mut child = Command::new("curl")
+    let mut command = Command::new("curl");
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = command
         .args([
             "--disable",
             "--silent",
