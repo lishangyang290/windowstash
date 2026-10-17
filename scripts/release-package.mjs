@@ -5,14 +5,9 @@ import { URL } from 'node:url';
 
 export const releaseSqlFiles = {
   'schema.sql': 'supabase/schema.sql',
-  '旧版本升级/20261014_workspace_sync_v1.sql': 'supabase/migrations/20261014_workspace_sync_v1.sql',
-  '旧版本升级/verify_workspace_sync_v1.sql': 'supabase/verify_workspace_sync_v1.sql',
-  '旧版本升级/inspect_workspace_sync.sql': 'supabase/inspect_workspace_sync.sql',
-  '旧版本升级/export_workspace_data.sql': 'supabase/export_workspace_data.sql',
-  '旧版本升级/check_workspace_sync_state.sql': 'supabase/check_workspace_sync_state.sql',
 };
 
-export const packageEntries = (version, windows) => ['Chrome Extension', 'README.txt', 'schema.sql', '旧版本升级',
+export const packageEntries = (version, windows) => ['Chrome Extension', 'README.txt', 'schema.sql',
   windows ? `WindowStash-v${version}-Windows-x64-setup.exe` : 'WindowStash Companion.app', '开始使用.html'].sort();
 
 export async function copyReleaseSql(root) {
@@ -23,8 +18,8 @@ export async function copyReleaseSql(root) {
 }
 
 export function validateReleaseSql(root) {
-  const expected = Object.keys(releaseSqlFiles).filter(path => path.startsWith('旧版本升级/')).map(path => path.split('/')[1]).sort();
-  if (JSON.stringify(readdirSync(join(root, '旧版本升级')).sort()) !== JSON.stringify(expected)) throw new Error('旧版本升级目录的 SQL 文件清单不正确');
+  const files = readdirSync(root).filter(name => name.endsWith('.sql') || name === '旧版本升级').sort();
+  if (JSON.stringify(files) !== JSON.stringify(Object.keys(releaseSqlFiles).sort())) throw new Error('SQL 文件清单不正确：完整 ZIP 只包含 schema.sql');
   for (const [destination, source] of Object.entries(releaseSqlFiles)) {
     const path = join(root, destination);
     if (!lstatSync(path).isFile() || !readFileSync(path).equals(readFileSync(new URL(`../${source}`, import.meta.url)))) {

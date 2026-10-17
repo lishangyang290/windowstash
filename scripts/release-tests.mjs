@@ -81,7 +81,10 @@ test('SQL 校验拒绝缺失、改动及多余文件', async (t) => {
     assert.throws(() => validateReleaseSql(directory));
     await writeFile(path, original);
   }
-  await writeFile(resolve(directory, '旧版本升级/unexpected.sql'), '');
+  await writeFile(resolve(directory, 'unexpected.sql'), '');
+  assert.throws(() => validateReleaseSql(directory), /清单不正确/);
+  await rm(resolve(directory, 'unexpected.sql'));
+  await mkdir(resolve(directory, '旧版本升级'));
   assert.throws(() => validateReleaseSql(directory), /清单不正确/);
 });
 
