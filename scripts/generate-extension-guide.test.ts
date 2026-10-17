@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { describe, expect, it, vi } from 'vitest';
-import { applySetupResources, externalizeGuideScript, generateExtensionGuide } from './generate-extension-guide';
+import { applySetupResources, externalizeGuideScript, generateExtensionGuide, upgradeSqlFiles } from './generate-extension-guide';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -95,13 +95,25 @@ describe('externalizeGuideScript', () => {
     expect(dialog.tagName).toBe('DIALOG');
     expect(dialog.querySelector('form[method="dialog"] button')?.textContent).toBe('关闭');
     expect(dialog.querySelector('details')).toBeNull();
+    expect(toast.parentElement).toBe(dialog);
+    for (const trigger of dialog.querySelectorAll<HTMLButtonElement>('[data-copy]')) {
+      copyFails = false;
+      trigger.click();
+      await new Promise((resolve) => globalThis.setTimeout(resolve, 0));
+      expect(clipboard).toBe(document.querySelector(trigger.dataset.copy!)!.textContent);
+      expect(clipboard).toContain('begin');
+    }
+    dialog.dispatchEvent(new document.defaultView!.Event('close'));
+    expect(toast.parentElement).toBe(document.body);
   });
 });
 
 it('keeps the standalone guide SQL and project settings aligned with shared setup resources', async () => {
   const source = await readFile('public/开始使用.html', 'utf8');
   const schema = await readFile('supabase/schema.sql', 'utf8');
-  expect(applySetupResources(source, schema)).toBe(source);
+  const upgrades = Object.fromEntries(await Promise.all(Object.entries(upgradeSqlFiles)
+    .map(async ([id, file]) => [id, await readFile(file, 'utf8')])));
+  expect(applySetupResources(source, schema, upgrades)).toBe(source);
   const stale = source.replace('create extension if not exists pgcrypto;', 'outdated SQL');
   expect(applySetupResources(stale, schema)).toBe(source);
 });
@@ -119,9 +131,11 @@ it('ships the complete initialization and separate upgrade instructions through 
     for (const html of [source, generated, standalone]) {
       const { document } = parseHTML(html);
       expect(document.querySelector('#schema-code')?.textContent).toBe(schema.trimEnd());
-      expect(document.body.textContent).toContain('20261014_workspace_sync_v1.sql');
-      expect(document.body.textContent).toContain('verify_workspace_sync_v1.sql');
-      expect(document.body.textContent).toContain('不要重新初始化项目');
+      for (const [id, file] of Object.entries(upgradeSqlFiles)) {
+        expect(document.querySelector(`#${id}`)?.textContent).toBe((await readFile(file, 'utf8')).trimEnd());
+        expect(document.querySelector(`[data-copy="#${id}"]`)).not.toBeNull();
+      }
+      expect(document.querySelector('#upgrade-intro')?.textContent).toContain('不要重新初始化');
     }
     expect(generated).toBe(externalizeGuideScript(source).html);
     expect(externalizeGuideScript(standalone)).toEqual(externalizeGuideScript(source));
