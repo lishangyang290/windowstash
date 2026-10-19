@@ -109,7 +109,7 @@ test('preparation with a missing payload leaves existing executable files intact
 test('graceful shutdown arguments and native identity work in installer Windows PowerShell', { skip: !windows }, () => {
   const script = readFileSync(helper, 'utf8');
   const code = script.match(/Add-Type -TypeDefinition @'\r?\n([\s\S]*?)\r?\n'@/)[1];
-  const argumentsCode = script.match(/      \$ids = [^\r\n]+\r?\n      \$starts = [^\r\n]+/)[0];
+  const argumentsCode = script.match(/ {6}\$ids = [^\r\n]+\r?\n {6}\$starts = [^\r\n]+/)[0];
   const command = `$ErrorActionPreference = 'Stop'\nAdd-Type -TypeDefinition @'\n${code}\n'@\n$companions = @([pscustomobject]@{ProcessId=$PID})\n${argumentsCode}\n$ids.GetType().FullName\n$starts.GetType().FullName\n[Runtime.InteropServices.Marshal]::SizeOf([type][WindowStashInstallerRestart+Application])`;
   for (const executable of ['System32', 'SysWOW64'].map(dir => join(process.env.WINDIR, dir, 'WindowsPowerShell/v1.0/powershell.exe'))) {
     const result = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(command, 'utf16le').toString('base64')], { encoding: 'utf8', windowsHide: true });
