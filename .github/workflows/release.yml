@@ -125,7 +125,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ github.event_name == 'push' && 'release' || 'validation' }}-${{ matrix.artifact }}
-          path: ${{ runner.temp }}/release-assets/*
+          path: ${{ runner.temp }}/release-assets/WindowStash-v${{ env.RELEASE_VERSION }}-${{ matrix.artifact }}.zip
           if-no-files-found: error
           retention-days: 7
   publish:

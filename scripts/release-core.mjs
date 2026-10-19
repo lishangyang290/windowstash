@@ -229,14 +229,16 @@ export async function recoverPrepared(run, root, journal, ownSession = false) {
   await restoreFiles(root, journal.files);
 }
 
-export async function runChecks(run, version) {
+export async function runChecks(run, version, platform = process.platform) {
   await run(process.execPath, ['scripts/validate-release-version.mjs', version], true);
   await run(process.execPath, ['--test', 'scripts/release-tests.mjs'], true);
   for (const prefix of [[], ['--prefix', 'companion']]) {
     for (const script of ['test', 'lint', 'typecheck', 'build']) {
       // Each existing build already runs the privacy validator in its own environment.
       const scope = prefix.length ? [] : script === 'test' ? ['--', '--exclude', 'companion/**']
-        : script === 'lint' ? ['--', '--ignore-pattern', 'companion/**'] : [];
+        : script === 'lint' ? ['--', '--ignore-pattern', 'companion/**']
+          // Keep parent-directory Bun globals out of the local macOS release check.
+          : script === 'typecheck' && platform === 'darwin' ? ['--', '--incremental', 'false', '--types', 'node,vite/client'] : [];
       await run('npm', [...prefix, 'run', script, ...scope], true);
     }
   }

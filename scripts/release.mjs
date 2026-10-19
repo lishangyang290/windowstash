@@ -132,12 +132,13 @@ export async function showResult(run, version, commit, {
       return;
     }
     const release = JSON.parse(await query(['release', 'view', `v${version}`, '--repo', repository, '--json', 'assets,url,isDraft,isPrerelease']));
-    const names = [`WindowStash-v${version}-macOS-arm64.zip`, `WindowStash-v${version}-Windows-x64.zip`, `WindowStash-v${version}-Windows-x64-setup.exe`];
+    const names = [`WindowStash-v${version}-macOS-arm64.zip`, `WindowStash-v${version}-Windows-x64.zip`];
     const assets = names.map((name) => release.assets.find((asset) => asset.name === name && asset.size > 0));
     ui.field('Workflow', workflow.url);
-    if (!release.isDraft && !release.isPrerelease && assets.every(Boolean)) {
+    if (!release.isDraft && !release.isPrerelease && assets.every(Boolean)
+      && JSON.stringify(release.assets.map((asset) => asset.name).sort()) === JSON.stringify([...names].sort())) {
       ui.success(`发布成功，macOS 与 Windows 正式附件已生成：${release.url}`);
-      for (const [index, label] of ['macOS ZIP 下载', 'Windows ZIP 下载', 'Windows 安装程序'].entries()) {
+      for (const [index, label] of ['macOS ZIP 下载', 'Windows ZIP 下载'].entries()) {
         const asset = assets[index];
         ui.field(label, asset.url || `https://github.com/${repository}/releases/download/v${version}/${asset.name}`);
       }

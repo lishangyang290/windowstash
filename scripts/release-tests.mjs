@@ -15,7 +15,7 @@ import { copyReleaseSql, validateReleaseSql, releaseSqlFiles, packageEntries, va
 const root = resolve(import.meta.dirname, '..');
 const standard = '当前版本：v0.3.0\n目标版本：0.4.0\n\n更新内容：\n- 修复重启后关联丢失\n- 新增教程入口\n\nmain HEAD：\n56b8e2fe30517972e54cfe9a5ba4befd822f924c\n测试：\n224 项通过';
 const silent = new Writable({ write(chunk, encoding, done) { done(); } });
-const releaseAssets = () => ['macOS-arm64.zip', 'Windows-x64.zip', 'Windows-x64-setup.exe'].map((suffix) => ({ name: `WindowStash-v0.4.0-${suffix}`, size: 100, url: 'https://example.test/download.zip' }));
+const releaseAssets = () => ['macOS-arm64.zip', 'Windows-x64.zip'].map((suffix) => ({ name: `WindowStash-v0.4.0-${suffix}`, size: 100, url: 'https://example.test/download.zip' }));
 
 for (const [windows, version] of [[true, '0.6.0'], [false, '7.8.9']]) {
   test(`SQL 完整 ZIP 保留仓库原始字节及教程目录：${windows ? 'Windows' : 'macOS'}`, async (t) => {
@@ -183,7 +183,7 @@ test('Windows 双击入口定位带空格中文路径，传参并保留退出码
   assert.match(missing.stdout, /缺少项目依赖/);
 });
 
-for (const scenario of ['macOnly', 'windowsOnly', 'missingInstaller', 'emptyWindows', 'draft', 'prerelease', 'failed', 'complete']) test(`双平台正式发布完整性：${scenario}`, async () => {
+for (const scenario of ['macOnly', 'windowsOnly', 'extraInstaller', 'extraPkg', 'extraFile', 'duplicate', 'emptyWindows', 'draft', 'prerelease', 'failed', 'complete']) test(`双平台正式发布完整性：${scenario}`, async () => {
   const harness = resultHarness();
   await showResult(async (program, args) => {
     if (args[0] === 'auth') return '';
@@ -194,11 +194,13 @@ for (const scenario of ['macOnly', 'windowsOnly', 'missingInstaller', 'emptyWind
     let assets = releaseAssets();
     if (scenario === 'macOnly') assets = assets.slice(0, 1);
     if (scenario === 'windowsOnly') assets = assets.slice(1);
-    if (scenario === 'missingInstaller') assets = assets.slice(0, 2);
+    if (scenario.startsWith('extra')) assets.push({ name: scenario === 'extraInstaller' ? 'WindowStash-v0.4.0-Windows-x64-setup.exe' : scenario === 'extraPkg' ? 'WindowStash-v0.4.0-macOS-arm64-setup.pkg' : 'unexpected.txt', size: 100 });
+    if (scenario === 'duplicate') assets.push(assets[0]);
     if (scenario === 'emptyWindows') assets[1].size = 0;
     return JSON.stringify({ isDraft: scenario === 'draft', isPrerelease: scenario === 'prerelease', assets });
   }, '0.4.0', 'abc', harness.options);
   assert.equal(harness.messages.some((text) => text.includes('发布成功')), scenario === 'complete');
+  assert.ok(!harness.messages.some((text) => text.includes('Windows 安装程序')));
 });
 
 test('PR 与手动 Actions 验证没有写权限或发布路径，只有成功的 Tag 发布任务可写', async () => {
@@ -213,23 +215,36 @@ test('PR 与手动 Actions 验证没有写权限或发布路径，只有成功�
   assert.match(publish, /if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith\(github.ref, 'refs\/tags\/v'\) && needs.build.result == 'success'/);
   assert.match(build, /ref: \$\{\{ github.event.pull_request.head.sha \|\| github.sha \}\}/);
   assert.match(build, /github.event_name == 'push' && 'release' \|\| 'validation'/);
+  assert.match(build, /path: \$\{\{ runner.temp \}\}\/release-assets\/WindowStash-v\$\{\{ env.RELEASE_VERSION \}\}-\$\{\{ matrix.artifact \}\}\.zip/);
   assert.match(publish, /contents: write/);
   assert.equal((source.match(/run: node scripts\/publish-release.mjs/g) ?? []).length, 1);
 });
 
-for (const scenario of ['success', 'existing', 'uploadFailure', 'missingAsset', 'corruptDownload', 'wrongTag', 'manual', 'pr']) test(`统一发布任务安全流程（完全模拟 gh）：${scenario}`, async (t) => {
+test('组装脚本将安装器保留在 ZIP 内，输出目录仅生成平台 ZIP 且必须通过实包校验', async () => {
+  const source = await readFile(resolve(root, 'scripts/assemble-release.mjs'), 'utf8');
+  assert.match(source, /copyFile\(join\(bundle, installers\[0\]\), join\(packageDir, installer\)\)/);
+  assert.match(source, /buildMacPackage\([^\n]+join\(packageDir, macInstallerName\(version\)\)/);
+  assert.doesNotMatch(source, /join\(output, installer\)/);
+  assert.match(source, /join\(output, `\$\{name\}-\$\{windows \? 'Windows-x64' : 'macOS-arm64'\}\.zip`\)/);
+  assert.match(source, /'scripts\/validate-release-artifact.mjs', packageDir, zipPath, version/);
+});
+
+for (const scenario of ['success', 'existing', 'uploadFailure', 'missingAsset', 'extraAsset', 'wrongSize', 'corruptDownload', 'wrongTag', 'manual', 'pr', 'localMissing', 'localExtra', 'localEmpty']) test(`统一发布任务安全流程（完全模拟 gh）：${scenario}`, async (t) => {
   const directory = await mkdtemp(resolve(tmpdir(), 'windowstash-publish-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const names = releaseAssets().map((asset) => asset.name).sort();
   await mkdir(resolve(directory, 'release-assets'));
   await mkdir(resolve(directory, '.github/release-notes'), { recursive: true });
   for (const name of names) await writeFile(resolve(directory, 'release-assets', name), 'fixture artifact', 'utf8');
+  if (scenario === 'localMissing') await rm(resolve(directory, 'release-assets', names[0]));
+  if (scenario === 'localExtra') await writeFile(resolve(directory, 'release-assets/WindowStash-v0.4.0-Windows-x64-setup.exe'), 'fixture', 'utf8');
+  if (scenario === 'localEmpty') await writeFile(resolve(directory, 'release-assets', names[0]), '', 'utf8');
   await writeFile(resolve(directory, '.github/release-notes/v0.4.0.md'), '- 模拟更新说明\n', 'utf8');
   const mock = resolve(directory, 'gh-mock.mjs');
   await writeFile(mock, `
 import childProcess from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 const scenario = ${JSON.stringify(scenario)}, names = ${JSON.stringify(names)};
 childProcess.spawnSync = (program, args) => {
@@ -242,7 +257,8 @@ childProcess.spawnSync = (program, args) => {
   return scenario === 'existing' ? ok({id:1}) : fail('gh: Not Found (HTTP 404)');
  }
  if (args[1] === 'upload' && scenario === 'uploadFailure') return fail('upload failed');
- if (args[1] === 'view') return ok({isDraft:true,isPrerelease:false,assets:(scenario === 'missingAsset' ? names.slice(1) : names).map(name => ({name,size:16}))});
+ if (args[1] === 'create') writeFileSync('body.md', readFileSync(args[args.indexOf('--notes-file')+1]));
+ if (args[1] === 'view') return ok({isDraft:true,isPrerelease:false,assets:(scenario === 'missingAsset' ? names.slice(1) : scenario === 'extraAsset' ? [...names, 'unexpected.exe'] : names).map(name => ({name,size:scenario === 'wrongSize' ? 17 : 16}))});
  if (args[1] === 'download') {
   const destination = args[args.indexOf('--dir')+1]; mkdirSync(destination);
   for (const name of names) writeFileSync(join(destination,name), scenario === 'corruptDownload' ? 'corrupt artifact' : 'fixture artifact', 'utf8');
@@ -257,12 +273,17 @@ syncBuiltinESMExports();
   });
   assert.ifError(result.error);
   assert.equal(result.status, scenario === 'success' ? 0 : 1, result.stderr);
-  const calls = ['manual', 'pr'].includes(scenario) ? [] : (await readFile(resolve(directory, 'calls.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+  const calls = ['manual', 'pr', 'localMissing', 'localExtra', 'localEmpty'].includes(scenario) ? [] : (await readFile(resolve(directory, 'calls.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
   assert.equal(calls.some((args) => args[1] === 'edit'), scenario === 'success');
   assert.ok(calls.every((args) => !args.includes('--clobber')));
-  if (['existing', 'wrongTag', 'manual', 'pr'].includes(scenario)) assert.ok(!calls.some((args) => args[1] === 'create'));
+  if (['existing', 'wrongTag', 'manual', 'pr', 'localMissing', 'localExtra', 'localEmpty'].includes(scenario)) assert.ok(!calls.some((args) => args[1] === 'create'));
   else assert.ok(calls.find((args) => args[1] === 'create')?.includes('--draft'));
   if (scenario === 'success') {
+    const upload = calls.find((args) => args[1] === 'upload');
+    assert.deepEqual(upload.slice(3, upload.indexOf('--repo')).map((path) => path.split(/[\\/]/).at(-1)).sort(), names);
+    const body = await readFile(resolve(directory, 'body.md'), 'utf8');
+    assert.equal((body.match(/https:\/\/github.com\/[^)]+\/releases\/download\//g) ?? []).length, 2);
+    assert.doesNotMatch(body, /setup\.exe|setup\.pkg/);
     assert.deepEqual(calls.filter((args) => args[0] === 'release').map((args) => args[1]), ['create', 'upload', 'view', 'download', 'edit']);
     assert.ok(calls.at(-1).includes('--draft=false'));
   }
@@ -504,6 +525,21 @@ test('测试失败中断检查，绝不调用提交或推送', async () => {
   const commands = [];
   await assert.rejects(runChecks(async (program, args) => { commands.push([program, ...args]); if (args.includes('test')) throw new Error('tests failed'); }, '0.4.0'), /failed/);
   assert.ok(!commands.some((cmd) => cmd.includes('push') || cmd.includes('commit')));
+});
+
+for (const platform of ['darwin', 'win32', 'linux']) test(`发布类型检查仅对 Mac Extension 隔离上级全局类型：${platform}`, async () => {
+  const commands = [];
+  await runChecks(async (program, args) => { commands.push([program, ...args]); }, '0.6.0', platform);
+  const checks = commands.filter((cmd) => cmd.includes('typecheck'));
+  assert.deepEqual(checks, [
+    ['npm', 'run', 'typecheck', ...(platform === 'darwin' ? ['--', '--incremental', 'false', '--types', 'node,vite/client'] : [])],
+    ['npm', '--prefix', 'companion', 'run', 'typecheck'],
+  ]);
+  assert.equal(commands.filter((cmd) => cmd.includes('build')).length, 2);
+  await assert.rejects(runChecks(async (program, args) => {
+    if (args.includes('typecheck')) throw new Error('typecheck failed');
+    assert.ok(!args.includes('build'));
+  }, '0.6.0', platform), /typecheck failed/);
 });
 
 async function fixture(t, sourceRoot = root) {

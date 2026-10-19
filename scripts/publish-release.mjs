@@ -16,7 +16,7 @@ function gh(args, allowMissing = false) {
   return result.stdout;
 }
 const base = `WindowStash-${tag}`;
-const names = [`${base}-macOS-arm64.zip`, `${base}-Windows-x64.zip`, `${base}-Windows-x64-setup.exe`].sort();
+const names = [`${base}-macOS-arm64.zip`, `${base}-Windows-x64.zip`].sort();
 const directory = resolve('release-assets');
 if (JSON.stringify((await readdir(directory)).sort()) !== JSON.stringify(names)) throw new Error('双平台附件缺失或包含额外文件，停止发布');
 const files = names.map((name) => join(directory, name));
@@ -29,7 +29,7 @@ if (gh(['api', `repos/${repository}/releases/tags/${tag}`], true) !== null) thro
 const temporary = await mkdtemp(join(tmpdir(), 'windowstash-publish-'));
 const body = join(temporary, 'release-body.md');
 const download = (name) => `https://github.com/${repository}/releases/download/${tag}/${name}`;
-await writeFile(body, `# WindowStash ${tag}\n\n<details>\n<summary>版本更新说明</summary>\n\n${notes}\n</details>\n\n## 下载地址\n\n### macOS\n\n- [Apple Silicon arm64 完整安装包](${download(`${base}-macOS-arm64.zip`)})\n\n### Windows\n\n- [Windows x64 完整安装包（含 Chrome 扩展及教程）](${download(`${base}-Windows-x64.zip`)})\n- [Windows x64 NSIS 安装程序](${download(`${base}-Windows-x64-setup.exe`)})\n\n首次安装请下载完整安装包，解压后打开「开始使用.html」。\n`, 'utf8');
+await writeFile(body, `# WindowStash ${tag}\n\n<details>\n<summary>版本更新说明</summary>\n\n${notes}\n</details>\n\n## 下载地址\n\n### macOS\n\n- [Apple Silicon arm64 完整安装包](${download(`${base}-macOS-arm64.zip`)})\n\n### Windows\n\n- [Windows x64 完整安装包（含 Chrome 扩展及教程）](${download(`${base}-Windows-x64.zip`)})\n\n首次安装请下载完整安装包，解压后打开「开始使用.html」。\n`, 'utf8');
 // Any failed upload or audit leaves only a draft; never clobber existing assets.
 gh(['release', 'create', tag, '--repo', repository, '--verify-tag', '--draft', '--title', `WindowStash ${tag}`, '--notes-file', body]);
 gh(['release', 'upload', tag, ...files, '--repo', repository]);

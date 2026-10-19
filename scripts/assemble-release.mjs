@@ -25,7 +25,6 @@ if (windows) {
   if (installers.length !== 1) throw new Error('必须且只能生成一个 NSIS 安装程序');
   const installer = `${name}-Windows-x64-setup.exe`;
   await copyFile(join(bundle, installers[0]), join(packageDir, installer));
-  await copyFile(join(bundle, installers[0]), join(output, installer));
 } else {
   buildMacPackage('companion/src-tauri/target/release/bundle/macos/WindowStash Companion.app', join(packageDir, macInstallerName(version)), version);
 }
