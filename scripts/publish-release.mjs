@@ -29,7 +29,7 @@ if (gh(['api', `repos/${repository}/releases/tags/${tag}`], true) !== null) thro
 const temporary = await mkdtemp(join(tmpdir(), 'windowstash-publish-'));
 const body = join(temporary, 'release-body.md');
 const download = (name) => `https://github.com/${repository}/releases/download/${tag}/${name}`;
-await writeFile(body, `# WindowStash ${tag}\n\n<details>\n<summary>版本更新说明</summary>\n\n${notes}\n</details>\n\n## 下载地址\n\n### macOS\n\n- [Apple Silicon arm64 完整安装包](${download(`${base}-macOS-arm64.zip`)})\n\n### Windows\n\n- [Windows x64 完整安装包](${download(`${base}-Windows-x64.zip`)})\n\n首次安装请下载完整安装包，解压后打开「开始使用.html」。\n`, 'utf8');
+await writeFile(body, `# WindowStash ${tag}\n\n<details>\n<summary>版本更新说明</summary>\n\n${notes}\n</details>\n\n## 下载地址\n\n### macOS\n\n- [苹果M芯片 完整安装包](${download(`${base}-macOS-arm64.zip`)})\n\n### Windows\n\n- [Windows x64 完整安装包](${download(`${base}-Windows-x64.zip`)})\n\n首次安装请下载完整安装包，解压后打开「开始使用.html」。\n`, 'utf8');
 // Any failed upload or audit leaves only a draft; never clobber existing assets.
 gh(['release', 'create', tag, '--repo', repository, '--verify-tag', '--draft', '--title', `WindowStash ${tag}`, '--notes-file', body]);
 gh(['release', 'upload', tag, ...files, '--repo', repository]);
