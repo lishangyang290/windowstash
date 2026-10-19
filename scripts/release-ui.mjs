@@ -69,9 +69,9 @@ export function workflowProgress(workflow) {
         : job.name ? [`${job.name} · ${job.conclusion ?? job.status ?? '未知'}`] : [];
   });
   const status = workflow?.status ?? 'waiting';
-  const labels = { waiting: '等待 Workflow', queued: '排队中', pending: '等待中', waiting_for_review: '等待审核', in_progress: '构建中', completed: '已结束' };
+  const labels = { waiting: '等待构建启动', queued: '排队中', pending: '等待中', waiting_for_review: '等待审核', in_progress: '构建中', completed: '已结束' };
   return [
-    `Actions  ${labels[status] ?? status}${workflow?.conclusion ? ` · ${workflow.conclusion}` : ''}`,
+    `发布进度  ${labels[status] ?? status}${workflow?.conclusion ? ` · ${workflow.conclusion}` : ''}`,
     steps.length ? `步骤  已结束 ${completed.length}/${steps.length}（成功 ${completed.filter((step) => step.conclusion === 'success').length}，跳过 ${completed.filter((step) => step.conclusion === 'skipped').length}，未成功 ${failed.length}）` : '步骤  尚未获取，进度未知',
     `任务  ${[...jobs.flatMap((job) => (job.steps ?? []).filter((step) => step.status === 'completed' && !['success', 'skipped'].includes(step.conclusion)).map((step) => `${job.name} · ${taskName(step.name)} · ${step.conclusion ?? '未知'}`)), ...current].join('；') || (status === 'completed' ? workflow.conclusion === 'success' ? '检查双平台 Release 附件' : '查看 Workflow 及 Job 日志' : '等待 GitHub 更新任务状态')}`,
   ];

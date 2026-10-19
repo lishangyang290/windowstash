@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import { readFile, unlink, access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';
-import { parseRelease, command, localState, preflight, checkRemote, planFiles, applyFiles, saveJournal, recoverPrepared, runChecks, publish, recoveryPlan, repository } from './release-core.mjs';
+import { parseRelease, command, localState, preflight, checkRemote, planFiles, applyFiles, saveJournal, recoverPrepared, runChecks, publish, recoveryPlan, inspectRelease, versionPattern, repository } from './release-core.mjs';
 
 export function inputLines(input, output) {
   const ui = terminalUI(output);
@@ -14,16 +14,17 @@ export function inputLines(input, output) {
     async ask(prompt) {
       output.write(ui.prompt(prompt));
       const next = await iterator.next();
-      if (next.done) throw new Error('输入已结束，发布取消。');
+      if (next.done || next.value.trim() === ':cancel') throw new Error('输入已结束或用户取消，发布取消。');
       return next.value.trim();
     },
-    async paste(prompt) {
+    async paste(prompt, versionShortcut = false) {
       output.write(ui.paste(prompt));
       const lines = [];
       while (true) {
         const next = await iterator.next();
         if (next.done || next.value.trim() === ':cancel') throw new Error('发布取消。');
         if (next.value.trim() === ':end') return lines.join('\n');
+        if (versionShortcut && lines.every(line => !line.trim()) && /^v?\d+\.\d+\.\d+$/.test(next.value.trim())) return next.value.trim();
         lines.push(next.value);
       }
     },
@@ -33,33 +34,20 @@ export function inputLines(input, output) {
 
 export async function editRelease(io, current, log = console.log) {
   const ui = terminalUI(process.stdout, log);
-  ui.section('步骤 1 / 4 · 粘贴发布信息');
-  let result = parseRelease(await io.paste('请粘贴 ChatGPT 或 Codex 提供的完整发布信息。'));
-  while (true) {
-    if (!result.version && result.candidates.length > 1) {
-      ui.warning('检测到多个目标版本，请选择。');
-      ui.list(result.candidates.map((v, i) => `${i + 1}.  v${v}`));
-      const choice = await io.ask('请选择编号，或直接输入目标 X.Y.Z：');
-      result.version = result.candidates[Number(choice) - 1] ?? choice.replace(/^v/, '');
-    }
-    if (!result.version) result.version = (await io.ask('未识别目标版本，请输入 X.Y.Z：')).replace(/^v/, '');
-    if (!result.notes.length) result.notes = manualNotes(await io.paste('未识别更新说明，请补充，每行一条。'));
-    ui.section('识别结果');
-    ui.field('当前版本', ui.bold(`v${current}`));
-    ui.field('目标版本', ui.bold(`v${result.version}`));
-    ui.hint('更新说明');
-    ui.list(result.notes.map((n, i) => `${i + 1}.  ${n}`));
-    ui.hint(`即将创建：v${result.version}`);
-    if (result.commit || result.tests) ui.hint(`粘贴的提交与测试信息仅供参考：\n${[result.commit, result.tests].filter(Boolean).map((line) => `  ${line}`).join('\n')}`);
-    ui.section('确认识别结果');
-    ui.list(['1.  不需要，继续', '', '2.  修改目标版本', '3.  修改更新说明', '4.  重新粘贴', '', '5.  取消']);
-    const choice = await io.ask('请选择 [1–5]：');
-    if (choice === '1') return result;
-    if (choice === '2') result.version = (await io.ask('目标版本 X.Y.Z：')).replace(/^v/, '');
-    if (choice === '3') result.notes = manualNotes(await io.paste('请粘贴更新说明，每行一条。'));
-    if (choice === '4') result = parseRelease(await io.paste('请重新粘贴完整发布信息。'));
-    if (choice === '5') throw new Error('发布取消。');
+  ui.section('发布信息');
+  const source = await io.paste('请输入要发布的版本，或粘贴完整发布信息。单独版本号可直接按 Enter 提交。', true);
+  const result = /^v?\d+\.\d+\.\d+$/.test(source.trim())
+    ? { version: source.trim().replace(/^v/, ''), notes: [] } : parseRelease(source);
+  if (!result.version && result.candidates?.length > 1) {
+    ui.warning('检测到多个目标版本，请选择。');
+    ui.list(result.candidates.map((v, i) => `${i + 1}.  v${v}`));
+    const choice = await io.ask('请选择编号，或直接输入目标 X.Y.Z：');
+    result.version = result.candidates[Number(choice) - 1] ?? choice.replace(/^v/, '');
   }
+  if (!result.version) result.version = (await io.ask('未识别目标版本，请输入 X.Y.Z：')).replace(/^v/, '');
+  if (!versionPattern.test(result.version)) throw new Error('目标版本必须为 X.Y.Z，不能含前导零或预发布后缀。');
+  ui.field('目标版本', ui.bold(`v${result.version}`));
+  return result;
 }
 const manualNotes = (text) => text.split('\n').map((line) => line.trim().replace(/^(?:[-*+•]\s+|\d+[.)]\s+)/, '')).filter(Boolean);
 
@@ -72,33 +60,54 @@ export async function releaseExists(version) {
   return true;
 }
 
-export async function chooseMode(io, ui = terminalUI()) {
-  ui.list(['1.  发布新版本', '2.  恢复失败的发布', '3.  取消']);
-  const mode = await io.ask('请选择 [1–3]：');
-  if (!['1', '2'].includes(mode)) throw new Error('发布取消。');
-  return mode;
-}
-
 export async function recoverRelease(run, io, version, {
-  ui = terminalUI(), dry = false, active = () => {}, track = showResult, display = liveProgress(),
+  ui = terminalUI(), dry = false, active = () => {}, track = showResult, display = liveProgress(), verbose = false,
 } = {}) {
   const plan = await recoveryPlan(run, version);
-  ui.section('恢复失败的发布');
+  ui.section('检测到上次发布未完成');
   ui.field('版本', plan.tag);
-  ui.field('Tag SHA', plan.sha);
-  ui.field('原 Workflow', plan.url);
-  ui.field('原状态', `${plan.conclusion} · attempt ${plan.attempt}`);
-  ui.field('双平台验证', `https://github.com/${repository}/actions/runs/${plan.validationId}`);
-  ui.hint('确认后重新运行原 Workflow 的全部 Jobs：Windows、macOS、Publish。');
+  ui.field('上次状态', plan.conclusion === 'cancelled' ? '已取消' : '失败');
+  ui.field('原因', plan.conclusion === 'cancelled' ? '正式构建尚未完成' : '上次正式构建未通过，请查看构建详情');
+  ui.field('接下来', '重新运行 Windows 和 macOS 构建，完成正式发布');
+  ui.field('构建详情', plan.url);
+  if (verbose) {
+    ui.field('Tag SHA', plan.sha);
+    ui.field('Workflow / attempt', `${plan.workflowId} / ${plan.attempt}`);
+    ui.field('双平台验证', `https://github.com/${repository}/actions/runs/${plan.validationId}`);
+  }
   if (dry) { ui.hint('只读预演结束，未重新运行 Workflow。'); return; }
-  if (await io.ask(`请输入完整的「恢复发布 ${plan.tag}」确认，其他输入均取消：`) !== `恢复发布 ${plan.tag}`) throw new Error('用户取消恢复发布。');
+  ui.list(['1.  继续', '2.  取消']);
+  if (await io.ask('是否继续完成本次发布？') !== '1') throw new Error('用户取消发布。');
+  if (await io.ask(`请输入完整的「发布 ${plan.tag}」确认，其他输入均取消：`) !== `发布 ${plan.tag}`) throw new Error('用户取消恢复发布。');
   active();
   if (JSON.stringify(await recoveryPlan(run, version)) !== JSON.stringify(plan)) throw new Error('确认期间恢复条件发生变化，请重新检查，未重跑 Workflow。');
   active();
   try { await run('gh', ['run', 'rerun', String(plan.workflowId), '--repo', repository], false, 30000); }
   catch (error) { throw new Error(`重跑请求未确认，请先查看 ${plan.url} 的最新 attempt；禁止盲目重试：${error.message}`, { cause: error }); }
-  ui.hint(`已请求重跑原 Workflow，等待 attempt ${plan.attempt + 1}（最多 15 分钟）。`);
-  await track(run, version, plan.sha, { wait: true, active, ui, display, workflowId: plan.workflowId, attempt: plan.attempt + 1 });
+  ui.hint('已请求重新构建，正在等待启动（最多 15 分钟）。');
+  await track(run, version, plan.sha, { wait: true, active, ui, display, verbose, workflowId: plan.workflowId, attempt: plan.attempt + 1 });
+}
+
+export async function handleReleaseState(run, io, version, state, {
+  ui = terminalUI(), dry = false, active = () => {}, track = showResult, display = liveProgress(), verbose = false,
+} = {}) {
+  if (state.kind === 'new') return false;
+  if (state.kind === 'published') {
+    ui.success(`v${version} 已经发布完成，无需重复发布。`);
+    ui.field('下载页面', state.releaseUrl);
+  } else if (state.kind === 'recover') {
+    await recoverRelease(run, io, version, { ui, dry, active, track, display, verbose });
+  } else if (state.kind === 'running') {
+    ui.hint(`v${version} 正在构建，无需重复启动。`);
+    ui.field('构建详情', state.url);
+    if (!dry) {
+      ui.list(['1.  查看现有进度', '2.  取消']);
+      if (await io.ask('是否继续查看进度？') === '1') await track(run, version, state.sha, {
+        wait: true, active, ui, display, verbose, workflowId: state.workflowId, attempt: state.attempt,
+      });
+    }
+  } else throw new Error('无法确定发布状态，已安全停止。');
+  return true;
 }
 
 export async function showResult(run, version, commit, {
@@ -106,17 +115,18 @@ export async function showResult(run, version, commit, {
   now = Date.now, sleep = (ms) => new Promise((done) => globalThis.setTimeout(done, ms)),
   timeout = 15 * 60 * 1000,
   fetch: request = globalThis.fetch,
-  workflowId, attempt,
+  workflowId, attempt, verbose = false,
 } = {}) {
-  if (workflowId !== undefined && (!Number.isSafeInteger(workflowId) || workflowId < 1 || !Number.isSafeInteger(attempt) || attempt < 2)) throw new Error('恢复 Workflow ID 或 attempt 无效。');
+  if (workflowId !== undefined && (!Number.isSafeInteger(workflowId) || workflowId < 1 || !Number.isSafeInteger(attempt) || attempt < 1)) throw new Error('Workflow ID 或 attempt 无效。');
   const releaseUrl = `https://github.com/${repository}/releases/tag/v${version}`;
   ui.section('步骤 4 / 4 · 发布结果');
-  ui.field('版本提交', commit);
-  if (workflowId) ui.field('恢复目标', `Workflow ${workflowId} · attempt ${attempt}`);
-  else { ui.success('main 已推送'); ui.success(`Tag v${version} 已推送`); }
-  ui.hint('远端页面');
-  ui.field('GitHub Actions', `https://github.com/${repository}/actions/workflows/release.yml`);
-  ui.field('GitHub Release', releaseUrl);
+  ui.field('版本', `v${version}`);
+  if (verbose) {
+    ui.field('版本提交', commit);
+    if (workflowId) ui.field('跟踪目标', `Workflow ${workflowId} · attempt ${attempt}`);
+  }
+  ui.field('构建详情', workflowId ? `https://github.com/${repository}/actions/runs/${workflowId}` : `https://github.com/${repository}/actions/workflows/release.yml`);
+  if (verbose) ui.field('Release 页面', releaseUrl);
   const started = now(), deadline = started + timeout;
   let workflow, timer, publicApi = false, connection = '';
   const diagnostics = [];
@@ -213,8 +223,8 @@ export async function showResult(run, version, commit, {
           }
           workflow = { databaseId: detail.id, status: detail.status, conclusion: detail.conclusion, url: detail.html_url, jobs };
           lines = workflowProgress(workflow);
-          lines[0] += ` · attempt ${attempt}`;
-        } else connection = `等待新的 attempt ${attempt}（远端仍为 ${detail.run_attempt}）`;
+          if (verbose) lines[0] += ` · attempt ${attempt}`;
+        } else connection = verbose ? `等待新的 attempt ${attempt}（远端仍为 ${detail.run_attempt}）` : '正在等待本次构建启动';
       } else {
         const runs = workflow ? [workflow] : JSON.parse(await query(['run', 'list', '--repo', repository, '--workflow', 'release.yml', '--event', 'push', '--commit', commit, '--limit', '10', '--json', 'databaseId,status,conclusion,url,headBranch,headSha']));
         const match = runs.find((item) => item.headBranch === `v${version}` && item.headSha === commit);
@@ -235,7 +245,7 @@ export async function showResult(run, version, commit, {
     }
     globalThis.clearInterval(timer);
     if (workflow.conclusion !== 'success') {
-      ui.field('Workflow', workflow.url);
+      ui.field('构建详情', workflow.url);
       ui.error(`构建未成功：${workflow.conclusion}。请打开 Workflow 查看日志。`);
       return;
     }
@@ -247,7 +257,7 @@ export async function showResult(run, version, commit, {
     const release = JSON.parse(await query(['release', 'view', `v${version}`, '--repo', repository, '--json', 'assets,url,isDraft,isPrerelease']));
     const names = [`WindowStash-v${version}-macOS-arm64.zip`, `WindowStash-v${version}-Windows-x64.zip`];
     const assets = names.map((name) => release.assets.find((asset) => asset.name === name && asset.size > 0));
-    ui.field('Workflow', workflow.url);
+    ui.field('构建详情', workflow.url);
     if (!release.isDraft && !release.isPrerelease && assets.every(Boolean)
       && JSON.stringify(release.assets.map((asset) => asset.name).sort()) === JSON.stringify([...names].sort())) {
       ui.success(`发布成功，macOS 与 Windows 正式附件已生成：${release.url}`);
@@ -262,7 +272,7 @@ export async function showResult(run, version, commit, {
     let cancelled = false;
     try { active(); } catch { cancelled = true; }
     render();
-    if (workflow?.url) ui.field('最后确认的 Workflow', workflow.url);
+    if (workflow?.url) ui.field('最后确认的构建详情', workflow.url);
     ui.warning(cancelled ? '已结束等待；以上为最后查询的实际状态，Release 尚未确认，请打开远端页面。'
       : now() >= deadline ? '等待超时；以上为最后查询的实际状态，Release 尚未确认，请打开远端页面。'
       : '无法自动确认远端状态；以上为最后查询的实际状态，请查看 GitHub 页面及下方查询诊断。Tag 推送成功不代表 Release 已完成。');
@@ -282,7 +292,7 @@ export async function main(args = process.argv.slice(2)) {
   if (args.includes('--help')) {
     ui.section('WindowStash Release');
     ui.list(['双击 WindowStash Release.command（macOS）或 WindowStash Release.cmd（Windows），也可 npm run release', '', '--dry-run   只读预演', '--restore   恢复未提交的发布准备', '--verbose   显示底层命令及完整检查输出']);
-    ui.hint('粘贴以 :end 结束，:cancel 取消。');
+    ui.hint('单独输入版本号可按 Enter 提交；多行内容以 :end 结束，:cancel 取消。输入后自动检查发布状态。');
     return;
   }
   const run = presentedCommand(command(root), ui, verbose);
@@ -314,17 +324,17 @@ export async function main(args = process.argv.slice(2)) {
     ui.field('当前分支', ui.bold(initial.branch));
     if (initial.status) ui.warning('Git 状态：有未提交改动');
     else ui.success('Git 状态：正常');
-    const mode = dry ? '1' : await chooseMode(io, ui);
-    if (mode === '2') {
-      await recoverRelease(guardedRun, io, current, { ui, active: ensureActive, display: liveProgress(process.stdout, undefined, !verbose) });
-      return;
-    }
-    ui.hint('准备创建新版本。');
-    const { version, notes } = await editRelease(io, current);
+    const input = await editRelease(io, current);
+    const { version } = input;
     ui.section('步骤 2 / 4 · 检查发布条件');
-    ui.pending('Git、版本、Tag 与 Release（只读远端查询）');
+    ui.pending('检查当前版本和远端发布状态');
+    let detected;
+    try { detected = await inspectRelease(guardedRun, version, current, releaseExists); }
+    catch (error) { throw new Error(`无法确认 v${version} 的发布状态，未执行发布操作：${error.message}`, { cause: error }); }
+    if (await handleReleaseState(guardedRun, io, version, detected, { ui, dry, active: ensureActive, verbose, display: liveProgress(process.stdout, undefined, !verbose) })) return;
+    const notes = input.notes.length ? input.notes : manualNotes(await io.paste('请补充本次更新说明，每行一条。'));
     const state = await preflight(guardedRun, version, current, notes, releaseExists);
-    ui.success('Git、版本、Tag 与 Release 检查');
+    ui.success('版本和远端状态检查');
     await guardedRun(process.execPath, ['scripts/validate-release-version.mjs', current], true);
     const files = await planFiles(root, version, notes);
     if (dry) {
@@ -370,13 +380,16 @@ export async function main(args = process.argv.slice(2)) {
     ui.hint('更新说明');
     ui.list(notes.map((n) => `- ${n}`));
     ui.hint('已通过的检查');
-    ui.list(['Git / 远端 / Tag / Release', '九处版本一致性', '两端 Test / Lint / Typecheck / Build / 隐私检查', 'git diff --check']);
-    ui.hint('本次变更文件');
-    ui.list(files.map((f) => f.path));
-    ui.hint('即将创建');
-    ui.field('Commit', `chore(release): v${version}`);
-    ui.field('Tag', `v${version}`);
-    ui.field('GitHub 仓库', repository);
+    ui.list(['版本和远端状态', '版本声明一致性', '扩展与 Companion 的测试、代码、类型、构建及隐私检查', '文件格式检查']);
+    ui.hint('接下来');
+    ui.list(['保存版本更新并同步 main', '构建并校验 Windows 和 macOS 完整安装包', '公开发布两个 ZIP']);
+    if (verbose) {
+      ui.hint('本次变更文件');
+      ui.list(files.map((f) => f.path));
+      ui.field('Commit', `chore(release): v${version}`);
+      ui.field('Tag', `v${version}`);
+      ui.field('GitHub 仓库', repository);
+    }
     await guardedRun('git', ['diff', '--stat'], true);
     if (await io.ask(`所有检查已通过，是否正式发布 v${version}？\n  请输入完整的「发布 v${version}」确认，其他输入均取消：`) !== `发布 v${version}`) throw new Error('用户取消发布。');
     await verifyPrepared();
@@ -388,7 +401,7 @@ export async function main(args = process.argv.slice(2)) {
     await unlink(journalPath);
     journal = null;
     ui.hint('等待 GitHub Actions 完成（最多 15 分钟；Ctrl+C 可停止等待）。');
-    await showResult(run, version, progress.commit, { wait: true, active: ensureActive, display: liveProgress(process.stdout, undefined, !verbose) });
+    await showResult(run, version, progress.commit, { wait: true, active: ensureActive, verbose, display: liveProgress(process.stdout, undefined, !verbose) });
   } catch (error) {
     if (journal && !publishing) {
       try { await recoverPrepared(run, root, journal, true); await unlink(journalPath); ui.success('本次准备的版本改动已恢复。'); }

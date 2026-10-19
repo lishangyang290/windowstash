@@ -7,9 +7,9 @@ import { pathToFileURL } from 'node:url';
 import { Readable, Writable } from 'node:stream';
 import { spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
-import { command, npmInvocation, parseRelease, validateInput, planFiles, applyFiles, restoreFiles, saveJournal, recoverPrepared, preflight, runChecks, publish, recoveryPlan } from './release-core.mjs';
+import { command, npmInvocation, parseRelease, validateInput, planFiles, applyFiles, restoreFiles, saveJournal, recoverPrepared, preflight, runChecks, publish, recoveryPlan, inspectRelease } from './release-core.mjs';
 import { terminalUI, presentedCommand, workflowProgress, liveProgress } from './release-ui.mjs';
-import { inputLines, editRelease, showResult, chooseMode, recoverRelease } from './release.mjs';
+import { inputLines, editRelease, showResult, recoverRelease, handleReleaseState } from './release.mjs';
 import { copyReleaseSql, validateReleaseSql, releaseSqlFiles, packageEntries, validateGuidePackageTrees } from './release-package.mjs';
 
 const root = resolve(import.meta.dirname, '..');
@@ -572,8 +572,8 @@ test('EOF 和 :cancel 停止', async () => {
     const input = io(lines); await assert.rejects(input.paste(''), /取消/); input.close();
   }
 });
-test('手动修改版本和说明', async () => {
-  const input = io(['目标版本：0.4.0', '- 修复关联', ':end', '2', '0.5.0', '3', '- 新增教程', ':end', '1']);
+test('缺少版本时补充版本并保留已输入的说明', async () => {
+  const input = io(['更新说明：', '- 新增教程', ':end', '0.5.0']);
   const result = await editRelease(input, '0.3.0', () => {});
   assert.equal(result.version, '0.5.0'); assert.deepEqual(result.notes, ['新增教程']); input.close();
 });
@@ -581,8 +581,8 @@ test('冲突版本人工选择', async () => {
   const input = io(['目标版本：0.4.0 或 0.5.0', '- 修复关联', ':end', '2', '1']);
   assert.equal((await editRelease(input, '0.3.0', () => {})).version, '0.5.0'); input.close();
 });
-test('重新粘贴以及用户取消', async () => {
-  const input = io(['WindowStash v0.4.0', '- 修复关联', ':end', '4', '版本：0.5.0', '- 新增教程', ':end', '5']);
+test('发布信息输入时用户取消', async () => {
+  const input = io(['WindowStash v0.4.0', '- 修复关联', ':cancel']);
   await assert.rejects(editRelease(input, '0.3.0', () => {}), /取消/); input.close();
 });
 test('粘贴中的命令仅为文本，不执行', async () => {
@@ -702,14 +702,16 @@ test('严格 dry-run 成功，无文件、Commit、Tag、推送或构建副作�
   await processMock(directory, hash);
   // Only the temporary repository uses a Git wrapper and HTTP mock. No production remote is touched.
   const { spawn } = await import('node:child_process');
-  const preview = async (verbose = false) => new Promise((done, fail) => {
+  const preview = async (verbose = false, versionOnly = false) => new Promise((done, fail) => {
     const childEnv = { ...process.env }; delete childEnv.NODE_TEST_CONTEXT;
     const child = spawn(process.execPath, ['--import', pathToFileURL(resolve(directory, 'fetch-mock.mjs')).href, 'scripts/release.mjs', '--dry-run', ...(verbose ? ['--verbose'] : [])], { cwd: directory, env: childEnv });
     let text = ''; child.stdout.on('data', (data) => { text += data; }); child.stderr.on('data', (data) => { text += data; }); child.on('error', fail); child.on('close', (code) => code === 0 ? done(text) : fail(new Error(text)));
-    child.stdin.end(standard + '\n:end\n1\n');
+    child.stdin.end(versionOnly ? '0.4.0\n- 新增教程入口\n:end\n' : standard + '\n:end\n');
   });
   const output = await preview();
   assert.match(output, /预演通过/);
+  assert.doesNotMatch(output, /恢复失败的发布|检测到上次发布未完成|请补充本次更新说明|请选择/);
+  assert.match(await preview(false, true), /请补充本次更新说明[\s\S]*预演通过/);
   assert.doesNotMatch(output, /检查 \/ 执行：/);
   assert.ok(!output.includes('\x1b['));
   assert.match(await preview(true), /检查 \/ 执行：git/);
@@ -776,7 +778,7 @@ for (const scenario of ['cancel', 'testFailure', 'mainPushFailure', 'tagPushFail
       const childEnv = { ...process.env }; delete childEnv.NODE_TEST_CONTEXT;
     const child = spawn(process.execPath, ['--import', pathToFileURL(resolve(directory, 'fetch-mock.mjs')).href, 'scripts/release.mjs'], { cwd: directory, env: childEnv });
       let text = ''; child.stdout.on('data', (data) => { text += data; }); child.stderr.on('data', (data) => { text += data; }); child.on('error', fail); child.on('close', (code) => done({ code, text }));
-      child.stdin.end('1\n' + standard + '\n:end\n1\n' + (scenario === 'cancel' ? '取消' : '发布 v0.4.0') + '\n');
+      child.stdin.end(standard + '\n:end\n' + (scenario === 'cancel' ? '取消' : '发布 v0.4.0') + '\n');
     });
     assert.equal(result.code, 1, result.text);
     if (['cancel', 'testFailure'].includes(scenario)) {
@@ -813,9 +815,9 @@ test('text 围栏中的标准发布信息', () => {
   assert.equal(result.version, '0.4.0'); assert.equal(result.notes.length, 2);
 });
 test('未识别字段可由用户补充', async () => {
-  const input = io(['无法识别的摘要', ':end', '0.4.0', '- 新增教程', ':end', '1']);
+  const input = io(['无法识别的摘要', ':end', '0.4.0']);
   const result = await editRelease(input, '0.3.0', () => {});
-  assert.equal(result.version, '0.4.0'); assert.deepEqual(result.notes, ['新增教程']); input.close();
+  assert.equal(result.version, '0.4.0'); assert.deepEqual(result.notes, []); input.close();
 });
 test('子进程 UTF-8 输出跨 Buffer 边界仍完整', async () => {
   const output = await command(root)(process.execPath, ['-e', "const b=Buffer.from('中文更新说明'); process.stdout.write(b.subarray(0,1)); setTimeout(()=>process.stdout.write(b.subarray(1)),10);"]);
@@ -915,8 +917,8 @@ test('回归：连续列表项不会被覆盖或去重', () => {
   const notes = ['优化工作区关联。', '优化工作区关联。', '新增教程入口。'];
   assert.deepEqual(parseRelease(`WindowStash v0.4.0\n\n更新说明：\n${notes.map((note) => `- ${note}`).join('\n')}`).notes, notes);
 });
-test('回归：多行粘贴、识别确认和手动修改完整说明', async () => {
-  const input = io(['WindowStash v0.4.0', '', '更新内容：', ...reportedNotes.map((note) => `• ${note}`), ':end', '2', '0.5.0', '1']);
+test('回归：多行粘贴保留完整说明且无需识别确认', async () => {
+  const input = io(['WindowStash v0.5.0', '', '更新内容：', ...reportedNotes.map((note) => `• ${note}`), ':end']);
   const result = await editRelease(input, '0.3.0', () => {});
   assert.equal(result.version, '0.5.0'); assert.deepEqual(result.notes, reportedNotes); input.close();
 });
@@ -930,8 +932,8 @@ test('验收：纯段落中的升级引用不误识别成目标', () => {
   const result = parseRelease('目标版本：0.4.0\n\n更新说明：\n修复从 v0.1.0 升级至 v0.2.0 后的数据读取问题。');
   assert.equal(result.version, '0.4.0'); assert.equal(result.notes.length, 1);
 });
-test('验收：手动编辑支持 • 列表符号', async () => {
-  const input = io(['WindowStash v0.4.0', '- 新增教程', ':end', '3', '• 优化关联', '• 提高稳定性', ':end', '1']);
+test('验收：输入完整说明支持 • 列表符号', async () => {
+  const input = io(['WindowStash v0.4.0', '更新说明：', '• 优化关联', '• 提高稳定性', ':end']);
   assert.deepEqual((await editRelease(input, '0.3.0', () => {})).notes, ['优化关联', '提高稳定性']); input.close();
 });
 test('验收：恢复记录原子创建、原子更新、权限与失败保留', async (t) => {
@@ -1040,6 +1042,8 @@ function recoveryMock(scenario = '') {
         'remote get-url --all origin': 'https://github.com/lishangyang290/windowstash.git',
         'remote get-url --push --all origin': 'https://github.com/lishangyang290/windowstash.git',
         'ls-remote --exit-code origin refs/heads/main': `${(scenario === 'main' ? 'c' : 'b').repeat(40)}\trefs/heads/main`,
+        'ls-remote origin refs/tags/v0.6.0': `${recoverySha}\trefs/tags/v0.6.0`,
+        'tag --list v0.6.0': 'v0.6.0',
         'rev-parse refs/tags/v0.6.0': scenario === 'localTag' ? 'c'.repeat(40) : recoverySha,
         [`merge-base --is-ancestor ${recoverySha} ${'b'.repeat(40)}`]: '',
         [`show ${recoverySha}:package.json`]: JSON.stringify({ version: scenario === 'version' ? '0.5.0' : '0.6.0' }),
@@ -1064,14 +1068,16 @@ function recoveryMock(scenario = '') {
     const path = args[1].replace('repos/lishangyang290/windowstash/', '');
     let value;
     if (path === 'git/ref/tags/v0.6.0') value = { ref: 'refs/tags/v0.6.0', object: { type: 'commit', sha: scenario === 'remoteTag' ? 'c'.repeat(40) : recoverySha } };
-    else if (path.startsWith('releases?')) value = scenario === 'release' || (scenario === 'changed' && ++releaseChecks > 1) ? [{ tag_name: 'v0.6.0', draft: true }] : [];
+    else if (path.startsWith('releases?')) value = scenario === 'published' ? [{ tag_name: 'v0.6.0', draft: false, prerelease: false, html_url: 'https://example.test/release', assets: ['Windows-x64.zip', 'macOS-arm64.zip'].map(suffix => ({ name: `WindowStash-v0.6.0-${suffix}`, size: 100 })) }]
+      : scenario === 'release' || (scenario === 'changed' && ++releaseChecks > 1) ? [{ tag_name: 'v0.6.0', draft: true }] : [];
     else if (path.includes('event=push')) value = { workflow_runs: [recoveryWorkflow()] };
     else if (path === `actions/runs/${recoveryId}`) value = recoveryWorkflow({
       ...(scenario === 'attemptChanged' ? { run_attempt: ++workflowChecks } : {}),
       ...(scenario === 'sha' ? { head_sha: 'c'.repeat(40) } : {}),
       ...(scenario === 'tag' ? { head_branch: 'v0.5.0' } : {}),
       ...(scenario === 'event' ? { event: 'workflow_dispatch' } : {}),
-      ...(scenario === 'running' ? { status: 'in_progress' } : {}),
+      ...(scenario === 'running' ? { status: 'in_progress', conclusion: null } : {}),
+      ...(scenario === 'queued' ? { status: 'queued', conclusion: null } : {}),
       ...(scenario === 'success' ? { conclusion: 'success' } : {}),
       ...(scenario === 'failure' ? { conclusion: 'failure' } : {}),
     });
@@ -1083,14 +1089,11 @@ function recoveryMock(scenario = '') {
   return { run, calls, writes: () => calls.filter(([program, subcommand]) => program === 'gh' && subcommand === 'run') };
 }
 
-test('同一入口提供新版本、失败恢复及取消，新版本仍进入原有粘贴流程', async () => {
-  const messages = [], ui = terminalUI({ isTTY: false }, (line) => messages.push(line));
-  const input = io(['1', ...standard.split('\n'), ':end', '1']);
-  assert.equal(await chooseMode(input, ui), '1');
-  assert.equal((await editRelease(input, '0.3.0', () => {})).version, '0.4.0'); input.close();
-  const recovery = io(['2']); assert.equal(await chooseMode(recovery, ui), '2'); recovery.close();
-  const cancel = io(['3']); await assert.rejects(chooseMode(cancel, ui), /取消/); cancel.close();
-  assert.match(messages.join('\n'), /发布新版本[\s\S]*恢复失败的发布[\s\S]*取消/);
+test('同一入口直接输入完整发布信息，不展示启动或识别确认菜单', async () => {
+  const messages = [], input = io([...standard.split('\n'), ':end', 'sentinel']);
+  assert.equal((await editRelease(input, '0.3.0', line => messages.push(line))).version, '0.4.0');
+  assert.equal(await input.ask(''), 'sentinel'); input.close();
+  assert.doesNotMatch(messages.join('\n'), /发布新版本|恢复失败的发布|确认识别结果|请选择/);
 });
 
 test('识别 v0.6.0 原取消 Workflow，允许已验证 Tag 落后于 main', async () => {
@@ -1110,7 +1113,7 @@ for (const scenario of ['dirty', 'branch', 'main', 'ancestry', 'localTag', 'remo
 for (const scenario of ['confirm', 'cancel', 'changed', 'attemptChanged', 'requestFailure']) test(`恢复确认只允许一次全部 Jobs 重跑：${scenario}`, async () => {
   const mock = recoveryMock(scenario), harness = resultHarness();
   let tracked = 0;
-  const input = { ask: async () => scenario === 'cancel' ? '取消' : '恢复发布 v0.6.0' };
+  const input = { ask: async (prompt) => scenario === 'cancel' ? '2' : prompt.includes('请输入完整') ? '发布 v0.6.0' : '1' };
   const options = { ui: harness.options.ui, track: async (run, version, sha, options) => {
     tracked++; assert.equal(sha, recoverySha); assert.equal(version, '0.6.0');
     assert.equal(options.workflowId, recoveryId); assert.equal(options.attempt, 2);
@@ -1150,7 +1153,7 @@ for (const scenario of ['success', 'failure', 'retry', 'timeout', 'newAttemptTim
     }
     if (path.endsWith('/git/ref/tags/v0.6.0')) return JSON.stringify({ object: { type: 'commit', sha: recoverySha } });
     assert.fail(`未模拟的查询：${args}`);
-  }, '0.6.0', recoverySha, { ...harness.options, workflowId: recoveryId, attempt: 2, timeout: 60000 });
+  }, '0.6.0', recoverySha, { ...harness.options, verbose: true, workflowId: recoveryId, attempt: 2, timeout: 60000 });
   const text = harness.messages.join('\n');
   assert.equal(text.includes('发布成功'), ['success', 'retry'].includes(scenario));
   assert.ok(harness.snapshots.some(({ lines }) => lines[0].includes('等待新的 attempt 2')));
@@ -1176,4 +1179,105 @@ test('恢复跟踪可匿名读取新 attempt，认证回退不发送任何重跑
   });
   assert.ok(urls.some(url => url.includes(`/runs/${recoveryId}/attempts/2/jobs?`)));
   assert.ok(harness.messages.some(line => line.includes('发布成功')));
+});
+
+for (const value of ['0.6.0', 'v0.6.0']) test(`单独版本号按 Enter 提交，无需 :end：${value}`, async () => {
+  const input = io([value, 'sentinel']);
+  const result = await editRelease(input, '0.6.0', () => {});
+  assert.equal(result.version, '0.6.0'); assert.deepEqual(result.notes, []);
+  assert.equal(await input.ask(''), 'sentinel'); input.close();
+});
+
+for (const lines of [['00.6.0'], [':end', 'invalid'], ['无法识别', ':end', ':cancel'], ['目标版本：0.7.0']]) test(`异常版本输入安全停止：${JSON.stringify(lines)}`, async () => {
+  const input = io(lines);
+  await assert.rejects(editRelease(input, '0.6.0', () => {})); input.close();
+});
+
+test('全新版本自动进入原有安全检查，不询问发布模式', async () => {
+  const input = io(['0.4.0']);
+  const parsed = await editRelease(input, '0.3.0', () => {}); input.close();
+  const state = await inspectRelease(mockGit(), parsed.version, '0.3.0', async () => false);
+  assert.equal(state.kind, 'new'); assert.equal(state.state.head, head);
+  const harness = resultHarness();
+  assert.equal(await handleReleaseState(async () => assert.fail('禁止执行命令'), { ask: async () => assert.fail('无需额外确认') }, parsed.version, state, { ui: harness.options.ui }), false);
+  assert.deepEqual(harness.messages, []);
+});
+
+for (const [scenario, kind] of [['', 'recover'], ['failure', 'recover'], ['running', 'running'], ['queued', 'running'], ['published', 'published']]) test(`目标等于当前版本时自动识别状态：${scenario || 'cancelled'}`, async () => {
+  const mock = recoveryMock(scenario);
+  const state = await inspectRelease(mock.run, '0.6.0', '0.6.0', async () => assert.fail('已有 Tag 使用完整发布记录检查'));
+  assert.equal(state.kind, kind); assert.equal(state.sha, recoverySha);
+  assert.equal(mock.writes().length, 0);
+});
+
+for (const scenario of ['localTag', 'remoteTag', 'sha', 'tag', 'event', 'success', 'unverified', 'main', 'dirty']) test(`自动识别不放宽安全条件：${scenario}`, async () => {
+  const mock = recoveryMock(scenario);
+  await assert.rejects(inspectRelease(mock.run, '0.6.0', '0.6.0', async () => false));
+  assert.equal(mock.writes().length, 0);
+});
+
+test('网络查询失败时停止，不能假定为全新或可恢复发布', async () => {
+  await assert.rejects(inspectRelease(mockGit(), '0.4.0', '0.3.0', async () => { throw new Error('ECONNRESET lookup'); }), /ECONNRESET lookup/);
+  const mock = recoveryMock();
+  await assert.rejects(inspectRelease(async (program, args) => {
+    if (program === 'gh' && args[0] === 'api') throw new Error('HTTP 503 fixture');
+    return mock.run(program, args);
+  }, '0.6.0', '0.6.0', async () => false), /HTTP 503 fixture/);
+  assert.equal(mock.writes().length, 0);
+});
+
+test('已正式发布时仅显示完成信息和下载页面，不再询问或写入', async () => {
+  const mock = recoveryMock('published'), harness = resultHarness();
+  const state = await inspectRelease(mock.run, '0.6.0', '0.6.0', async () => false);
+  await handleReleaseState(mock.run, { ask: async () => assert.fail('已发布无需询问') }, '0.6.0', state, { ui: harness.options.ui });
+  assert.match(harness.messages.join('\n'), /v0.6.0 已经发布完成，无需重复发布[\s\S]*https:\/\/example.test\/release/);
+  assert.equal(mock.writes().length, 0);
+});
+
+for (const flaw of ['empty', 'extra', 'draft', 'prerelease']) test(`已有 Release 不完整时拒绝重复发布：${flaw}`, async () => {
+  const mock = recoveryMock('published');
+  await assert.rejects(inspectRelease(async (program, args) => {
+    const text = await mock.run(program, args);
+    if (program !== 'gh' || args[0] !== 'api' || !args[1].includes('/releases?')) return text;
+    const value = JSON.parse(text), release = value[0];
+    if (flaw === 'empty') release.assets[0].size = 0;
+    if (flaw === 'extra') release.assets.push({ name: 'extra.exe', size: 100 });
+    if (flaw === 'draft') release.draft = true;
+    if (flaw === 'prerelease') release.prerelease = true;
+    return JSON.stringify(value);
+  }, '0.6.0', '0.6.0', async () => false), /已有对应 Release/);
+  assert.equal(mock.writes().length, 0);
+});
+
+for (const choice of ['1', '2']) test(`正在发布时只允许查看现有进度：${choice}`, async () => {
+  const mock = recoveryMock('running'), harness = resultHarness();
+  const state = await inspectRelease(mock.run, '0.6.0', '0.6.0', async () => false);
+  let tracked = 0;
+  await handleReleaseState(mock.run, { ask: async () => choice }, '0.6.0', state, { ui: harness.options.ui, track: async (run, version, sha, options) => {
+    tracked++; assert.equal(sha, recoverySha); assert.equal(options.workflowId, recoveryId); assert.equal(options.attempt, 1);
+  } });
+  assert.equal(tracked, choice === '1' ? 1 : 0); assert.equal(mock.writes().length, 0);
+});
+
+for (const choice of ['continue', 'cancel', 'cancelFinal', 'dry']) test(`自动识别未完成发布后才询问并保留明确最终确认：${choice}`, async () => {
+  const mock = recoveryMock(), harness = resultHarness();
+  const state = await inspectRelease(mock.run, '0.6.0', '0.6.0', async () => false);
+  const prompts = [], input = { ask: async (prompt) => {
+    prompts.push(prompt);
+    return prompt.includes('请输入完整') ? choice === 'cancelFinal' ? '取消' : '发布 v0.6.0' : choice === 'cancel' ? '2' : '1';
+  } };
+  const options = { ui: harness.options.ui, dry: choice === 'dry', track: async () => {} };
+  if (choice === 'cancel' || choice === 'cancelFinal') await assert.rejects(handleReleaseState(mock.run, input, '0.6.0', state, options), /取消/);
+  else await handleReleaseState(mock.run, input, '0.6.0', state, options);
+  assert.equal(mock.writes().length, choice === 'continue' ? 1 : 0);
+  assert.equal(prompts.length, choice === 'dry' ? 0 : choice === 'cancel' ? 1 : 2);
+  const text = harness.messages.join('\n');
+  assert.match(text, /检测到上次发布未完成[\s\S]*已取消[\s\S]*正式构建尚未完成/);
+  assert.doesNotMatch(text, /Tag SHA|Workflow \/ attempt|请补充|粘贴/);
+});
+
+test('--help 保留全部兼容选项并介绍统一输入', async () => {
+  const output = await command(root)(process.execPath, ['scripts/release.mjs', '--help']);
+  for (const option of ['--dry-run', '--restore', '--verbose', ':end', ':cancel', 'Enter', '自动检查发布状态']) assert.ok(output.includes(option));
+  assert.doesNotMatch(output, /恢复失败的发布|请选择/);
 });

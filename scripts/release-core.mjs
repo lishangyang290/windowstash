@@ -133,7 +133,16 @@ export async function preflight(run, version, current, notes, releaseExists) {
   return state;
 }
 
-export async function recoveryPlan(run, version) {
+export async function inspectRelease(run, version, current, releaseExists) {
+  if (!versionPattern.test(version)) throw new Error('目标版本必须为 X.Y.Z，不能含前导零或预发布后缀。');
+  const remote = await run('git', ['ls-remote', 'origin', `refs/tags/v${version}`]);
+  const local = await run('git', ['tag', '--list', `v${version}`]);
+  if (remote || local) return recoveryPlan(run, version, { inspect: true });
+  const state = await preflight(run, version, current, ['待补充更新说明'], releaseExists);
+  return { kind: 'new', state };
+}
+
+export async function recoveryPlan(run, version, { inspect = false } = {}) {
   if (!versionPattern.test(version)) throw new Error('恢复版本必须为 X.Y.Z。');
   const state = await localState(run);
   if (state.branch !== 'main' || state.status) throw new Error('恢复发布必须位于干净的 main 工作区。');
@@ -153,7 +162,15 @@ export async function recoveryPlan(run, version) {
   if (!notes.trim()) throw new Error('Tag 提交缺少 Release Notes。');
   for (let page = 1; ; page++) {
     const releases = await api(`releases?per_page=100&page=${page}`);
-    if (releases.some((release) => release.tag_name === tag)) throw new Error('已有对应 Release（包括草稿），拒绝重复发布。');
+    const release = releases.find((release) => release.tag_name === tag);
+    if (release) {
+      const expected = [`WindowStash-${tag}-Windows-x64.zip`, `WindowStash-${tag}-macOS-arm64.zip`].sort();
+      if (inspect && release.draft === false && release.prerelease === false && release.assets?.every(asset => asset.size > 0)
+        && JSON.stringify(release.assets.map(asset => asset.name).sort()) === JSON.stringify(expected)) {
+        return { kind: 'published', version, tag, sha, releaseUrl: release.html_url };
+      }
+      throw new Error('已有对应 Release（包括草稿或附件不完整），拒绝重复发布，请查看 GitHub 页面。');
+    }
     if (releases.length < 100) break;
   }
   const runs = await api(`actions/workflows/release.yml/runs?event=push&head_sha=${sha}&per_page=100`);
@@ -162,8 +179,13 @@ export async function recoveryPlan(run, version) {
   if (!candidate) throw new Error('未找到匹配 Tag/SHA 的正式 Tag Push Workflow。');
   const workflow = await api(`actions/runs/${candidate.id}`);
   if (!Number.isSafeInteger(workflow.id) || workflow.id < 1 || workflow.id !== candidate.id || workflow.head_sha !== sha || workflow.head_branch !== tag || workflow.event !== 'push'
-    || workflow.path !== '.github/workflows/release.yml' || workflow.status !== 'completed'
-    || !['failure', 'cancelled'].includes(workflow.conclusion) || !Number.isSafeInteger(workflow.run_attempt) || workflow.run_attempt < 1) {
+    || workflow.path !== '.github/workflows/release.yml' || !Number.isSafeInteger(workflow.run_attempt) || workflow.run_attempt < 1) {
+    throw new Error('正式 Workflow 的版本、Tag SHA 或发布记录不匹配。');
+  }
+  const plan = { version, tag, sha, notes, head: state.head,
+    workflowId: workflow.id, attempt: workflow.run_attempt, conclusion: workflow.conclusion, url: workflow.html_url };
+  if (inspect && ['queued', 'in_progress'].includes(workflow.status)) return { ...plan, kind: 'running' };
+  if (workflow.status !== 'completed' || !['failure', 'cancelled'].includes(workflow.conclusion)) {
     throw new Error('仅允许恢复 Tag/SHA 匹配且已 failure 或 cancelled 的正式 Workflow。');
   }
   const validations = await api(`actions/workflows/release.yml/runs?event=workflow_dispatch&head_sha=${sha}&status=success&per_page=100`);
@@ -177,8 +199,7 @@ export async function recoveryPlan(run, version) {
     }
   }
   if (!validationId) throw new Error('Tag SHA 缺少已成功的 Windows/macOS 手动双平台验证。');
-  return { version, tag, sha, notes, head: state.head, validationId,
-    workflowId: workflow.id, attempt: workflow.run_attempt, conclusion: workflow.conclusion, url: workflow.html_url };
+  return { ...plan, validationId, kind: 'recover' };
 }
 
 const versionFiles = ['package.json', 'package-lock.json', 'companion/package.json', 'companion/package-lock.json', 'companion/src-tauri/tauri.conf.json', 'companion/src-tauri/Cargo.toml', 'companion/src-tauri/Cargo.lock', 'public/开始使用.html'];
