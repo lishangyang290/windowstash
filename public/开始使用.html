@@ -13,6 +13,7 @@
     @media(max-width:900px){.site-header{height:58px}.site-header-inner{padding:0 16px}.hero{margin-left:0;padding:36px 0}.hero-inner{width:min(100% - 32px,760px)}.hero-layout{grid-template-columns:1fr;gap:20px}.guide-layout{width:min(100% - 32px,760px);margin:auto}.progress-shell{position:relative;top:auto;bottom:auto;left:auto;width:auto;margin:24px 0 0;padding:0;border:1px solid var(--line);border-radius:6px;background:#fff;overflow:hidden}.nav-toggle{display:flex;width:100%;align-items:center;justify-content:space-between;border:0;background:#fff;padding:15px 16px;color:var(--ink);font-weight:700;text-align:left;cursor:pointer}.nav-toggle::after{content:"+";font-size:20px;font-weight:400}.progress-shell.open .nav-toggle::after{content:"−"}.progress-wrap{display:none;padding:4px 16px 18px}.progress-shell.open .progress-wrap{display:block}#guide{width:100%}.step{padding:56px 0 64px}footer{width:min(100% - 32px,760px);margin:auto;padding-right:0;padding-left:0}.mobile-top{position:fixed;right:16px;bottom:16px;z-index:8;display:block;padding:10px 12px;border:1px solid var(--line);border-radius:4px;background:#fff;color:var(--ink);box-shadow:0 8px 24px rgba(24,24,27,.1);font-size:14px;text-decoration:none}}
     @media(max-width:600px){.guide-type{display:none}h1{font-size:40px}.guide-table{display:block;overflow-x:auto}.guide-table th{min-width:180px}.copy-row{flex-direction:column}.copy-row button{min-height:46px;border-top:1px solid var(--line);border-left:0}.actions{flex-direction:column}.actions .button{width:100%}.scene{grid-template-columns:1fr;gap:7px}}
     @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}
+    .platform-icon{width:18px;height:18px;margin-right:7px;vertical-align:-3px;fill:currentColor}
   </style>
 </head>
 <body>
@@ -52,8 +53,8 @@
 
       <section class="step" id="companion"><div class="step-body">
         <p class="eyebrow">02 · 安装桌面应用</p><h2>安装 WindowStash Companion</h2><p class="intro">安装并打开压缩包中与你的系统对应的 Companion，保持运行，然后继续加载 Chrome 扩展。</p>
-        <p id="companion-windows"><strong>Windows：</strong>运行安装程序。安装后，WindowStash 图标位于任务栏通知区域。</p>
-        <p id="companion-macos"><strong>macOS：</strong>双击压缩包中的 <span class="path">.pkg</span> 安装程序，按系统向导安装到“应用程序”。完成后打开 WindowStash Companion，图标位于顶部菜单栏。当前安装程序未使用 Apple 开发者签名且未完成公证，可能被系统安全检查阻止；若无法安装或打开，请保留提示并向发布者反馈，不要关闭系统安全保护。</p>
+        <p id="companion-windows"><strong><svg class="platform-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h8v8H3zm10 0h8v8h-8zM3 13h8v8H3zm10 0h8v8h-8z"/></svg>Windows：</strong>运行安装程序。安装后，WindowStash 图标位于任务栏通知区域。</p>
+        <p id="companion-macos"><strong><svg class="platform-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M17.05 12.536c.031 3.346 2.936 4.46 2.968 4.474-.024.079-.464 1.588-1.53 3.147-.922 1.348-1.879 2.69-3.386 2.718-1.481.027-1.957-.879-3.65-.879-1.692 0-2.221.851-3.623.906-1.455.055-2.563-1.458-3.493-2.801-1.9-2.747-3.352-7.763-1.402-11.15.969-1.682 2.7-2.747 4.58-2.774 1.43-.027 2.78.962 3.65.962.869 0 2.5-1.19 4.209-1.015.715.03 2.723.289 4.012 2.176-.104.064-2.395 1.394-2.37 4.236M14.268 4.307c.773-.936 1.293-2.24 1.151-3.537-1.114.045-2.461.742-3.26 1.678-.716.829-1.343 2.157-1.174 3.428 1.242.096 2.51-.631 3.283-1.569"/></svg>macOS：</strong>完成后打开 WindowStash Companion，图标位于顶部菜单栏。如果提示无法打开，请参考<a href="https://blog.csdn.net/weixin_60605738/article/details/138607675" target="_blank" rel="noopener noreferrer">这篇教程</a>。</p>
       </div></section>
 
       <section class="step" id="extension"><div class="step-body">
@@ -65,7 +66,7 @@
       </div></section>
 
       <section class="step" id="supabase"><div class="step-body">
-        <p class="eyebrow">04 · 创建数据空间</p><h2>在 Supabase 创建项目</h2><p class="intro">Supabase 用来在线保存和同步工作区。你需要创建自己的项目，并在后面的步骤中把它连接到 WindowStash。</p><p>已有用于 WindowStash 的项目时，请继续使用原项目，并按<a href="#database-upgrade">旧版升级提示</a>检查是否需要升级，不必重新创建。</p>
+        <p class="eyebrow">04 · 创建数据空间</p><h2>在 Supabase 创建项目</h2><p class="intro">Supabase 用来在线保存和同步工作区。你需要创建自己的项目，并在后面的步骤中把它连接到 WindowStash。</p>
         <div class="actions"><a class="button primary" href="https://supabase.com/dashboard" target="_blank" rel="noopener noreferrer">打开 Supabase ↗</a></div>
         <p>点击后会在新标签页打开 Supabase。如果没有 Supabase 账号，按页面提示注册；如果已经有账号，直接登录。登录成功后会进入 <strong>Dashboard</strong>。</p>
         <h3>新建项目</h3><ol class="tasks"><li>确认你现在位于 Supabase Dashboard。</li><li>点击 <strong>New project</strong>，进入项目创建页面。</li></ol>
@@ -77,7 +78,7 @@
 
       <section class="step" id="database"><div class="step-body">
         <p class="eyebrow">05 · 设置数据库</p><h2>为新项目初始化数据库</h2><p class="intro">新创建的 Supabase 项目需要运行初始化代码，才能保存工作区。你可以点击下面的“复制代码”，也可以用文本编辑器打开解压文件夹根目录的 <span class="path">初始化数据库.sql</span>，复制全部内容。两种方式任选一种。</p>
-        <div class="note" id="database-upgrade"><strong>已经使用过旧版本？</strong><p>请不要重复初始化，也不要删除原来的数据库。需要升级时，请查看<a href="https://github.com/lishangyang290/windowstash/blob/main/README.md#旧版本升级说明" target="_blank" rel="noopener noreferrer">旧版本升级说明</a>。</p></div>
+        <div class="note"><strong>适用版本</strong><p>该初始化代码不适用于 WindowStash 0.6.0 之前的版本。</p></div>
         <div class="code"><button class="code-copy" type="button" data-copy="#schema-code">复制代码</button><pre><code id="schema-code">-- WindowStash v0.6.0: NEW projects only. Existing v0.5.0 databases use the incremental migration.
 -- SQL Editor: run the entire file. Atomic, repeatable, and never clears workspaces.
 begin;
@@ -313,7 +314,7 @@ commit;</code></pre></div>
 
       <section class="step" id="update"><div class="step-body">
         <p class="eyebrow">12 · 更新版本</p><h2>更新已安装的 WindowStash</h2><p class="intro">按<a href="#download">下载说明</a>获取对应系统的新版 ZIP，完整解压后，按以下三步更新。继续使用原账号和原扩展目录。</p>
-        <ol class="tasks"><li><strong>更新 Companion 桌面应用。</strong>安装并打开新版 Companion，覆盖原来的应用。macOS 双击新版 <span class="path">.pkg</span>，按系统向导覆盖更新，无需手动退出 Companion；安装完成后重新打开应用，原账号、工作区和自启动偏好会保留。</li><li><strong>更新 Chrome 扩展文件。</strong>将新版 <span class="path">Chrome Extension</span> 文件夹中的文件覆盖到原来加载的目录，不要移动原目录。</li><li><strong>刷新原有扩展。</strong>打开 <span class="path">chrome://extensions</span>，点击原 WindowStash 卡片上的刷新按钮。</li></ol>
+        <ol class="tasks"><li><strong>更新 Companion 桌面应用。</strong>安装并打开新版 Companion，覆盖原来的应用。</li><li><strong>更新 Chrome 扩展文件。</strong>将新版 <span class="path">Chrome Extension</span> 文件夹中的文件覆盖到原来加载的目录，不要移动原目录。</li><li><strong>刷新原有扩展。</strong>打开 <span class="path">chrome://extensions</span>，点击原 WindowStash 卡片上的刷新按钮。</li></ol>
         <p>更新完成后，打开 WindowStash，确认原来的工作区正常显示即可。</p>
       </div></section>
 
@@ -323,7 +324,7 @@ commit;</code></pre></div>
         <details><summary>找不到 Project URL 或 Publishable Key 怎么办？</summary><p>点击 Supabase 左侧导航菜单第一项 Project Overview，回到项目首页，再打开项目地址右边的 Copy 菜单。如果首页没有这个菜单，从左侧导航底部进入 Project Settings → API Keys。</p></details>
         <details><summary>为什么恢复后有些网页没有立即加载？</summary><p>为了避免大量标签页同时占用内存，WindowStash 会在你点击标签页时再加载网页。</p></details>
         <details><summary>为什么 Chrome 提示这是开发者模式扩展？</summary><p>当前版本还没有发布到 Chrome Web Store，因此使用 Chrome 官方提供的“加载已解压的扩展程序”方式安装。</p></details>
-        <details><summary>macOS 提示无法打开怎么办？</summary><p>当前安装程序未使用 Apple 开发者签名且未完成公证，安装或打开时可能被系统阻止。请确认文件来自可信发布来源，保留具体提示并向发布者反馈；不要关闭系统安全保护。</p></details>
+        <details><summary>macOS 提示无法打开怎么办？</summary><p>请查看<a href="https://blog.csdn.net/weixin_60605738/article/details/138607675" target="_blank" rel="noopener noreferrer">这篇教程</a>中的处理方法。</p></details>
         <details><summary>卸载 WindowStash 后工作区会丢吗？</summary><p>已同步到 Supabase 的工作区不会因卸载扩展而从云端删除，重新连接原项目和账号后可以同步回来。但卸载会失去扩展的本地数据，尚未同步的修改和本地冲突副本可能无法找回。更新时不要卸载扩展；如果删除了 Supabase 项目，WindowStash 也无法恢复其中的云端数据。</p></details>
       </div></section>
     </main>
