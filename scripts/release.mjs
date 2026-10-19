@@ -76,6 +76,7 @@ export async function showResult(run, version, commit, {
   wait = false, active = () => {}, ui = terminalUI(), display = liveProgress(),
   now = Date.now, sleep = (ms) => new Promise((done) => globalThis.setTimeout(done, ms)),
   timeout = 15 * 60 * 1000,
+  fetch: request = globalThis.fetch,
 } = {}) {
   const releaseUrl = `https://github.com/${repository}/releases/tag/v${version}`;
   ui.section('步骤 4 / 4 · 发布结果');
@@ -86,15 +87,74 @@ export async function showResult(run, version, commit, {
   ui.field('GitHub Actions', `https://github.com/${repository}/actions/workflows/release.yml`);
   ui.field('GitHub Release', releaseUrl);
   const started = now(), deadline = started + timeout;
-  let workflow, timer;
+  let workflow, timer, publicApi = false, connection = '';
+  const diagnostics = [];
   let lines = workflowProgress();
-  const render = (tick = false) => display.update(lines, now() - started, tick);
+  const render = (tick = false) => display.update(connection ? [`${connection} · ${lines[0]}`, lines[1], lines[2]] : lines, now() - started, tick);
+  const pause = async (until) => {
+    while (now() < until) {
+      await sleep(Math.min(1000, until - now()));
+      active();
+    }
+  };
+  const api = async (path) => {
+    const remaining = deadline - now();
+    if (remaining <= 0) throw new Error('等待超时');
+    const response = await request(`https://api.github.com/repos/${repository}/${path}`, {
+      headers: { Accept: 'application/vnd.github+json' }, signal: globalThis.AbortSignal.timeout(Math.min(30000, remaining)),
+    });
+    if (!response.ok) throw new Error(`公开 API ${path} HTTP ${response.status}：${await response.text()}`);
+    return response.json();
+  };
+  const publicQuery = async (args) => {
+    if (args[0] === 'auth') return '';
+    if (args[0] === 'release') {
+      const release = await api(`releases/tags/v${version}`);
+      return JSON.stringify({ url: release.html_url, isDraft: release.draft, isPrerelease: release.prerelease,
+        assets: release.assets.map((asset) => ({ ...asset, url: asset.browser_download_url })) });
+    }
+    const normalize = (item) => ({ ...item, databaseId: item.id, headSha: item.head_sha, headBranch: item.head_branch, url: item.html_url });
+    if (args[1] === 'list') {
+      const result = await api(`actions/workflows/release.yml/runs?event=push&head_sha=${commit}&per_page=10`);
+      return JSON.stringify(result.workflow_runs.map(normalize));
+    }
+    const detail = normalize(await api(`actions/runs/${args[2]}`));
+    const jobs = [];
+    for (let page = 1; ; page++) {
+      const result = await api(`actions/runs/${args[2]}/jobs?per_page=100&page=${page}`);
+      jobs.push(...result.jobs);
+      if (result.jobs.length < 100) break;
+    }
+    return JSON.stringify({ ...detail, jobs });
+  };
   const query = async (args) => {
-    active();
-    if (now() >= deadline) throw new Error('等待超时');
-    const result = await run('gh', args, false, Math.min(30000, deadline - now()));
-    active();
-    return result;
+    let failures = 0;
+    while (true) {
+      active();
+      if (now() >= deadline) throw new Error('等待超时');
+      const provider = publicApi ? '公开 API' : `gh ${args.join(' ')}`;
+      try {
+        const result = publicApi ? await publicQuery(args) : await run('gh', args, false, Math.min(30000, deadline - now()));
+        active();
+        if (now() >= deadline) throw new Error('等待超时');
+        connection = '';
+        return result;
+      } catch (error) {
+        active();
+        const cause = `${provider}：${error.message}${error.cause?.message ? `；${error.cause.message}` : ''}`;
+        diagnostics.push(cause);
+        if (!publicApi && (error.code === 'ENOENT' || /not logged|not authenticated|authentication|auth login|token.*invalid|HTTP 401|HTTP 403|ENOENT/i.test(error.message))) {
+          publicApi = true;
+          connection = 'gh 不可用，切换公开只读 API';
+          render();
+          continue;
+        }
+        if (!wait || now() >= deadline) throw error;
+        connection = `查询失败，正在重试（${++failures}）`;
+        render();
+        await pause(Math.min(now() + 12000, deadline));
+      }
+    }
   };
   try {
     render();
@@ -106,7 +166,7 @@ export async function showResult(run, version, commit, {
     while (true) {
       active();
       const queriedAt = now();
-      const runs = JSON.parse(await query(['run', 'list', '--repo', repository, '--workflow', 'release.yml', '--event', 'push', '--commit', commit, '--limit', '10', '--json', 'databaseId,status,conclusion,url,headBranch,headSha']));
+      const runs = workflow ? [workflow] : JSON.parse(await query(['run', 'list', '--repo', repository, '--workflow', 'release.yml', '--event', 'push', '--commit', commit, '--limit', '10', '--json', 'databaseId,status,conclusion,url,headBranch,headSha']));
       const match = runs.find((item) => item.headBranch === `v${version}` && item.headSha === commit);
       if (match) {
         workflow = workflow?.databaseId === match.databaseId ? { ...workflow, ...match } : match;
@@ -120,10 +180,7 @@ export async function showResult(run, version, commit, {
       if (workflow?.status === 'completed') break;
       if (!wait) { ui.warning('正在等待构建完成；Release 尚未确认，请查看上述页面。'); return; }
       const nextPoll = Math.min(queriedAt + 12000, deadline);
-      while (now() < nextPoll) {
-        await sleep(Math.min(1000, nextPoll - now()));
-        active();
-      }
+      await pause(nextPoll);
     }
     globalThis.clearInterval(timer);
     if (workflow.conclusion !== 'success') {
@@ -144,15 +201,19 @@ export async function showResult(run, version, commit, {
       }
     }
     else ui.warning('构建已结束，但正式 Release 或双平台完整附件尚未确认，请查看页面。');
-  } catch {
+  } catch (error) {
+    diagnostics.push(error.message);
     let cancelled = false;
     try { active(); } catch { cancelled = true; }
     render();
     if (workflow?.url) ui.field('最后确认的 Workflow', workflow.url);
     ui.warning(cancelled ? '已结束等待；以上为最后查询的实际状态，Release 尚未确认，请打开远端页面。'
       : now() >= deadline ? '等待超时；以上为最后查询的实际状态，Release 尚未确认，请打开远端页面。'
-      : '无法自动确认远端状态：gh 未安装、未认证、网络异常或查询超过 30 秒。以上为最后查询的实际状态；请查看远端页面，Tag 推送成功不代表 Release 已完成。');
-  } finally { globalThis.clearInterval(timer); }
+      : '无法自动确认远端状态；以上为最后查询的实际状态，请查看 GitHub 页面及下方查询诊断。Tag 推送成功不代表 Release 已完成。');
+  } finally {
+    globalThis.clearInterval(timer);
+    for (const diagnostic of [...new Set(diagnostics)]) ui.field('查询诊断', diagnostic.replace(/[\p{Cc}\p{Cf}]/gu, ' '));
+  }
 }
 
 export async function main(args = process.argv.slice(2)) {

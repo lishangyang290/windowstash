@@ -41,10 +41,22 @@ for (const [windows, version] of [[true, '0.6.0'], [false, '7.8.9']]) {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         $package = $env:SQL_PACKAGE_ROOT
         $zip = [IO.Compression.ZipFile]::Open($env:SQL_ARCHIVE, 'Create')
+        function Add-PackageFiles($folder, $prefix) {
+          Get-ChildItem -LiteralPath $folder | ForEach-Object {
+            $entry = $prefix + '/' + $_.Name
+            if ($_.PSIsContainer) { Add-PackageFiles $_.FullName $entry }
+            else { [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, $entry) }
+          }
+        }
+        try { Add-PackageFiles $package (Split-Path $package -Leaf) }
+        finally { $zip.Dispose() }
+        $zip = [IO.Compression.ZipFile]::OpenRead($env:SQL_ARCHIVE)
         try {
-          Get-ChildItem -LiteralPath $package -Recurse -File | ForEach-Object {
-            $entry = $_.FullName.Substring((Split-Path $package -Parent).Length + 1).Replace('\\', '/')
-            [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, $entry)
+          $prefix = (Split-Path $package -Leaf) + '/'
+          foreach ($entry in $zip.Entries) {
+            if (!$entry.FullName.StartsWith($prefix) -or $entry.FullName.Contains([char]92)) {
+              throw ('ZIP member path is invalid: ' + $entry.FullName)
+            }
           }
         } finally { $zip.Dispose() }
         [IO.Compression.ZipFile]::ExtractToDirectory($env:SQL_ARCHIVE, $env:SQL_EXTRACTED)
@@ -336,16 +348,17 @@ const actionRun = (status = 'in_progress', conclusion = null) => ({ databaseId: 
 
 test('Actions 每 12 秒查询 Job/Step，完成后校验 ZIP 并显示下载链接', async () => {
   const harness = resultHarness(), calls = [];
-  let polls = 0;
+  let polls = 0, details = 0;
   await showResult(async (program, args, live, timeout) => {
     calls.push(args);
     assert.ok(timeout > 0 && timeout <= 30000);
     if (args[0] === 'auth') return '';
     if (args[1] === 'list') { polls++; return JSON.stringify([actionRun()]); }
-    if (args[0] === 'run') return JSON.stringify(actionRun(polls === 2 ? 'completed' : 'in_progress', polls === 2 ? 'success' : null));
+    if (args[0] === 'run') { details++; return JSON.stringify(actionRun(details === 2 ? 'completed' : 'in_progress', details === 2 ? 'success' : null)); }
     return JSON.stringify({ url: 'https://example.test/release', isDraft: false, isPrerelease: false, assets: releaseAssets() });
   }, '0.4.0', 'abc', harness.options);
-  assert.equal(polls, 2);
+  assert.equal(polls, 1);
+  assert.equal(details, 2);
   assert.ok(calls.filter((args) => args[1] === 'list').every((args) => args[args.indexOf('--event') + 1] === 'push'));
   assert.ok(calls.some((args) => args[1] === 'view' && args[2] === '123' && args.includes('status,conclusion,url,headBranch,headSha,jobs')));
   assert.ok(harness.snapshots.some(({ lines, elapsed }) => elapsed === 12000 && lines[1].includes('已结束 1/1')));
@@ -353,7 +366,7 @@ test('Actions 每 12 秒查询 Job/Step，完成后校验 ZIP 并显示下载链
 });
 
 for (const scenario of ['network', 'timeout', 'foreignCommit', 'foreignTag', 'cancelled', 'emptyZip', 'prerelease']) test(`Actions 保留实际状态且禁止误报成功：${scenario}`, async () => {
-  const harness = resultHarness(); let polls = 0, releaseQueries = 0;
+  const harness = resultHarness(); let polls = 0, releaseQueries = 0, details = 0;
   if (scenario === 'timeout') harness.options.timeout = 12000;
   if (scenario === 'cancelled') harness.options.active = () => { if (polls) throw new Error('用户取消'); };
   if (scenario.startsWith('foreign')) harness.options.wait = false;
@@ -361,13 +374,15 @@ for (const scenario of ['network', 'timeout', 'foreignCommit', 'foreignTag', 'ca
     if (args[0] === 'auth') return '';
     if (args[1] === 'list') {
       polls++;
-      if (scenario === 'network' && polls === 2) throw new Error('network');
       const workflow = actionRun();
       if (scenario === 'foreignCommit') workflow.headSha = 'other';
       if (scenario === 'foreignTag') workflow.headBranch = 'v0.5.0';
       return JSON.stringify([workflow]);
     }
-    if (args[0] === 'run') return JSON.stringify(actionRun(['emptyZip', 'prerelease'].includes(scenario) ? 'completed' : 'in_progress', ['emptyZip', 'prerelease'].includes(scenario) ? 'success' : null));
+    if (args[0] === 'run') {
+      if (scenario === 'network' && ++details === 2) throw new Error('network');
+      return JSON.stringify(actionRun(['emptyZip', 'prerelease'].includes(scenario) ? 'completed' : 'in_progress', ['emptyZip', 'prerelease'].includes(scenario) ? 'success' : null));
+    }
     releaseQueries++;
     return JSON.stringify({ isDraft: false, isPrerelease: scenario === 'prerelease', assets: [{ name: 'WindowStash-v0.4.0-macOS.zip', size: scenario === 'emptyZip' ? 0 : 100 }] });
   }, '0.4.0', 'abc', harness.options);
@@ -384,13 +399,95 @@ test('gh 查询挂起会超时停止，命令包装保留查询超时参数', as
   await assert.rejects(command(root)(process.execPath, ['-e', 'setInterval(()=>{},1000)'], false, 50), /失败/);
 });
 
+for (const scenario of ['recover', 'continuous', 'queryTimeout', 'failed', 'success']) test(`进度查询重试及真实结果：${scenario}`, async () => {
+  const harness = resultHarness(), calls = [];
+  let details = 0;
+  await showResult(async (program, args, live, timeout) => {
+    assert.equal(program, 'gh'); calls.push(args);
+    if (args[0] === 'auth') return '';
+    if (args[1] === 'list') return JSON.stringify([actionRun()]);
+    if (args[0] === 'run') {
+      assert.equal(args[2], '123');
+      details++;
+      if ((scenario === 'recover' && details === 2) || (scenario === 'continuous' && details > 1)) throw new Error('ECONNRESET fixture connection');
+      if (scenario === 'queryTimeout' && details > 1) {
+        await harness.options.sleep(timeout);
+        throw new Error('query timed out after fixture deadline');
+      }
+      const result = actionRun(details > 1 ? 'completed' : 'in_progress', details > 1 ? scenario === 'failed' ? 'failure' : 'success' : null);
+      return JSON.stringify(result);
+    }
+    return JSON.stringify({ isDraft: false, isPrerelease: false, url: 'fixture', assets: releaseAssets() });
+  }, '0.4.0', 'abc', { ...harness.options, timeout: 48000 });
+  const messages = harness.messages.join('\n');
+  assert.equal(calls.filter((args) => args[1] === 'list').length, 1);
+  assert.ok(calls.every((args) => !['rerun', 'create', 'upload', 'edit'].includes(args[1])));
+  assert.equal(messages.includes('发布成功'), ['recover', 'success'].includes(scenario));
+  if (scenario === 'recover' || scenario === 'continuous') {
+    assert.match(messages, /查询诊断.*ECONNRESET fixture connection/);
+    assert.ok(harness.snapshots.some(({ lines }) => /正在重试.*构建中/.test(lines[0]) && lines[2].includes('Extension 检查与构建')));
+  }
+  if (['continuous', 'queryTimeout'].includes(scenario)) assert.match(messages, /等待超时/);
+  if (scenario === 'queryTimeout') assert.match(messages, /query timed out after fixture deadline/);
+  if (scenario === 'failed') {
+    assert.match(messages, /构建未成功：failure/);
+    assert.ok(harness.snapshots.some(({ lines }) => lines[2].includes('macOS · Extension 检查与构建 · failure')));
+  }
+});
+
+for (const scenario of ['missing', 'unauthenticated', 'invalidToken', 'apiFailure']) test(`gh 不可用时仅用匿名公开 GET 跟踪：${scenario}`, async () => {
+  const harness = resultHarness(), urls = [];
+  let commands = 0;
+  await showResult(async () => {
+    commands++;
+    if (scenario === 'missing') throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' });
+    throw new Error(scenario === 'invalidToken' ? 'HTTP 401: token invalid' : 'You are not logged into any GitHub hosts');
+  }, '0.4.0', 'abc', { ...harness.options, timeout: 24000, fetch: async (url, options) => {
+    urls.push(url);
+    assert.equal(options.headers.Authorization, undefined);
+    assert.equal(options.method, undefined);
+    assert.ok(options.signal);
+    if (scenario === 'apiFailure') return { ok: false, status: 403, text: async () => 'API rate limit exceeded' };
+    const workflow = { id: 123, status: 'completed', conclusion: 'success', head_branch: 'v0.4.0', head_sha: 'abc', html_url: 'fixture' };
+    const value = url.includes('/workflows/') ? { workflow_runs: [workflow] }
+      : url.includes('/jobs?') ? { jobs: [] }
+        : url.includes('/releases/') ? { draft: false, prerelease: false, html_url: 'fixture', assets: releaseAssets().map((asset) => ({ ...asset, browser_download_url: asset.url })) } : workflow;
+    return { ok: true, json: async () => value };
+  } });
+  assert.equal(commands, 1);
+  assert.ok(urls.every((url) => url.startsWith('https://api.github.com/repos/lishangyang290/windowstash/')));
+  assert.match(harness.messages.join('\n'), /查询诊断.*(?:ENOENT|not logged|HTTP 401)/);
+  assert.equal(harness.messages.some((line) => line.includes('发布成功')), scenario !== 'apiFailure');
+  if (scenario === 'apiFailure') assert.match(harness.messages.join('\n'), /等待超时[\s\S]*HTTP 403.*API rate limit exceeded/);
+});
+
+test('跟踪中认证失效后公开 API 仍查询原 Workflow，并保留失败步骤', async () => {
+  const harness = resultHarness(), urls = [];
+  let details = 0;
+  await showResult(async (program, args) => {
+    if (args[0] === 'auth') return '';
+    if (args[1] === 'list') return JSON.stringify([actionRun()]);
+    if (++details > 1) throw new Error('HTTP 401: Bad credentials');
+    return JSON.stringify(actionRun());
+  }, '0.4.0', 'abc', { ...harness.options, fetch: async (url) => {
+    urls.push(url);
+    return { ok: true, json: async () => url.includes('/jobs?')
+      ? { jobs: [{ name: 'Windows x64', status: 'completed', conclusion: 'failure', steps: [{ name: 'Validate Extension', status: 'completed', conclusion: 'failure' }] }] }
+      : { id: 123, status: 'completed', conclusion: 'failure', head_branch: 'v0.4.0', head_sha: 'abc', html_url: 'fixture' } };
+  } });
+  assert.ok(urls.every((url) => url.includes('/actions/runs/123')));
+  assert.match(harness.messages.join('\n'), /构建未成功：failure[\s\S]*查询诊断.*HTTP 401: Bad credentials/);
+  assert.ok(harness.snapshots.some(({ lines }) => lines[2].includes('Windows x64 · Extension 检查与构建 · failure')));
+});
+
 test('父 Workflow 状态不变时，Extension、Companion、ZIP、上传任务仍按真实 Step 更新', async () => {
   const harness = resultHarness(), names = ['Validate Extension', 'Build Companion app', 'Assemble macOS package', 'Create GitHub Release and upload macOS asset'];
   let index = -1;
   await showResult(async (program, args) => {
     if (args[0] === 'auth') return '';
-    if (args[1] === 'list') { index++; return JSON.stringify([actionRun()]); }
+    if (args[1] === 'list') return JSON.stringify([actionRun()]);
     if (args[0] === 'run') {
+      index++;
       const workflow = actionRun(index === names.length ? 'completed' : 'in_progress', index === names.length ? 'success' : null);
       workflow.jobs[0].steps = names.map((name, i) => ({ name, status: i < index ? 'completed' : i === index ? 'in_progress' : 'queued', conclusion: i < index ? 'success' : null }));
       return JSON.stringify(workflow);
