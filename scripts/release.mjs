@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import { readFile, unlink, access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';
-import { parseRelease, command, localState, preflight, checkRemote, planFiles, applyFiles, saveJournal, recoverPrepared, runChecks, publish, recoveryPlan, inspectRelease, versionPattern, repository } from './release-core.mjs';
+import { parseRelease, command, localState, preflight, checkRemote, planFiles, applyFiles, saveJournal, recoverPrepared, runChecks, publish, recoveryPlan, inspectRelease, readOnlyQueries, versionPattern, repository } from './release-core.mjs';
 
 export function inputLines(input, output) {
   const ui = terminalUI(output);
@@ -83,7 +83,19 @@ export async function recoverRelease(run, io, version, {
   if (JSON.stringify(await recoveryPlan(run, version)) !== JSON.stringify(plan)) throw new Error('确认期间恢复条件发生变化，请重新检查，未重跑 Workflow。');
   active();
   try { await run('gh', ['run', 'rerun', String(plan.workflowId), '--repo', repository], false, 30000); }
-  catch (error) { throw new Error(`重跑请求未确认，请先查看 ${plan.url} 的最新 attempt；禁止盲目重试：${error.message}`, { cause: error }); }
+  catch (error) {
+    let latest;
+    try {
+      latest = JSON.parse(await readOnlyQueries(run)('gh', ['api', `repos/${repository}/actions/runs/${plan.workflowId}`], false, 30000));
+    } catch (queryError) {
+      throw new Error(`重跑响应未确认：${error.message}；查询最新 attempt 失败：${queryError.message}。请先查看 ${plan.url}，禁止盲目重试。`, { cause: queryError });
+    }
+    if (latest.id !== plan.workflowId || latest.event !== 'push' || latest.path !== '.github/workflows/release.yml'
+      || latest.head_sha !== plan.sha || latest.head_branch !== plan.tag || latest.run_attempt !== plan.attempt + 1) {
+      throw new Error(`重跑请求未确认：${error.message}；远端 attempt 为 ${latest.run_attempt ?? '未知'}，未确认本次新构建。请先查看 ${plan.url}，禁止盲目重试。`, { cause: error });
+    }
+    ui.warning(`重跑请求响应中断，已只读确认新的构建，继续查看进度。诊断：${error.message}`);
+  }
   ui.hint('已请求重新构建，正在等待启动（最多 15 分钟）。');
   await track(run, version, plan.sha, { wait: true, active, ui, display, verbose, workflowId: plan.workflowId, attempt: plan.attempt + 1 });
 }

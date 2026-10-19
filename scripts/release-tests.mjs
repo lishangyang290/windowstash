@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { Readable, Writable } from 'node:stream';
 import { spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
-import { command, npmInvocation, parseRelease, validateInput, planFiles, applyFiles, restoreFiles, saveJournal, recoverPrepared, preflight, runChecks, publish, recoveryPlan, inspectRelease } from './release-core.mjs';
+import { command, npmInvocation, parseRelease, validateInput, planFiles, applyFiles, restoreFiles, saveJournal, recoverPrepared, preflight, checkRemote, runChecks, publish, recoveryPlan, inspectRelease, readOnlyQueries, retryReadOnly } from './release-core.mjs';
 import { terminalUI, presentedCommand, workflowProgress, liveProgress } from './release-ui.mjs';
 import { inputLines, editRelease, showResult, recoverRelease, handleReleaseState } from './release.mjs';
 import { copyReleaseSql, validateReleaseSql, releaseSqlFiles, packageEntries, validateGuidePackageTrees } from './release-package.mjs';
@@ -16,6 +16,7 @@ const root = resolve(import.meta.dirname, '..');
 const standard = '当前版本：v0.3.0\n目标版本：0.4.0\n\n更新内容：\n- 修复重启后关联丢失\n- 新增教程入口\n\nmain HEAD：\n56b8e2fe30517972e54cfe9a5ba4befd822f924c\n测试：\n224 项通过';
 const silent = new Writable({ write(chunk, encoding, done) { done(); } });
 const releaseAssets = () => ['macOS-arm64.zip', 'Windows-x64.zip'].map((suffix) => ({ name: `WindowStash-v0.4.0-${suffix}`, size: 100, url: 'https://example.test/download.zip' }));
+const fastRetries = { sleep: async () => {}, notify: () => {} };
 
 for (const [windows, version] of [[true, '0.6.0'], [false, '7.8.9']]) {
   test(`SQL 完整 ZIP 保留仓库原始字节及教程目录：${windows ? 'Windows' : 'macOS'}`, async (t) => {
@@ -1217,12 +1218,12 @@ for (const scenario of ['localTag', 'remoteTag', 'sha', 'tag', 'event', 'success
 });
 
 test('网络查询失败时停止，不能假定为全新或可恢复发布', async () => {
-  await assert.rejects(inspectRelease(mockGit(), '0.4.0', '0.3.0', async () => { throw new Error('ECONNRESET lookup'); }), /ECONNRESET lookup/);
+  await assert.rejects(inspectRelease(readOnlyQueries(mockGit(), fastRetries), '0.4.0', '0.3.0', async () => { throw new Error('ECONNRESET lookup'); }), /ECONNRESET lookup/);
   const mock = recoveryMock();
-  await assert.rejects(inspectRelease(async (program, args) => {
+  await assert.rejects(inspectRelease(readOnlyQueries(async (program, args) => {
     if (program === 'gh' && args[0] === 'api') throw new Error('HTTP 503 fixture');
     return mock.run(program, args);
-  }, '0.6.0', '0.6.0', async () => false), /HTTP 503 fixture/);
+  }, fastRetries), '0.6.0', '0.6.0', async () => false), /HTTP 503 fixture/);
   assert.equal(mock.writes().length, 0);
 });
 
@@ -1280,4 +1281,114 @@ test('--help 保留全部兼容选项并介绍统一输入', async () => {
   const output = await command(root)(process.execPath, ['scripts/release.mjs', '--help']);
   for (const option of ['--dry-run', '--restore', '--verbose', ':end', ':cancel', 'Enter', '自动检查发布状态']) assert.ok(output.includes(option));
   assert.doesNotMatch(output, /恢复失败的发布|请选择/);
+});
+
+for (const message of ['write: broken pipe', 'ECONNRESET', 'ETIMEDOUT', 'TLS connection was non-properly terminated', 'LibreSSL SSL_connect: SSL_ERROR_SYSCALL', 'HTTP 503', 'unexpected EOF']) test(`只读临时网络错误自动恢复：${message}`, async () => {
+  let calls = 0;
+  const sleeps = [], notices = [];
+  const result = await retryReadOnly(async () => { if (++calls === 1) throw new Error(message); return 'ok'; }, {
+    sleep: async ms => sleeps.push(ms), notify: text => notices.push(text),
+  });
+  assert.equal(result, 'ok'); assert.equal(calls, 2); assert.deepEqual(sleeps, [1000]);
+  assert.match(notices[0], /GitHub 连接中断，正在重试（2\/5）/);
+  assert.ok(notices[0].includes(message));
+});
+
+test('只读查询最多五次，按 1/2/4/8 秒退避并保留最后具体错误', async () => {
+  const failures = [], sleeps = [], notices = [];
+  await assert.rejects(retryReadOnly(async () => {
+    const error = new Error(`write: broken pipe ${failures.length + 1}`); failures.push(error); throw error;
+  }, { sleep: async ms => sleeps.push(ms), notify: text => notices.push(text) }), error => error === failures[4]);
+  assert.equal(failures.length, 5); assert.deepEqual(sleeps, [1000, 2000, 4000, 8000]);
+  assert.equal(notices.length, 4); assert.match(notices.at(-1), /5\/5/);
+});
+
+for (const message of ['HTTP 401 Bad credentials', 'HTTP 403 Forbidden', 'gh not authenticated', 'spawn gh ENOENT', 'certificate verify failed', 'Tag SHA mismatch']) test(`认证、配置或业务错误不重试：${message}`, async () => {
+  let calls = 0;
+  await assert.rejects(retryReadOnly(async () => { calls++; throw new Error(message); }, {
+    sleep: async () => assert.fail('不得等待重试'),
+  }), error => error.message === message);
+  assert.equal(calls, 1);
+});
+
+test('fetch 的底层网络错误及真实子进程超时可被识别', async () => {
+  let calls = 0;
+  await retryReadOnly(async () => {
+    if (++calls === 1) throw new TypeError('fetch failed', { cause: Object.assign(new Error('reset'), { code: 'ECONNRESET' }) });
+  }, fastRetries);
+  assert.equal(calls, 2);
+  await assert.rejects(command(root)(process.execPath, ['-e', 'setInterval(()=>{},1000)'], false, 50), error => error.code === 'ETIMEDOUT');
+});
+
+for (const [program, args, expected] of [
+  ['gh', ['api', 'repos/lishangyang290/windowstash/actions/runs/39209631988'], 5],
+  ['gh', ['auth', 'status'], 5], ['git', ['ls-remote', 'origin', 'refs/heads/main'], 5],
+  ['gh', ['run', 'rerun', '39209631988'], 1], ['git', ['push', 'origin', 'main'], 1],
+  ['gh', ['release', 'create', 'v0.6.0'], 1],
+  ['gh', ['api', 'repos/lishangyang290/windowstash/actions/runs/39209631988/rerun', '--method', 'POST'], 1],
+]) test(`自动重试严格区分只读与写操作：${program} ${args.join(' ')}`, async () => {
+  let calls = 0;
+  const execute = readOnlyQueries(async () => { calls++; throw new Error('write: broken pipe'); }, fastRetries);
+  await assert.rejects(readOnlyQueries(execute)(program, args), /broken pipe/);
+  assert.equal(calls, expected);
+});
+
+test('正常发布的远端引用与 Release 存在性检查均可恢复临时错误', async () => {
+  const git = mockGit(); let references = 0, releases = 0;
+  const execute = readOnlyQueries(async (program, args, live, timeout) => {
+    if (args[0] === 'ls-remote') {
+      assert.equal(timeout, 30000);
+      if (++references === 1) throw new Error('ECONNRESET git');
+    }
+    return git(program, args);
+  }, fastRetries);
+  await checkRemote(execute, '0.4.0', head, async () => { if (++releases < 3) throw new Error('HTTP 502'); return false; });
+  assert.equal(references, 3); assert.equal(releases, 3);
+});
+
+for (const scenario of ['recover', 'continuous', 'auth']) test(`最终确认后的二次验证保留并有限重试：${scenario}`, async () => {
+  const mock = recoveryMock(), harness = resultHarness();
+  let validations = 0, authChecks = 0, tracked = 0;
+  const notices = [];
+  const execute = readOnlyQueries(async (program, args) => {
+    if (program === 'gh' && args[0] === 'auth' && ++authChecks === 2 && scenario === 'auth') throw new Error('HTTP 401 Bad credentials');
+    if (program === 'gh' && args[0] === 'api' && args[1].includes('event=workflow_dispatch')) {
+      validations++;
+      if (validations > 1 && (scenario === 'continuous' || scenario === 'recover' && validations === 2)) throw new Error('write: broken pipe final validation');
+    }
+    return mock.run(program, args);
+  }, { ...fastRetries, notify: text => notices.push(text) });
+  const input = { ask: async prompt => prompt.includes('请输入完整') ? '发布 v0.6.0' : '1' };
+  const options = { ui: harness.options.ui, track: async () => { tracked++; } };
+  if (scenario === 'recover') await recoverRelease(execute, input, '0.6.0', options);
+  else await assert.rejects(recoverRelease(execute, input, '0.6.0', options), scenario === 'auth' ? /HTTP 401 Bad credentials/ : /broken pipe final validation/);
+  assert.equal(mock.writes().length, scenario === 'recover' ? 1 : 0);
+  assert.equal(tracked, scenario === 'recover' ? 1 : 0);
+  assert.equal(validations, scenario === 'continuous' ? 6 : scenario === 'recover' ? 3 : 1);
+  assert.equal(notices.length, scenario === 'continuous' ? 4 : scenario === 'recover' ? 1 : 0);
+});
+
+for (const scenario of ['started', 'unchanged', 'unknown', 'wrongSha']) test(`重跑响应丢失后只读核实 attempt，绝不重复重跑：${scenario}`, async () => {
+  const mock = recoveryMock(), harness = resultHarness();
+  let writes = 0, reads = 0, tracked = 0;
+  const execute = readOnlyQueries(async (program, args) => {
+    if (program === 'gh' && args[0] === 'run') { writes++; throw new Error('write: broken pipe rerun response'); }
+    if (writes && program === 'gh' && args[0] === 'api') {
+      reads++;
+      assert.ok(args[1].endsWith(`actions/runs/${recoveryId}`));
+      if (scenario === 'unknown') throw new Error('ECONNRESET attempt query');
+      return JSON.stringify(recoveryWorkflow({ run_attempt: scenario === 'unchanged' ? 1 : 2, status: 'in_progress', conclusion: null,
+        head_sha: scenario === 'wrongSha' ? 'c'.repeat(40) : recoverySha }));
+    }
+    return mock.run(program, args);
+  }, fastRetries);
+  const input = { ask: async prompt => prompt.includes('请输入完整') ? '发布 v0.6.0' : '1' };
+  const options = { ui: harness.options.ui, track: async (run, version, sha, target) => {
+    tracked++; assert.equal(target.workflowId, recoveryId); assert.equal(target.attempt, 2); assert.equal(sha, recoverySha);
+  } };
+  if (scenario === 'started') await recoverRelease(execute, input, '0.6.0', options);
+  else await assert.rejects(recoverRelease(execute, input, '0.6.0', options), /broken pipe rerun response[\s\S]*禁止盲目重试/);
+  assert.equal(writes, 1); assert.equal(reads, scenario === 'unknown' ? 5 : 1);
+  assert.equal(tracked, scenario === 'started' ? 1 : 0);
+  if (scenario === 'started') assert.match(harness.messages.join('\n'), /已只读确认新的构建/);
 });

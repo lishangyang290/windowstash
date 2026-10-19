@@ -6,6 +6,7 @@ import { resolve, dirname, delimiter } from 'node:path';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { terminalUI } from './release-ui.mjs';
 
 export const repository = 'lishangyang290/windowstash';
 export const versionPattern = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -85,6 +86,36 @@ export function npmInvocation(args, platform = process.platform, env = process.e
   return [executable, [cli, ...args]];
 }
 
+const readRetryOptions = Symbol('readRetryOptions');
+export async function retryReadOnly(operation, {
+  sleep = (ms) => new Promise(done => globalThis.setTimeout(done, ms)),
+  notify = (message) => terminalUI().warning(message),
+} = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await operation(); }
+    catch (error) {
+      const details = [error.name, error.code, error.message, error.cause?.code, error.cause?.message].join(' ');
+      const permanent = /HTTP\s*(?:401|403|404)\b|not authenticated|not logged|bad credentials|auth login|certificate|self.signed/i.test(details);
+      const transient = /broken pipe|\bEPIPE\b|ECONNRESET|ECONNABORTED|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|SSL_ERROR_SYSCALL|TLS[^\n]*(?:EOF|closed|reset|interrupted|terminated|timeout)|unexpected EOF|socket[^\n]*(?:hang up|disconnected)|connection[^\n]*(?:reset|closed|aborted)|Recv failure|error connecting to api\.github\.com|failed to connect|timed?\s*out|TimeoutError|HTTP\s*(?:408|429|500|502|503|504)\b/i.test(details);
+      if (permanent || !transient || attempt === 5) throw error;
+      notify(`GitHub 连接中断，正在重试（${attempt + 1}/5）：${error.message}`);
+      await sleep(1000 * 2 ** (attempt - 1));
+    }
+  }
+}
+
+export function readOnlyQueries(run, options = {}) {
+  if (run[readRetryOptions]) return run;
+  const execute = (program, args, live = false, timeout) => {
+    const read = program === 'git' && args[0] === 'ls-remote'
+      || program === 'gh' && args.length === 2 && (args[0] === 'auth' && args[1] === 'status'
+        || args[0] === 'api' && args[1].startsWith(`repos/${repository}/`));
+    return read ? retryReadOnly(() => run(program, args, live, timeout ?? 30000), options) : run(program, args, live, timeout);
+  };
+  execute[readRetryOptions] = options;
+  return execute;
+}
+
 export function command(root, onProgress = () => {}) {
   return (program, args, live = false, timeout) => new Promise((resolveResult, reject) => {
     onProgress(`${program} ${args.join(' ')}`);
@@ -97,7 +128,12 @@ export function command(root, onProgress = () => {}) {
     child.stdout?.on('data', (data) => { out += data; });
     child.stderr?.on('data', (data) => { err += data; });
     child.on('error', reject);
-    child.on('close', (code) => code === 0 ? resolveResult(out.trim()) : reject(new Error(`${program} ${args.join(' ')} 失败（${code}）：${err.trim()}`)));
+    child.on('close', (code, signal) => {
+      if (code === 0) return resolveResult(out.trim());
+      const error = new Error(`${program} ${args.join(' ')} 失败（${signal ?? code}）：${err.trim()}`);
+      if (timeout && child.killed && signal) error.code = 'ETIMEDOUT';
+      reject(error);
+    });
   });
 }
 
@@ -114,15 +150,17 @@ async function checkOrigin(run) {
 }
 
 export async function checkRemote(run, version, head, releaseExists) {
+  run = readOnlyQueries(run);
   await checkOrigin(run);
   const remote = await run('git', ['ls-remote', '--exit-code', 'origin', 'refs/heads/main']);
   if (remote.split(/\s/)[0] !== head) throw new Error('main 与远端不同，请先手动同步并检查。');
   if (await run('git', ['tag', '--list', `v${version}`])) throw new Error('本地已有同名 Tag，请选择新版本。');
   if (await run('git', ['ls-remote', 'origin', `refs/tags/v${version}`])) throw new Error('远端已有同名 Tag，请选择新版本。');
-  if (await releaseExists(version)) throw new Error('GitHub 已有对应 Release，请选择新版本。');
+  if (await retryReadOnly(() => releaseExists(version), run[readRetryOptions])) throw new Error('GitHub 已有对应 Release，请选择新版本。');
 }
 
 export async function preflight(run, version, current, notes, releaseExists) {
+  run = readOnlyQueries(run);
   validateInput(version, current, notes);
   const state = await localState(run);
   if (state.branch !== 'main') throw new Error('必须位于 main。请先验收并合并开发分支，再手动切换到 main。');
@@ -134,6 +172,7 @@ export async function preflight(run, version, current, notes, releaseExists) {
 }
 
 export async function inspectRelease(run, version, current, releaseExists) {
+  run = readOnlyQueries(run);
   if (!versionPattern.test(version)) throw new Error('目标版本必须为 X.Y.Z，不能含前导零或预发布后缀。');
   const remote = await run('git', ['ls-remote', 'origin', `refs/tags/v${version}`]);
   const local = await run('git', ['tag', '--list', `v${version}`]);
@@ -143,6 +182,7 @@ export async function inspectRelease(run, version, current, releaseExists) {
 }
 
 export async function recoveryPlan(run, version, { inspect = false } = {}) {
+  run = readOnlyQueries(run);
   if (!versionPattern.test(version)) throw new Error('恢复版本必须为 X.Y.Z。');
   const state = await localState(run);
   if (state.branch !== 'main' || state.status) throw new Error('恢复发布必须位于干净的 main 工作区。');
