@@ -8,7 +8,7 @@
     "build": "vite build && node ../scripts/validate-release-build.mjs dist",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --exclude \"**/src-tauri/target/**\"",
     "tauri": "tauri",
     "tauri:build": "npm run tauri:build:mac",
     "tauri:build:mac": "tauri build --bundles app",
