@@ -1,5 +1,34 @@
 # WindowStash
 
+每次处理需求都会打开一堆网页，做完又不敢关，怕后续还有修改或迭代？
+
+WindowStash 可以一键将整个浏览器窗口保存为独立工作区，暂时不用时放心关闭，需要时随时恢复。支持多个工作区管理、桌面快捷打开和标签页按需加载。
+
+[下载最新版本](https://github.com/lishangyang290/windowstash/releases/latest)
+
+| 一键保存整个窗口 | 随时更新工作区 |
+| :---: | :---: |
+| <img src="docs/images/readme/popup-save.png" alt="Chrome 扩展首次保存窗口界面" width="300"> | <img src="docs/images/readme/popup-update.png" alt="更新已有工作区界面" width="300"> |
+| 保存当前窗口中的所有标签页，可以保留窗口，也可以保存后直接关闭。 | 后续继续处理任务时，可以更新原来的工作区，自动识别标签页变化。 |
+
+### 不同任务，分别管理
+
+每个需求都可以保存为独立工作区，集中查看、管理和恢复，不必一直开着所有浏览器窗口。
+
+<img src="docs/images/readme/workspace-manager.png" alt="工作区管理页面" width="900">
+
+### 不用打开浏览器，也能快速找到工作区
+
+支持 Windows 系统托盘和 macOS 菜单栏入口，直接找到并打开之前保存的工作区。
+
+<p align="center">
+  <img src="docs/images/readme/companion.png" alt="WindowStash Companion 桌面端工作区入口" width="300">
+</p>
+
+**标签页按需加载：** 恢复工作区时，避免所有标签页同时加载。暂时不用的网页可以等到切换过去时再加载，减少恢复大量标签页时的卡顿。
+
+---
+
 WindowStash 是一个 Chrome 工作区管理工具，可将窗口中的标签页保存为工作区，稍后恢复。Chrome 扩展负责浏览器操作，Companion 提供 Windows 托盘和 macOS 菜单栏入口，数据通过用户自己的 Supabase 项目同步。
 
 安装步骤见安装包中的「开始使用.html」，或查看[教程源文件](public/开始使用.html)。
