@@ -12,6 +12,7 @@
     "tauri": "tauri",
     "tauri:build": "npm run tauri:build:mac",
     "tauri:build:mac": "tauri build --bundles app",
+    "pkg:build:mac": "node ../scripts/macos-package.mjs",
     "tauri:build:windows": "node ../scripts/build-windows-companion.mjs"
   },
   "dependencies": {

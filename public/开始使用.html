@@ -45,7 +45,7 @@
         <h3>macOS Apple Silicon 安装包</h3><pre class="package-tree">WindowStash-v0.5.0/
 ├── 开始使用.html
 ├── Chrome Extension/
-├── WindowStash Companion.app
+├── WindowStash-v0.5.0-macOS-arm64-setup.pkg
 ├── 初始化数据库.sql
 └── README.txt</pre>
       </div></section>
@@ -53,7 +53,7 @@
       <section class="step" id="companion"><div class="step-body">
         <p class="eyebrow">02 · 安装桌面应用</p><h2>安装 WindowStash Companion</h2><p class="intro">安装并打开压缩包中与你的系统对应的 Companion，保持运行，然后继续加载 Chrome 扩展。</p>
         <p id="companion-windows"><strong>Windows：</strong>运行安装程序。安装后，WindowStash 图标位于任务栏通知区域。</p>
-        <p id="companion-macos"><strong>macOS：</strong>将应用放入“应用程序”并打开。运行后，WindowStash 图标位于顶部菜单栏。如果提示无法打开，请参考<a href="https://blog.csdn.net/weixin_60605738/article/details/138607675" target="_blank" rel="noopener noreferrer">这篇教程</a>。</p>
+        <p id="companion-macos"><strong>macOS：</strong>双击压缩包中的 <span class="path">.pkg</span> 安装程序，按系统向导安装到“应用程序”。完成后打开 WindowStash Companion，图标位于顶部菜单栏。当前安装程序未使用 Apple 开发者签名且未完成公证，可能被系统安全检查阻止；若无法安装或打开，请保留提示并向发布者反馈，不要关闭系统安全保护。</p>
       </div></section>
 
       <section class="step" id="extension"><div class="step-body">
@@ -313,7 +313,7 @@ commit;</code></pre></div>
 
       <section class="step" id="update"><div class="step-body">
         <p class="eyebrow">12 · 更新版本</p><h2>更新已安装的 WindowStash</h2><p class="intro">按<a href="#download">下载说明</a>获取对应系统的新版 ZIP，完整解压后，按以下三步更新。继续使用原账号和原扩展目录。</p>
-        <ol class="tasks"><li><strong>更新 Companion 桌面应用。</strong>安装并打开新版 Companion，覆盖原来的应用。macOS 替换前先退出 Companion。</li><li><strong>更新 Chrome 扩展文件。</strong>将新版 <span class="path">Chrome Extension</span> 文件夹中的文件覆盖到原来加载的目录，不要移动原目录。</li><li><strong>刷新原有扩展。</strong>打开 <span class="path">chrome://extensions</span>，点击原 WindowStash 卡片上的刷新按钮。</li></ol>
+        <ol class="tasks"><li><strong>更新 Companion 桌面应用。</strong>安装并打开新版 Companion，覆盖原来的应用。macOS 双击新版 <span class="path">.pkg</span>，按系统向导覆盖更新，无需手动退出 Companion；安装完成后重新打开应用，原账号、工作区和自启动偏好会保留。</li><li><strong>更新 Chrome 扩展文件。</strong>将新版 <span class="path">Chrome Extension</span> 文件夹中的文件覆盖到原来加载的目录，不要移动原目录。</li><li><strong>刷新原有扩展。</strong>打开 <span class="path">chrome://extensions</span>，点击原 WindowStash 卡片上的刷新按钮。</li></ol>
         <p>更新完成后，打开 WindowStash，确认原来的工作区正常显示即可。</p>
       </div></section>
 
@@ -323,7 +323,7 @@ commit;</code></pre></div>
         <details><summary>找不到 Project URL 或 Publishable Key 怎么办？</summary><p>点击 Supabase 左侧导航菜单第一项 Project Overview，回到项目首页，再打开项目地址右边的 Copy 菜单。如果首页没有这个菜单，从左侧导航底部进入 Project Settings → API Keys。</p></details>
         <details><summary>为什么恢复后有些网页没有立即加载？</summary><p>为了避免大量标签页同时占用内存，WindowStash 会在你点击标签页时再加载网页。</p></details>
         <details><summary>为什么 Chrome 提示这是开发者模式扩展？</summary><p>当前版本还没有发布到 Chrome Web Store，因此使用 Chrome 官方提供的“加载已解压的扩展程序”方式安装。</p></details>
-        <details><summary>macOS 提示无法打开怎么办？</summary><p>请查看<a href="https://blog.csdn.net/weixin_60605738/article/details/138607675" target="_blank" rel="noopener noreferrer">这篇教程</a>中的处理方法。</p></details>
+        <details><summary>macOS 提示无法打开怎么办？</summary><p>当前安装程序未使用 Apple 开发者签名且未完成公证，安装或打开时可能被系统阻止。请确认文件来自可信发布来源，保留具体提示并向发布者反馈；不要关闭系统安全保护。</p></details>
         <details><summary>卸载 WindowStash 后工作区会丢吗？</summary><p>已同步到 Supabase 的工作区不会因卸载扩展而从云端删除，重新连接原项目和账号后可以同步回来。但卸载会失去扩展的本地数据，尚未同步的修改和本地冲突副本可能无法找回。更新时不要卸载扩展；如果删除了 Supabase 项目，WindowStash 也无法恢复其中的云端数据。</p></details>
       </div></section>
     </main>

@@ -26,15 +26,13 @@ for (const [windows, version] of [[true, '0.6.0'], [false, '7.8.9']]) {
     await copyReleaseSql(packageRoot);
     const guide = (await readFile(resolve(root, 'public/开始使用.html'), 'utf8')).replace(/WindowStash-v\d+\.\d+\.\d+/g, `WindowStash-v${version}`);
     validateGuidePackageTrees(guide, version);
+    assert.throws(() => validateGuidePackageTrees(guide.replace(`WindowStash-v${version}-macOS-arm64-setup.pkg`, 'WindowStash Companion.app'), version), /不一致/);
     await writeFile(resolve(packageRoot, '开始使用.html'), guide, 'utf8');
     await writeFile(resolve(packageRoot, 'README.txt'), 'fixture', 'utf8');
     await mkdir(resolve(packageRoot, 'Chrome Extension'));
     await writeFile(resolve(packageRoot, 'Chrome Extension/manifest.json'), JSON.stringify({ version }), 'utf8');
     if (windows) await writeFile(resolve(packageRoot, `WindowStash-v${version}-Windows-x64-setup.exe`), 'fixture');
-    else {
-      await mkdir(resolve(packageRoot, 'WindowStash Companion.app'));
-      await writeFile(resolve(packageRoot, 'WindowStash Companion.app/fixture'), 'fixture');
-    }
+    else await writeFile(resolve(packageRoot, `WindowStash-v${version}-macOS-arm64-setup.pkg`), 'fixture');
     assert.deepEqual((await readdir(packageRoot)).sort(), packageEntries(version, windows));
     validateReleaseSql(packageRoot);
     const result = process.platform === 'win32'
@@ -530,7 +528,10 @@ test('九处版本同步、依赖保持不变、旧教程包名更新、恢复',
     const after = JSON.parse(await readFile(resolve(directory, path), 'utf8'));
     delete before.packages['']; delete after.packages['']; assert.deepEqual(after.packages, before.packages);
   }
-  assert.ok(!(await readFile(resolve(directory, 'public/开始使用.html'), 'utf8')).includes('WindowStash-v0.3.0'));
+  const guide = await readFile(resolve(directory, 'public/开始使用.html'), 'utf8');
+  assert.ok(!guide.includes('WindowStash-v0.3.0'));
+  assert.match(guide, /WindowStash-v0\.4\.0-macOS-arm64-setup\.pkg/);
+  validateGuidePackageTrees(guide, '0.4.0');
   const lock = plan.find((f) => f.path.endsWith('Cargo.lock'));
   const undo = lock.after.split('[[package]]').map((block) => /^name = "windowstash-companion"$/m.test(block) ? block.replace('version = "0.4.0"', 'version = "0.3.0"') : block).join('[[package]]');
   assert.equal(undo, lock.before);

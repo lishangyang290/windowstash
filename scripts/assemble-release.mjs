@@ -3,6 +3,7 @@ import { resolve, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { generateReleaseGuide } from './generate-release-guide.mjs';
 import { copyReleaseSql } from './release-package.mjs';
+import { buildMacPackage, macInstallerName } from './macos-package.mjs';
 
 const version = process.env.RELEASE_VERSION;
 if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version ?? '')) throw new Error('无效发布版本');
@@ -26,7 +27,7 @@ if (windows) {
   await copyFile(join(bundle, installers[0]), join(packageDir, installer));
   await copyFile(join(bundle, installers[0]), join(output, installer));
 } else {
-  await cp('companion/src-tauri/target/release/bundle/macos/WindowStash Companion.app', join(packageDir, 'WindowStash Companion.app'), { recursive: true });
+  buildMacPackage('companion/src-tauri/target/release/bundle/macos/WindowStash Companion.app', join(packageDir, macInstallerName(version)), version);
 }
 const zipPath = join(output, `${name}-${windows ? 'Windows-x64' : 'macOS-arm64'}.zip`);
 if (windows) {

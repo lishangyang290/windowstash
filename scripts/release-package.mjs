@@ -2,13 +2,14 @@ import { copyFile, mkdir } from 'node:fs/promises';
 import { lstatSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { URL } from 'node:url';
+import { macInstallerName } from './macos-package.mjs';
 
 export const releaseSqlFiles = {
   '初始化数据库.sql': 'supabase/schema.sql',
 };
 
 export const packageEntries = (version, windows) => ['Chrome Extension', 'README.txt', '初始化数据库.sql',
-  windows ? `WindowStash-v${version}-Windows-x64-setup.exe` : 'WindowStash Companion.app', '开始使用.html'].sort();
+  windows ? `WindowStash-v${version}-Windows-x64-setup.exe` : macInstallerName(version), '开始使用.html'].sort();
 
 export async function copyReleaseSql(root) {
   for (const [destination, source] of Object.entries(releaseSqlFiles)) {

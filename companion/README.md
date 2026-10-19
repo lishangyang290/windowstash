@@ -23,6 +23,7 @@ Rust 库管理账号授权、集中 Token 刷新、本地工作区库和同步�
 | `npm run build` | 前端正式构建及私人配置扫描，不生成桌面安装包 |
 | `npm run tauri:build:windows` | Windows x64 + MSVC 构建中文 NSIS 安装器 |
 | `npm run tauri:build:mac` | macOS 构建 `.app`；`tauri:build` 是此命令的别名 |
+| `npm run pkg:build:mac` | Apple Silicon macOS 将已构建的 `.app` 打包为 `.pkg`，输出到 `src-tauri/target/release/bundle/pkg/` |
 | `npm test` / `npm run typecheck` / `npm run lint` | 前端测试及静态检查，按任务范围选择 |
 
 Tauri hook 自动运行 [build-native-host.mjs](../scripts/build-native-host.mjs) 和前端构建。构建不会启动应用或注册 Host；运行应用才会注册。Windows 脚本要求已安装 MSVC x64 工具链；macOS CI 当前目标为 arm64，应用配置最低 macOS 12.0。不要将不同目标的 Host 混装。
@@ -39,7 +40,7 @@ node scripts/verify-browser-auth.mjs
 ## 安装与更新状态
 
 - **Windows：**中文 NSIS 当前用户安装、Companion/Host 覆盖及哈希核验已验证。安装器正常关闭 Companion，旧 Host 可保持原请求直至连接结束；后续请求使用新文件。扩展刷新后重新建立连接，避免依赖旧常驻进程。首次补装 WebView2 需要网络。
-- **macOS：**当前发行脚本打包 `.app`，使用 ad-hoc 签名，未配置 Apple 公证；`.pkg` 的安装、升级及系统安全提示尚待实机验收，不能视为已发布功能。
+- **macOS：**发行 ZIP 包含 `.pkg`，使用系统 `pkgbuild`、`productbuild`，固定安装到 `/Applications/WindowStash Companion.app`。双击后按系统向导完成安装或覆盖更新，再打开应用；无需手动退出 Companion。旧版 `.app` 覆盖、同包重复安装、账号及工作区保留、Chrome 连接和后台同步已通过本机实机验收，自启动配置保持不变，未测试重新登录后的自动启动。应用为 ad-hoc 签名，`.pkg` 未使用 Apple 开发者签名且未公证，Gatekeeper 分发限制仍存在。安装失败不能保证自动回滚。
 
 用户更新按「更新 Companion → 覆盖原扩展目录 → 在 `chrome://extensions` 刷新原扩展」执行，无需停用扩展、退出 Chrome、手动结束 Host 或重新配置原账号。详细操作集中在[用户教程源文件](../public/开始使用.html)，不在这里重复。
 

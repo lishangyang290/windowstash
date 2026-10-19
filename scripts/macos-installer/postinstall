@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+. "$(/usr/bin/dirname "$0")/processes.sh"
+# Close any old process that Chrome or a login item restarted during replacement.
+# Launching the app is left to the user; its existing startup preference is preserved.
+stop_installed_processes

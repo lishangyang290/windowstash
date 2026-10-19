@@ -11,6 +11,7 @@ import {
 import { basename, join, relative, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { packageEntries, validateReleaseSql, validateGuidePackageTrees } from './release-package.mjs';
+import { expandMacPackage, macInstallerName } from './macos-package.mjs';
 
 const [packageRootArgument, zipArgument, version] = process.argv.slice(2);
 if (!packageRootArgument || !zipArgument || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version ?? '')) {
@@ -127,18 +128,14 @@ function validateStructure(root, label) {
       } finally { rmSync(extracted, { recursive: true, force: true }); }
     } catch (error) { errors.push(`${label} Windows NSIS 验证失败：${error.message}`); }
   } else {
-    const app = join(root, 'WindowStash Companion.app', 'Contents');
+    const audit = mkdtempSync(join(tmpdir(), 'windowstash-pkg-audit-'));
     try {
-      readFileSync(join(app, 'Info.plist'));
-      for (const executable of ['windowstash-companion', 'windowstash-native-host']) {
-        const stat = lstatSync(join(app, 'MacOS', executable));
-        if (!stat.isFile() || !(stat.mode & 0o111)) throw new Error();
-        if (execFileSync('lipo', ['-archs', join(app, 'MacOS', executable)], { encoding: 'utf8' }).trim() !== 'arm64') throw new Error('必须为 Apple Silicon arm64');
-      }
-      execFileSync('codesign', ['--verify', '--deep', '--strict', join(root, 'WindowStash Companion.app')], { stdio: 'pipe' });
-    } catch {
-      errors.push(`${label} 的 WindowStash Companion.app 不完整或签名无效`);
-    }
+      expandMacPackage(join(root, macInstallerName(version)), join(audit, 'expanded'), version);
+      validatePaths(audit, 'PKG 安装内容');
+      validateContents(audit, 'PKG 安装内容');
+    } catch (error) {
+      errors.push(`${label} macOS PKG 验证失败：${error.message}`);
+    } finally { rmSync(audit, { recursive: true, force: true }); }
   }
 
   try {

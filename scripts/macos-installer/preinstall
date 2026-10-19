@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+. "$(/usr/bin/dirname "$0")/processes.sh"
+[ "${3:-}" = / ] || { echo 'Install on the startup volume only.' >&2; exit 1; }
+[ ! -L /Applications ] && [ ! -L "$app" ] || { echo 'Refusing a symlink installation target.' >&2; exit 1; }
+if [ -e "$app" ]; then
+  identifier=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist")
+  [ "$identifier" = app.windowstash.companion ] || { echo 'Unexpected application at installation target.' >&2; exit 1; }
+fi
+stop_installed_processes

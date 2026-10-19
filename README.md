@@ -67,9 +67,9 @@ docs/                     # 账号隔离及发布工具说明
 | 平台 | 桌面开发要求 | 安装包 |
 | --- | --- | --- |
 | Windows x64 | MSVC x64 Rust 工具链、Visual Studio C++ Build Tools / Windows SDK、WebView2 Runtime | 中文 NSIS 安装器，安装到当前用户；须在 Windows x64 主机构建 |
-| macOS | Xcode Command Line Tools、Rust、系统 WebView | CI 构建 Apple Silicon arm64 `.app`；Tauri 配置最低 macOS 12.0 |
+| macOS | Xcode Command Line Tools、Rust、系统 WebView | Apple Silicon arm64 `.pkg` 安装器，内含完整 `.app`；Tauri 配置最低 macOS 12.0 |
 
-Windows 构建脚本会选择已安装的 `*-x86_64-pc-windows-msvc` 工具链。单独运行 Cargo 或 Host 脚本时也应选择该工具链，避免生成 GNU 目标文件。macOS 使用 ad-hoc 签名，未配置 Apple 公证；目前提供 `.app`，`.pkg` 尚待实机验收。
+Windows 构建脚本会选择已安装的 `*-x86_64-pc-windows-msvc` 工具链。单独运行 Cargo 或 Host 脚本时也应选择该工具链，避免生成 GNU 目标文件。macOS 应用使用 ad-hoc 签名，`.pkg` 未使用 Apple 开发者签名，也未完成 Apple 公证，仍可能被 Gatekeeper 阻止。`.pkg` 覆盖旧版 `.app`、重复安装及主要功能已通过本机实机验收；这不代表已解决公开分发的系统安全限制。
 
 ## 本地开发与运行
 
@@ -105,9 +105,10 @@ npm --prefix companion run tauri:build:windows
 
 # macOS，在 macOS 执行
 npm --prefix companion run tauri:build:mac
+npm --prefix companion run pkg:build:mac
 ```
 
-Windows 安装器输出在 `companion/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`，macOS `.app` 输出在 `companion/src-tauri/target/release/bundle/macos/`。Tauri 构建前会自动编译 Host，将其复制到应用打包目录，并构建前端。
+Windows 安装器输出在 `companion/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`，macOS `.app` 输出在 `companion/src-tauri/target/release/bundle/macos/`。`pkg:build:mac` 使用系统 `pkgbuild`、`productbuild` 将已构建的 `.app` 打包到 `companion/src-tauri/target/release/bundle/pkg/`；macOS 发行 ZIP 包含 `.pkg`。Tauri 构建前会自动编译 Host，将其复制到应用打包目录，并构建前端。
 
 `npm --prefix companion run build` 只构建前端。`tauri:build` 是 macOS 构建命令的别名；Windows 使用 `tauri:build:windows`。
 
@@ -175,6 +176,8 @@ Rust 测试需要对应平台工具链。构建 Host 后，可运行 `node scrip
 诊断中心支持查看、导入及导出结构化记录，包含操作关联、组件、构建标识、租约和错误码；导出内容经过字段筛选。排查时先核对账号、实际运行路径、Native Messaging 注册和最近同步记录，保留原始数据。
 
 Windows 安装器会覆盖并校验 Companion 和 Host 文件。旧 Host 进程可继续处理原连接，连接结束后退出；确认更新时需要同时核对文件和运行进程。
+
+macOS 双击 `.pkg`，按系统向导安装或覆盖更新到 `/Applications/WindowStash Companion.app`，完成后打开应用。安装器处理该安装目录内的 Companion 和 Host 进程，无需手动退出 Companion，保留用户数据及自启动偏好；进程无法正常退出时停止安装，不强制结束。安装失败不能保证自动恢复旧版，应保留原安装包及已有备份。
 
 更新时先安装新版 Companion，再用新版扩展文件覆盖原加载目录，最后在 `chrome://extensions` 刷新原扩展。刷新后重新建立连接，无需停用扩展、退出 Chrome 或重新配置账号。
 
