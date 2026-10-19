@@ -7,9 +7,9 @@ import { pathToFileURL } from 'node:url';
 import { Readable, Writable } from 'node:stream';
 import { spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
-import { command, npmInvocation, parseRelease, validateInput, planFiles, applyFiles, restoreFiles, saveJournal, recoverPrepared, preflight, runChecks, publish } from './release-core.mjs';
+import { command, npmInvocation, parseRelease, validateInput, planFiles, applyFiles, restoreFiles, saveJournal, recoverPrepared, preflight, runChecks, publish, recoveryPlan } from './release-core.mjs';
 import { terminalUI, presentedCommand, workflowProgress, liveProgress } from './release-ui.mjs';
-import { inputLines, editRelease, showResult } from './release.mjs';
+import { inputLines, editRelease, showResult, chooseMode, recoverRelease } from './release.mjs';
 import { copyReleaseSql, validateReleaseSql, releaseSqlFiles, packageEntries, validateGuidePackageTrees } from './release-package.mjs';
 
 const root = resolve(import.meta.dirname, '..');
@@ -776,7 +776,7 @@ for (const scenario of ['cancel', 'testFailure', 'mainPushFailure', 'tagPushFail
       const childEnv = { ...process.env }; delete childEnv.NODE_TEST_CONTEXT;
     const child = spawn(process.execPath, ['--import', pathToFileURL(resolve(directory, 'fetch-mock.mjs')).href, 'scripts/release.mjs'], { cwd: directory, env: childEnv });
       let text = ''; child.stdout.on('data', (data) => { text += data; }); child.stderr.on('data', (data) => { text += data; }); child.on('error', fail); child.on('close', (code) => done({ code, text }));
-      child.stdin.end(standard + '\n:end\n1\n' + (scenario === 'cancel' ? '取消' : '发布 v0.4.0') + '\n');
+      child.stdin.end('1\n' + standard + '\n:end\n1\n' + (scenario === 'cancel' ? '取消' : '发布 v0.4.0') + '\n');
     });
     assert.equal(result.code, 1, result.text);
     if (['cancel', 'testFailure'].includes(scenario)) {
@@ -1017,4 +1017,163 @@ test('验收：正式版本已准备为新版本时，测试夹具仍独立且�
   assert.equal(plan.length, 9);
   await applyFiles(directory, plan);
   assert.match(await command(directory)(process.execPath, ['scripts/validate-release-version.mjs', '0.4.0']), /通过/);
+});
+
+const recoverySha = '02403909ebff32c58269c506aa0aa05b7c3a36c5';
+const recoveryId = 39209631988;
+const recoveryWorkflow = (overrides = {}) => ({ id: recoveryId, event: 'push', path: '.github/workflows/release.yml',
+  head_sha: recoverySha, head_branch: 'v0.6.0', run_attempt: 1, status: 'completed', conclusion: 'cancelled',
+  html_url: `https://github.com/lishangyang290/windowstash/actions/runs/${recoveryId}`, ...overrides });
+const recoveryJobs = (conclusion = 'success') => ['Windows x64', 'macOS arm64', 'Publish complete Release'].map((name) => ({
+  name, status: 'completed', conclusion, steps: [{ name: 'Validate Extension', status: 'completed', conclusion }],
+}));
+
+function recoveryMock(scenario = '') {
+  const calls = [];
+  let releaseChecks = 0, workflowChecks = 0;
+  const run = async (program, args) => {
+    calls.push([program, ...args]);
+    if (program === 'git') {
+      const responses = {
+        'branch --show-current': scenario === 'branch' ? 'other' : 'main', 'rev-parse HEAD': 'b'.repeat(40),
+        'status --porcelain --untracked-files=all': scenario === 'dirty' ? ' M user.txt' : '',
+        'remote get-url --all origin': 'https://github.com/lishangyang290/windowstash.git',
+        'remote get-url --push --all origin': 'https://github.com/lishangyang290/windowstash.git',
+        'ls-remote --exit-code origin refs/heads/main': `${(scenario === 'main' ? 'c' : 'b').repeat(40)}\trefs/heads/main`,
+        'rev-parse refs/tags/v0.6.0': scenario === 'localTag' ? 'c'.repeat(40) : recoverySha,
+        [`merge-base --is-ancestor ${recoverySha} ${'b'.repeat(40)}`]: '',
+        [`show ${recoverySha}:package.json`]: JSON.stringify({ version: scenario === 'version' ? '0.5.0' : '0.6.0' }),
+        [`show ${recoverySha}:.github/release-notes/v0.6.0.md`]: scenario === 'notes' ? '' : '- fixture notes',
+      };
+      if (scenario === 'ancestry' && args[0] === 'merge-base') throw new Error('Tag is not an ancestor');
+      assert.ok(args.join(' ') in responses, `禁止未模拟的 Git 操作：${args}`);
+      return responses[args.join(' ')];
+    }
+    assert.equal(program, 'gh');
+    if (args[0] === 'auth') {
+      if (scenario === 'auth') throw new Error('gh not authenticated');
+      if (scenario === 'missing') throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' });
+      return '';
+    }
+    if (args[0] === 'run') {
+      assert.deepEqual(args, ['run', 'rerun', String(recoveryId), '--repo', 'lishangyang290/windowstash']);
+      if (scenario === 'requestFailure') throw new Error('fixture rerun response lost');
+      return '';
+    }
+    assert.equal(args[0], 'api');
+    const path = args[1].replace('repos/lishangyang290/windowstash/', '');
+    let value;
+    if (path === 'git/ref/tags/v0.6.0') value = { ref: 'refs/tags/v0.6.0', object: { type: 'commit', sha: scenario === 'remoteTag' ? 'c'.repeat(40) : recoverySha } };
+    else if (path.startsWith('releases?')) value = scenario === 'release' || (scenario === 'changed' && ++releaseChecks > 1) ? [{ tag_name: 'v0.6.0', draft: true }] : [];
+    else if (path.includes('event=push')) value = { workflow_runs: [recoveryWorkflow()] };
+    else if (path === `actions/runs/${recoveryId}`) value = recoveryWorkflow({
+      ...(scenario === 'attemptChanged' ? { run_attempt: ++workflowChecks } : {}),
+      ...(scenario === 'sha' ? { head_sha: 'c'.repeat(40) } : {}),
+      ...(scenario === 'tag' ? { head_branch: 'v0.5.0' } : {}),
+      ...(scenario === 'event' ? { event: 'workflow_dispatch' } : {}),
+      ...(scenario === 'running' ? { status: 'in_progress' } : {}),
+      ...(scenario === 'success' ? { conclusion: 'success' } : {}),
+      ...(scenario === 'failure' ? { conclusion: 'failure' } : {}),
+    });
+    else if (path.includes('event=workflow_dispatch')) value = { workflow_runs: scenario === 'unverified' ? [] : [{ id: 39201839468, event: 'workflow_dispatch', head_sha: recoverySha, run_attempt: 1, status: 'completed', conclusion: 'success' }] };
+    else if (path === 'actions/runs/39201839468/attempts/1/jobs?per_page=100') value = { jobs: recoveryJobs().slice(0, scenario === 'onePlatform' ? 1 : 2) };
+    else assert.fail(`未模拟的 API：${path}`);
+    return JSON.stringify(value);
+  };
+  return { run, calls, writes: () => calls.filter(([program, subcommand]) => program === 'gh' && subcommand === 'run') };
+}
+
+test('同一入口提供新版本、失败恢复及取消，新版本仍进入原有粘贴流程', async () => {
+  const messages = [], ui = terminalUI({ isTTY: false }, (line) => messages.push(line));
+  const input = io(['1', ...standard.split('\n'), ':end', '1']);
+  assert.equal(await chooseMode(input, ui), '1');
+  assert.equal((await editRelease(input, '0.3.0', () => {})).version, '0.4.0'); input.close();
+  const recovery = io(['2']); assert.equal(await chooseMode(recovery, ui), '2'); recovery.close();
+  const cancel = io(['3']); await assert.rejects(chooseMode(cancel, ui), /取消/); cancel.close();
+  assert.match(messages.join('\n'), /发布新版本[\s\S]*恢复失败的发布[\s\S]*取消/);
+});
+
+test('识别 v0.6.0 原取消 Workflow，允许已验证 Tag 落后于 main', async () => {
+  const mock = recoveryMock(), plan = await recoveryPlan(mock.run, '0.6.0');
+  assert.equal(plan.workflowId, recoveryId); assert.equal(plan.sha, recoverySha); assert.equal(plan.attempt, 1);
+  assert.equal(plan.conclusion, 'cancelled'); assert.notEqual(plan.head, plan.sha);
+  assert.equal(mock.writes().length, 0);
+  assert.equal((await recoveryPlan(recoveryMock('failure').run, '0.6.0')).conclusion, 'failure');
+});
+
+for (const scenario of ['dirty', 'branch', 'main', 'ancestry', 'localTag', 'remoteTag', 'sha', 'tag', 'version', 'notes', 'event', 'running', 'success', 'release', 'unverified', 'onePlatform', 'auth', 'missing']) test(`恢复条件不符安全停止：${scenario}`, async () => {
+  const mock = recoveryMock(scenario);
+  await assert.rejects(recoveryPlan(mock.run, '0.6.0'));
+  assert.equal(mock.writes().length, 0);
+});
+
+for (const scenario of ['confirm', 'cancel', 'changed', 'attemptChanged', 'requestFailure']) test(`恢复确认只允许一次全部 Jobs 重跑：${scenario}`, async () => {
+  const mock = recoveryMock(scenario), harness = resultHarness();
+  let tracked = 0;
+  const input = { ask: async () => scenario === 'cancel' ? '取消' : '恢复发布 v0.6.0' };
+  const options = { ui: harness.options.ui, track: async (run, version, sha, options) => {
+    tracked++; assert.equal(sha, recoverySha); assert.equal(version, '0.6.0');
+    assert.equal(options.workflowId, recoveryId); assert.equal(options.attempt, 2);
+  } };
+  if (scenario === 'confirm') await recoverRelease(mock.run, input, '0.6.0', options);
+  else await assert.rejects(recoverRelease(mock.run, input, '0.6.0', options), scenario === 'requestFailure' ? /禁止盲目重试/ : scenario === 'changed' ? /已有对应 Release/ : scenario === 'attemptChanged' ? /恢复条件发生变化/ : /取消/);
+  assert.equal(mock.writes().length, ['confirm', 'requestFailure'].includes(scenario) ? 1 : 0);
+  assert.equal(tracked, scenario === 'confirm' ? 1 : 0);
+});
+
+for (const scenario of ['success', 'failure', 'retry', 'timeout', 'newAttemptTimeout', 'foreignAttempt', 'wrongSha', 'publishSkipped', 'extraAsset']) test(`恢复进度严格跟踪新 attempt：${scenario}`, async () => {
+  const harness = resultHarness(), calls = [];
+  let queries = 0;
+  await showResult(async (program, args) => {
+    assert.equal(program, 'gh'); calls.push(args);
+    if (args[0] === 'auth') return '';
+    if (args[0] === 'release') return JSON.stringify({ isDraft: false, isPrerelease: false, assets: [
+      ...['Windows-x64.zip', 'macOS-arm64.zip'].map(suffix => ({ name: `WindowStash-v0.6.0-${suffix}`, size: 100 })),
+      ...(scenario === 'extraAsset' ? [{ name: 'unexpected.exe', size: 100 }] : []),
+    ] });
+    assert.equal(args[0], 'api');
+    const path = args[1];
+    if (path.endsWith(`actions/runs/${recoveryId}`)) {
+      queries++;
+      if (scenario === 'retry' && queries === 3) throw new Error('ECONNRESET fixture');
+      if (scenario === 'timeout' && queries > 1) throw new Error('ETIMEDOUT fixture');
+      if (queries === 1 || scenario === 'newAttemptTimeout') return JSON.stringify(recoveryWorkflow());
+      return JSON.stringify(recoveryWorkflow({ run_attempt: scenario === 'foreignAttempt' ? 3 : 2,
+        head_sha: scenario === 'wrongSha' ? 'c'.repeat(40) : recoverySha,
+        status: queries < 4 ? 'in_progress' : 'completed', conclusion: queries < 4 ? null : scenario === 'failure' ? 'failure' : 'success' }));
+    }
+    if (path.includes('/jobs?')) {
+      assert.ok(path.includes(`/runs/${recoveryId}/attempts/2/jobs?`));
+      const jobs = recoveryJobs(scenario === 'failure' ? 'failure' : 'success');
+      if (scenario === 'publishSkipped') jobs[2].conclusion = 'skipped';
+      return JSON.stringify({ jobs });
+    }
+    if (path.endsWith('/git/ref/tags/v0.6.0')) return JSON.stringify({ object: { type: 'commit', sha: recoverySha } });
+    assert.fail(`未模拟的查询：${args}`);
+  }, '0.6.0', recoverySha, { ...harness.options, workflowId: recoveryId, attempt: 2, timeout: 60000 });
+  const text = harness.messages.join('\n');
+  assert.equal(text.includes('发布成功'), ['success', 'retry'].includes(scenario));
+  assert.ok(harness.snapshots.some(({ lines }) => lines[0].includes('等待新的 attempt 2')));
+  assert.ok(!text.includes('构建未成功：cancelled'));
+  assert.ok(calls.every(args => !['rerun', 'create', 'upload', 'edit', 'list'].includes(args[1])));
+  if (scenario === 'failure') assert.match(text, /构建未成功：failure/);
+  if (scenario === 'retry') assert.match(text, /查询诊断.*ECONNRESET/);
+  if (scenario.includes('Timeout') || scenario === 'timeout') assert.match(text, /等待超时/);
+  if (scenario === 'foreignAttempt' || scenario === 'wrongSha') assert.match(text, /与恢复目标不匹配/);
+});
+
+test('恢复跟踪可匿名读取新 attempt，认证回退不发送任何重跑请求', async () => {
+  const harness = resultHarness(), urls = [];
+  await showResult(async () => { throw Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }); }, '0.6.0', recoverySha, {
+    ...harness.options, workflowId: recoveryId, attempt: 2, fetch: async (url, options) => {
+      urls.push(url); assert.equal(options.headers.Authorization, undefined); assert.equal(options.method, undefined);
+      const value = url.includes('/jobs?') ? { jobs: recoveryJobs() }
+        : url.includes('/git/ref/') ? { object: { type: 'commit', sha: recoverySha } }
+          : url.includes('/releases/') ? { draft: false, prerelease: false, assets: ['Windows-x64.zip', 'macOS-arm64.zip'].map(suffix => ({ name: `WindowStash-v0.6.0-${suffix}`, size: 100 })) }
+            : recoveryWorkflow({ run_attempt: 2, conclusion: 'success' });
+      return { ok: true, json: async () => value };
+    },
+  });
+  assert.ok(urls.some(url => url.includes(`/runs/${recoveryId}/attempts/2/jobs?`)));
+  assert.ok(harness.messages.some(line => line.includes('发布成功')));
 });

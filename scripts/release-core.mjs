@@ -106,11 +106,15 @@ export async function localState(run) {
     head: await run('git', ['rev-parse', 'HEAD']), status: await run('git', ['status', '--porcelain', '--untracked-files=all']) };
 }
 
-export async function checkRemote(run, version, head, releaseExists) {
+async function checkOrigin(run) {
   for (const kind of ['get-url', '--push']) {
     const url = await run('git', kind === 'get-url' ? ['remote', 'get-url', '--all', 'origin'] : ['remote', 'get-url', '--push', '--all', 'origin']);
     if (!url.split('\n').every((address) => /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)lishangyang290\/windowstash(?:\.git)?\/?$/.test(address))) throw new Error('origin 读写地址必须指向 lishangyang290/windowstash，请手动检查远端。');
   }
+}
+
+export async function checkRemote(run, version, head, releaseExists) {
+  await checkOrigin(run);
   const remote = await run('git', ['ls-remote', '--exit-code', 'origin', 'refs/heads/main']);
   if (remote.split(/\s/)[0] !== head) throw new Error('main 与远端不同，请先手动同步并检查。');
   if (await run('git', ['tag', '--list', `v${version}`])) throw new Error('本地已有同名 Tag，请选择新版本。');
@@ -127,6 +131,54 @@ export async function preflight(run, version, current, notes, releaseExists) {
   if (await run('git', ['rev-parse', 'origin/main']) !== state.head) throw new Error('本地 main 与 origin/main 不一致，请先手动同步。');
   await checkRemote(run, version, state.head, releaseExists);
   return state;
+}
+
+export async function recoveryPlan(run, version) {
+  if (!versionPattern.test(version)) throw new Error('恢复版本必须为 X.Y.Z。');
+  const state = await localState(run);
+  if (state.branch !== 'main' || state.status) throw new Error('恢复发布必须位于干净的 main 工作区。');
+  await checkOrigin(run);
+  if ((await run('git', ['ls-remote', '--exit-code', 'origin', 'refs/heads/main'])).split(/\s/)[0] !== state.head) throw new Error('main 与远端不同，请先手动同步。');
+  try { await run('gh', ['auth', 'status'], false, 30000); }
+  catch (error) { throw new Error(`恢复写操作需要已安装且已认证的 gh，请先处理后重试：${error.message}`, { cause: error }); }
+  const api = async (path) => JSON.parse(await run('gh', ['api', `repos/${repository}/${path}`], false, 30000));
+  const tag = `v${version}`;
+  const remote = await api(`git/ref/tags/${tag}`);
+  const sha = remote.object?.sha;
+  if (remote.ref !== `refs/tags/${tag}` || remote.object?.type !== 'commit' || !/^[a-f0-9]{40}$/.test(sha ?? '')) throw new Error('远端 Tag 不是有效的受控发布提交。');
+  if (await run('git', ['rev-parse', `refs/tags/${tag}`]) !== sha) throw new Error('本地与远端 Tag SHA 不匹配。');
+  await run('git', ['merge-base', '--is-ancestor', sha, state.head]);
+  if (JSON.parse(await run('git', ['show', `${sha}:package.json`])).version !== version) throw new Error('Tag 提交的版本与待恢复版本不匹配。');
+  const notes = await run('git', ['show', `${sha}:.github/release-notes/${tag}.md`]);
+  if (!notes.trim()) throw new Error('Tag 提交缺少 Release Notes。');
+  for (let page = 1; ; page++) {
+    const releases = await api(`releases?per_page=100&page=${page}`);
+    if (releases.some((release) => release.tag_name === tag)) throw new Error('已有对应 Release（包括草稿），拒绝重复发布。');
+    if (releases.length < 100) break;
+  }
+  const runs = await api(`actions/workflows/release.yml/runs?event=push&head_sha=${sha}&per_page=100`);
+  const candidate = runs.workflow_runs.filter((item) => item.head_branch === tag && item.head_sha === sha && item.event === 'push')
+    .sort((a, b) => b.id - a.id)[0];
+  if (!candidate) throw new Error('未找到匹配 Tag/SHA 的正式 Tag Push Workflow。');
+  const workflow = await api(`actions/runs/${candidate.id}`);
+  if (!Number.isSafeInteger(workflow.id) || workflow.id < 1 || workflow.id !== candidate.id || workflow.head_sha !== sha || workflow.head_branch !== tag || workflow.event !== 'push'
+    || workflow.path !== '.github/workflows/release.yml' || workflow.status !== 'completed'
+    || !['failure', 'cancelled'].includes(workflow.conclusion) || !Number.isSafeInteger(workflow.run_attempt) || workflow.run_attempt < 1) {
+    throw new Error('仅允许恢复 Tag/SHA 匹配且已 failure 或 cancelled 的正式 Workflow。');
+  }
+  const validations = await api(`actions/workflows/release.yml/runs?event=workflow_dispatch&head_sha=${sha}&status=success&per_page=100`);
+  let validationId;
+  for (const validation of validations.workflow_runs) {
+    if (validation.event !== 'workflow_dispatch' || validation.head_sha !== sha || validation.status !== 'completed' || validation.conclusion !== 'success') continue;
+    const jobs = await api(`actions/runs/${validation.id}/attempts/${validation.run_attempt}/jobs?per_page=100`);
+    if (['Windows x64', 'macOS arm64'].every((name) => jobs.jobs.some((job) => job.name === name && job.status === 'completed' && job.conclusion === 'success'))) {
+      validationId = validation.id;
+      break;
+    }
+  }
+  if (!validationId) throw new Error('Tag SHA 缺少已成功的 Windows/macOS 手动双平台验证。');
+  return { version, tag, sha, notes, head: state.head, validationId,
+    workflowId: workflow.id, attempt: workflow.run_attempt, conclusion: workflow.conclusion, url: workflow.html_url };
 }
 
 const versionFiles = ['package.json', 'package-lock.json', 'companion/package.json', 'companion/package-lock.json', 'companion/src-tauri/tauri.conf.json', 'companion/src-tauri/Cargo.toml', 'companion/src-tauri/Cargo.lock', 'public/开始使用.html'];
