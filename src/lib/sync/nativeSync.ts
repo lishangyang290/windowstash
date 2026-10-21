@@ -24,7 +24,6 @@ async function nativeContext(scope: string) {
       return reply.session.access_token;
     },
     auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-    global: { fetch: (input, init) => fetch(input, init) },
   });
   const [, user] = JSON.parse(scope.slice('workspaces:'.length)) as [string, string];
   return { exchange, cloud: syncCloud(client), user };
