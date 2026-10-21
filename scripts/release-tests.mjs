@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import { command, npmInvocation, parseRelease, validateInput, planFiles, applyFiles, restoreFiles, saveJournal, recoverPrepared, preflight, checkRemote, runChecks, publish, recoveryPlan, inspectRelease, readOnlyQueries, retryReadOnly } from './release-core.mjs';
 import { terminalUI, presentedCommand, workflowProgress, liveProgress } from './release-ui.mjs';
-import { inputLines, editRelease, showResult, recoverRelease, handleReleaseState } from './release.mjs';
+import { inputLines, editRelease, confirmRelease, showResult, recoverRelease, handleReleaseState } from './release.mjs';
 import { copyReleaseSql, validateReleaseSql, releaseSqlFiles, packageEntries, validateGuidePackageTrees } from './release-package.mjs';
 
 const root = resolve(import.meta.dirname, '..');
@@ -592,6 +592,31 @@ test('粘贴中的命令仅为文本，不执行', async () => {
   assert.match(result.notes[0], /touch/); input.close();
 });
 
+test('确认菜单展示完整版本和每条说明，支持反复编辑及重新粘贴', async () => {
+  const messages = [], input = io(['9', '2', 'invalid', '2', 'v0.5.0', '3', '- 第一条', '- 第二条', ':end', '4',
+    '目标版本：0.6.0', '更新说明：', '- 重新粘贴说明', ':end', '1', 'sentinel']);
+  const result = await confirmRelease(input, '0.3.0', { version: '0.4.0', notes: ['原说明'] }, line => messages.push(line));
+  assert.equal(result.version, '0.6.0');
+  assert.deepEqual(result.notes, ['重新粘贴说明']);
+  const output = messages.join('\n');
+  for (const text of ['v0.4.0', 'v0.5.0', 'v0.6.0', '原说明', '第一条', '第二条', '重新粘贴说明',
+    '1. 不需要，继续', '2. 修改目标版本', '3. 修改更新说明', '4. 重新粘贴', '5. 取消']) assert.ok(output.includes(text), text);
+  assert.ok(messages.filter(line => line.includes('确认识别结果')).length > 4);
+  assert.equal(await input.ask(''), 'sentinel'); input.close();
+});
+
+test('确认前补充缺失说明，空说明不能继续', async () => {
+  const input = io([':end', '1', '- 补充说明', ':end', '1']);
+  const result = await confirmRelease(input, '0.3.0', { version: '0.4.0', notes: [] }, () => {});
+  assert.deepEqual(result.notes, ['补充说明']); input.close();
+});
+
+for (const choice of ['5', ':cancel']) test(`识别确认时取消：${choice}`, async () => {
+  const input = io([choice]);
+  await assert.rejects(confirmRelease(input, '0.3.0', { version: '0.4.0', notes: ['修复'] }, () => {}), /取消/);
+  input.close();
+});
+
 const head = 'a'.repeat(40);
 function mockGit(overrides = {}) {
   const responses = {
@@ -703,11 +728,11 @@ test('严格 dry-run 成功，无文件、Commit、Tag、推送或构建副作�
   await processMock(directory, hash);
   // Only the temporary repository uses a Git wrapper and HTTP mock. No production remote is touched.
   const { spawn } = await import('node:child_process');
-  const preview = async (verbose = false, versionOnly = false) => new Promise((done, fail) => {
+  const preview = async (verbose = false, versionOnly = false, editVersion = false) => new Promise((done, fail) => {
     const childEnv = { ...process.env }; delete childEnv.NODE_TEST_CONTEXT;
     const child = spawn(process.execPath, ['--import', pathToFileURL(resolve(directory, 'fetch-mock.mjs')).href, 'scripts/release.mjs', '--dry-run', ...(verbose ? ['--verbose'] : [])], { cwd: directory, env: childEnv });
     let text = ''; child.stdout.on('data', (data) => { text += data; }); child.stderr.on('data', (data) => { text += data; }); child.on('error', fail); child.on('close', (code) => code === 0 ? done(text) : fail(new Error(text)));
-    child.stdin.end(versionOnly ? '0.4.0\n- 新增教程入口\n:end\n' : standard + '\n:end\n');
+    child.stdin.end(versionOnly ? '0.4.0\n- 新增教程入口\n:end\n1\n' : standard + '\n:end\n' + (editVersion ? '2\n0.5.0\n1\n' : '1\n'));
   });
   const output = await preview();
   assert.match(output, /预演通过/);
@@ -716,6 +741,10 @@ test('严格 dry-run 成功，无文件、Commit、Tag、推送或构建副作�
   assert.doesNotMatch(output, /检查 \/ 执行：/);
   assert.ok(!output.includes('\x1b['));
   assert.match(await preview(true), /检查 \/ 执行：git/);
+  const edited = await preview(true, false, true);
+  assert.match(edited, /预演通过：v0.3.0 → v0.5.0/);
+  assert.match(edited, /ls-remote origin refs\/tags\/v0.5.0/);
+  assert.ok(edited.indexOf('确认识别结果') < edited.indexOf('validate-release-version.mjs'));
   assert.equal(await run('git', ['status', '--porcelain']), '');
   assert.equal(await run('git', ['rev-parse', 'HEAD']), hash);
   assert.equal(await run('git', ['tag']), '');
@@ -759,7 +788,7 @@ test('启动文件权限被 Git 记录为 100755', async () => {
   assert.match(await command(root)('git', ['ls-files', '--stage', '--', 'WindowStash Release.command']), /^100755 /);
 });
 
-for (const scenario of ['cancel', 'testFailure', 'mainPushFailure', 'tagPushFailure', 'tagCreationFailure', 'commitFailure', 'journalRace']) {
+for (const scenario of ['earlyCancel', 'cancel', 'testFailure', 'mainPushFailure', 'tagPushFailure', 'tagCreationFailure', 'commitFailure', 'journalRace']) {
   test(`完整交互生命周期（临时仓库）：${scenario}`, async (t) => {
     const directory = await fixture(t), run = command(directory);
     for (const path of ['release.mjs', 'release-core.mjs', 'release-ui.mjs']) await cp(resolve(root, 'scripts', path), resolve(directory, 'scripts', path));
@@ -779,11 +808,16 @@ for (const scenario of ['cancel', 'testFailure', 'mainPushFailure', 'tagPushFail
       const childEnv = { ...process.env }; delete childEnv.NODE_TEST_CONTEXT;
     const child = spawn(process.execPath, ['--import', pathToFileURL(resolve(directory, 'fetch-mock.mjs')).href, 'scripts/release.mjs'], { cwd: directory, env: childEnv });
       let text = ''; child.stdout.on('data', (data) => { text += data; }); child.stderr.on('data', (data) => { text += data; }); child.on('error', fail); child.on('close', (code) => done({ code, text }));
-      child.stdin.end(standard + '\n:end\n' + (scenario === 'cancel' ? '取消' : '发布 v0.4.0') + '\n');
+      child.stdin.end(standard + '\n:end\n' + (scenario === 'earlyCancel' ? '5' : '1\n' + (scenario === 'cancel' ? '取消' : '发布 v0.4.0')) + '\n');
     });
     assert.equal(result.code, 1, result.text);
-    if (['cancel', 'testFailure'].includes(scenario)) {
-      assert.match(result.text, /改动已恢复/);
+    assert.match(result.text, /确认识别结果/);
+    if (['earlyCancel', 'cancel', 'testFailure'].includes(scenario)) {
+      if (scenario === 'earlyCancel') assert.doesNotMatch(result.text, /版本文件准备完成|检查 Extension 与 Companion|最终发布确认/);
+      else {
+        assert.match(result.text, /改动已恢复/);
+        assert.ok(result.text.indexOf('确认识别结果') < result.text.indexOf('版本文件准备完成'));
+      }
       assert.equal(await run('git', ['status', '--porcelain']), '');
       assert.equal(await run('git', ['rev-parse', 'HEAD']), hash);
       await assert.rejects(stat(resolve(directory, 'push.log')), /ENOENT/);
@@ -1090,7 +1124,7 @@ function recoveryMock(scenario = '') {
   return { run, calls, writes: () => calls.filter(([program, subcommand]) => program === 'gh' && subcommand === 'run') };
 }
 
-test('同一入口直接输入完整发布信息，不展示启动或识别确认菜单', async () => {
+test('输入解析与确认分离，解析不吞掉后续菜单输入', async () => {
   const messages = [], input = io([...standard.split('\n'), ':end', 'sentinel']);
   assert.equal((await editRelease(input, '0.3.0', line => messages.push(line))).version, '0.4.0');
   assert.equal(await input.ask(''), 'sentinel'); input.close();

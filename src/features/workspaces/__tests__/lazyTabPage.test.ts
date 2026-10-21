@@ -1,4 +1,4 @@
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { parseHTML } from 'linkedom';
 import template from '@/entrypoints/lazy-tab/index.html?raw';
 import { renderLazyRecovery } from '@/entrypoints/lazy-tab/recovery';
@@ -6,6 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { createLazyTabPage, dataLazyId, LAZY_DATA_PREFIX } from '../lazyTabPage';
 
 const root = 'chrome-extension://fixture/';
+const normalizeNewlines = (text: string) => text.replace(/\r\n/g, '\n');
 it('preserves the title and existing favicon with escaped HTML and no page scripts', () => {
   const url = createLazyTabPage('id & 中文', root, { title: '<script>"&测试', favIconUrl: 'https://example.test/icon.png' });
   const html = decodeURIComponent(url.slice(LAZY_DATA_PREFIX.length).split('#')[0]!);
@@ -48,7 +49,7 @@ it('keeps the original blank body and the exact light/dark styles', () => {
 
 it('matches the v0.6.0 template and recovery DOM instead of inventing a new view', () => {
   const stable = execFileSync('git', ['show', 'v0.6.0:src/entrypoints/lazy-tab/index.html'], { encoding: 'utf8' });
-  expect(template).toBe(stable);
+  expect(normalizeNewlines(template)).toBe(normalizeNewlines(stable));
   const originalUrl = 'https://example.test/a?title=long&b=2';
   const url = createLazyTabPage('saved', root, { title: 'A very long original website title', favIconUrl: '', originalUrl });
   const { document } = parseHTML(decodeURIComponent(url.slice(LAZY_DATA_PREFIX.length).split('#')[0]!));
@@ -64,9 +65,26 @@ it('matches the v0.6.0 template and recovery DOM instead of inventing a new view
     expect(generated.querySelector('[data-status]')!.textContent).toBe('正在尝试跳转至原网页…');
     expect(generated.querySelectorAll('p')[1]!.textContent).toBe('若长时间未自动跳转，请手动点击上方链接或下方按钮。');
     expect(document.querySelector('main')!.textContent).toBe('');
-    expect(document.querySelector('style')!.textContent).toBe(parseHTML(stable).document.querySelector('style')!.textContent);
+    expect(normalizeNewlines(document.querySelector('style')!.textContent)).toBe(normalizeNewlines(parseHTML(stable).document.querySelector('style')!.textContent));
     expect(document.querySelector('script')!.hasAttribute('src')).toBe(false);
     expect(generated.querySelector('a')!.hasAttribute('target')).toBe(false);
     expect(generated.querySelector('a')!.hasAttribute('onclick')).toBe(false);
   } finally { Object.assign(globalThis, { document: previous }); }
+});
+
+it('preserves all generated HTML, styles and recovery structure with a CRLF checkout', async () => {
+  const entry = { title: 'Saved', favIconUrl: '', originalUrl: 'https://example.test/' };
+  const decode = (url: string) => decodeURIComponent(url.slice(LAZY_DATA_PREFIX.length).split('#')[0]!);
+  const expected = decode(createLazyTabPage('saved', root, entry));
+  vi.resetModules();
+  vi.doMock('@/entrypoints/lazy-tab/index.html?raw', () => ({ default: normalizeNewlines(template).replace(/\n/g, '\r\n') }));
+  try {
+    const { createLazyTabPage: createWithCRLF } = await import('../lazyTabPage');
+    const actual = decode(createWithCRLF('saved', root, entry));
+    expect(actual).toContain('\r\n');
+    expect(normalizeNewlines(actual)).toBe(normalizeNewlines(expected));
+  } finally {
+    vi.doUnmock('@/entrypoints/lazy-tab/index.html?raw');
+    vi.resetModules();
+  }
 });

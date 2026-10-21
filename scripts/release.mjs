@@ -51,6 +51,28 @@ export async function editRelease(io, current, log = console.log) {
 }
 const manualNotes = (text) => text.split('\n').map((line) => line.trim().replace(/^(?:[-*+•]\s+|\d+[.)]\s+)/, '')).filter(Boolean);
 
+export async function confirmRelease(io, current, input, log = console.log) {
+  const ui = terminalUI(process.stdout, log);
+  while (true) {
+    if (!input.notes.length) input.notes = manualNotes(await io.paste('请补充本次更新说明，每行一条。'));
+    ui.section('确认识别结果');
+    ui.field('目标版本', ui.bold(`v${input.version}`));
+    ui.hint('更新说明');
+    ui.list(input.notes.map(note => `- ${note}`));
+    ui.list(['1. 不需要，继续', '2. 修改目标版本', '3. 修改更新说明', '4. 重新粘贴', '5. 取消']);
+    const choice = await io.ask('是否需要修改发布信息？');
+    if (choice === '1' && input.notes.length) return input;
+    if (choice === '2') {
+      const version = (await io.ask('请输入目标 X.Y.Z：')).replace(/^v/, '');
+      if (versionPattern.test(version)) input.version = version;
+      else ui.warning('目标版本必须为 X.Y.Z，不能含前导零或预发布后缀。');
+    } else if (choice === '3') input.notes = manualNotes(await io.paste('请输入更新说明，每行一条。'));
+    else if (choice === '4') input = await editRelease(io, current, log);
+    else if (choice === '5') throw new Error('用户取消发布。');
+    else ui.warning('请选择 1 至 5；更新说明不能为空。');
+  }
+}
+
 export async function releaseExists(version) {
   const response = await globalThis.fetch(`https://api.github.com/repos/${repository}/releases/tags/v${version}`, {
     headers: { Accept: 'application/vnd.github+json' }, signal: globalThis.AbortSignal.timeout(20000),
@@ -336,15 +358,21 @@ export async function main(args = process.argv.slice(2)) {
     ui.field('当前分支', ui.bold(initial.branch));
     if (initial.status) ui.warning('Git 状态：有未提交改动');
     else ui.success('Git 状态：正常');
-    const input = await editRelease(io, current);
-    const { version } = input;
+    let input = await editRelease(io, current);
+    let { version } = input;
     ui.section('步骤 2 / 4 · 检查发布条件');
     ui.pending('检查当前版本和远端发布状态');
     let detected;
     try { detected = await inspectRelease(guardedRun, version, current, releaseExists); }
     catch (error) { throw new Error(`无法确认 v${version} 的发布状态，未执行发布操作：${error.message}`, { cause: error }); }
     if (await handleReleaseState(guardedRun, io, version, detected, { ui, dry, active: ensureActive, verbose, display: liveProgress(process.stdout, undefined, !verbose) })) return;
-    const notes = input.notes.length ? input.notes : manualNotes(await io.paste('请补充本次更新说明，每行一条。'));
+    input = await confirmRelease(io, current, input);
+    if (input.version !== version) {
+      version = input.version;
+      detected = await inspectRelease(guardedRun, version, current, releaseExists);
+      if (await handleReleaseState(guardedRun, io, version, detected, { ui, dry, active: ensureActive, verbose, display: liveProgress(process.stdout, undefined, !verbose) })) return;
+    }
+    const notes = input.notes;
     const state = await preflight(guardedRun, version, current, notes, releaseExists);
     ui.success('版本和远端状态检查');
     await guardedRun(process.execPath, ['scripts/validate-release-version.mjs', current], true);
