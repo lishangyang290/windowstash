@@ -19,6 +19,7 @@ const nativeReadMock = vi.hoisted(() => vi.fn(async () => null as WorkspaceLocal
 vi.mock('@/lib/companion/workspaces', () => ({ publishNativeWorkspaces: nativeMock, getNativeWorkspace: nativeReadMock, libraryStateKey: (scope: string) => `library:${scope}`, NativeWorkspaceDeletedError: class extends Error {} }));
 vi.mock('@/lib/sync/nativeWatch', () => ({ pullNativeLibrary: vi.fn(async () => {}) }));
 const lazyMock = vi.hoisted(() => ({
+  putMany: vi.fn(), bindTab: vi.fn(),
   list: vi.fn(), get: vi.fn(), put: vi.fn(), remove: vi.fn(), removeByTabId: vi.fn(), removeByWindowId: vi.fn(), removeMany: vi.fn(),
 }));
 
@@ -45,6 +46,8 @@ import {
   updateWorkspace,
 } from '@/features/workspaces/workspaceService';
 import type { WorkspaceLocalRecord } from '@/types/workspace';
+import { QuickSavePreviewChangedError, windowSaveFingerprint, workspaceSaveFingerprint } from '../quickSaveProtocol';
+import { refreshBoundWindowAssociation } from '../windowAssociation';
 
 const localRecord: WorkspaceLocalRecord = {
   content: {
@@ -62,6 +65,63 @@ const localRecord: WorkspaceLocalRecord = {
 };
 
 describe('workspaceService', () => {
+  it('saves against the same native baseline that the quick-save preview displayed', async () => {
+    const tabs = [{ id: 1, index: 0, url: 'https://a.example', title: 'A', pinned: true }];
+    const native = { ...localRecord, content: { ...localRecord.content, name: 'New from Companion' } };
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs }); bindingMock.get.mockResolvedValue('workspace-1');
+    workspaceMock.get.mockResolvedValue(localRecord); nativeReadMock.mockResolvedValue(native);
+    await expect(saveCurrentWindow({ windowId: 22, name: native.content.name, status: 'active', closeAfterSave: false,
+      expected: { fingerprint: windowSaveFingerprint(tabs), workspaceId: 'workspace-1', content: await workspaceSaveFingerprint(native.content) } })).resolves.toMatchObject({ id: 'workspace-1', name: native.content.name });
+    expect(workspaceMock.saveContent).toHaveBeenCalledOnce();
+  });
+  it('ignores serialization order and non-content metadata in the preview guard', async () => {
+    const tabs = [{ id: 1, index: 0, url: 'https://a.example', title: 'A', pinned: true }];
+    const content = Object.fromEntries(Object.entries(localRecord.content).reverse()) as typeof localRecord.content;
+    content.tabs = [...content.tabs].reverse().map(tab => ({ ...Object.fromEntries(Object.entries(tab).reverse()) as typeof tab, favIconUrl: 'https://example.com/new-icon' }));
+    content.updatedAt = '2026-10-21T00:00:00Z';
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs }); bindingMock.get.mockResolvedValue('workspace-1');
+    workspaceMock.get.mockResolvedValue(localRecord); nativeReadMock.mockResolvedValue({ ...localRecord, content });
+    await expect(saveCurrentWindow({ windowId: 22, name: content.name, status: 'active', closeAfterSave: false,
+      expected: { fingerprint: windowSaveFingerprint(tabs), workspaceId: 'workspace-1', content: await workspaceSaveFingerprint(localRecord.content) } })).resolves.toHaveProperty('id', 'workspace-1');
+    expect(workspaceMock.saveContent).toHaveBeenCalledOnce();
+  });
+  it('still rejects an actual native content change after confirmation', async () => {
+    const tabs = [{ id: 1, index: 0, url: 'https://a.example', title: 'A', pinned: true }];
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs }); bindingMock.get.mockResolvedValue('workspace-1');
+    workspaceMock.get.mockResolvedValue(localRecord);
+    nativeReadMock.mockResolvedValueOnce(localRecord).mockResolvedValueOnce({ ...localRecord, content: { ...localRecord.content, name: 'Changed during save' } });
+    await expect(saveCurrentWindow({ windowId: 22, name: localRecord.content.name, status: 'active', closeAfterSave: false,
+      expected: { fingerprint: windowSaveFingerprint(tabs), workspaceId: 'workspace-1', content: await workspaceSaveFingerprint(localRecord.content) } })).rejects.toBeInstanceOf(QuickSavePreviewChangedError);
+    expect(workspaceMock.saveContent).not.toHaveBeenCalled();
+  });
+  it('rejects tabs changed after preview before any persistence', async () => {
+    const tabs = [{ id: 1, index: 0, url: 'https://a.example', title: 'A', pinned: false }];
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs: [{ ...tabs[0], title: 'Changed' }] });
+    await expect(saveCurrentWindow({ windowId: 22, name: 'A', status: 'active', closeAfterSave: false,
+      expected: { fingerprint: windowSaveFingerprint(tabs), workspaceId: null, content: 'null' } })).rejects.toThrow('标签页已变化');
+    expect(workspaceMock.saveContent).not.toHaveBeenCalled();
+  });
+  it('checks the exact tabs again after asynchronous lazy tab resolution', async () => {
+    const tabs = [{ id: 1, index: 0, url: 'https://a.example', title: 'A', pinned: false }];
+    browserMock.windows.get.mockResolvedValueOnce({ id: 22, tabs }).mockResolvedValueOnce({ id: 22, tabs: [{ ...tabs[0], pinned: true }] });
+    await expect(saveCurrentWindow({ windowId: 22, name: 'A', status: 'active', closeAfterSave: false,
+      expected: { fingerprint: windowSaveFingerprint(tabs), workspaceId: null, content: 'null' } })).rejects.toThrow('窗口或工作区已变化');
+    expect(workspaceMock.saveContent).not.toHaveBeenCalled();
+  });
+  it('rejects a workspace binding changed while the preview was open', async () => {
+    const tabs = [{ id: 1, index: 0, url: 'https://a.example', title: 'A', pinned: false }];
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs }); bindingMock.get.mockResolvedValue('workspace-1'); workspaceMock.get.mockResolvedValue(localRecord);
+    await expect(saveCurrentWindow({ windowId: 22, name: 'A', status: 'active', closeAfterSave: false,
+      expected: { fingerprint: windowSaveFingerprint(tabs), workspaceId: null, content: 'null' } })).rejects.toThrow('工作区已变化');
+    expect(workspaceMock.saveContent).not.toHaveBeenCalled();
+  });
+  it('saves the confirmed window snapshot with the guard enabled', async () => {
+    const tabs = [{ id: 1, index: 0, url: 'https://a.example', title: 'A', pinned: true }];
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs });
+    await expect(saveCurrentWindow({ windowId: 22, name: 'A', status: 'active', closeAfterSave: false,
+      expected: { fingerprint: windowSaveFingerprint(tabs), workspaceId: null, content: 'null' } })).resolves.toMatchObject({ name: 'A', tabs: [{ url: 'https://a.example', pinned: true }] });
+    expect(workspaceMock.saveContent).toHaveBeenCalledOnce(); expect(browserMock.windows.remove).not.toHaveBeenCalled();
+  });
   it('reads a bound native workspace repeatedly without writing it back and triggering another popup refresh', async () => {
     bindingMock.get.mockResolvedValue('workspace-1');
     workspaceMock.get.mockResolvedValue(localRecord);
@@ -98,10 +158,21 @@ describe('workspaceService', () => {
     nativeMock.mockResolvedValue(undefined);
     nativeReadMock.mockResolvedValue(null);
     lazyMock.get.mockResolvedValue(null);
+    lazyMock.list.mockResolvedValue([]);
     lazyMock.put.mockResolvedValue(undefined);
+    lazyMock.putMany.mockResolvedValue(undefined);
+    lazyMock.bindTab.mockResolvedValue(null);
     lazyMock.remove.mockResolvedValue(undefined);
     lazyMock.removeByWindowId.mockResolvedValue(undefined);
     lazyMock.removeMany.mockResolvedValue(undefined);
+  });
+
+  it('blocks saving an incomplete reload snapshot before overwriting any workspace', async () => {
+    lazyMock.list.mockResolvedValue([{ id: 'missing', workspaceId: 'workspace-1', tabId: 9, windowId: 22, originalUrl: 'https://missing.test' }]);
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs: [{ index: 0, url: 'https://remaining.test' }] });
+    await expect(saveCurrentWindow({ windowId: 22, name: 'Saved', status: 'active', closeAfterSave: false })).rejects.toThrow('恢复尚未完成');
+    expect(workspaceMock.saveContent).not.toHaveBeenCalled();
+    expect(bindingMock.set).not.toHaveBeenCalled();
   });
 
   it('captures only the explicitly requested window and closes it after local persistence', async () => {
@@ -227,7 +298,7 @@ describe('workspaceService', () => {
     await restoreWorkspace('workspace-1');
 
     expect(browserMock.tabs.create.mock.calls.map(([input]) => input)).toEqual([
-      { windowId: 99, url: 'https://a.example', active: false, pinned: true },
+      { windowId: 99, url: expect.stringMatching(/^data:text\/html/), active: false, pinned: true },
       { windowId: 99, url: 'https://b.example', active: false, pinned: false },
     ]);
     expect(browserMock.tabs.remove).toHaveBeenCalledWith(900);
@@ -286,8 +357,11 @@ describe('workspaceService', () => {
 
     const urls = browserMock.tabs.create.mock.calls.map(([input]) => input.url as string);
     expect(urls[4]).toBe('https://example.com/4');
-    expect(urls.filter((url) => url.startsWith('chrome-extension://test/lazy-tab.html?id='))).toHaveLength(9);
-    expect(lazyMock.put).toHaveBeenCalledTimes(18);
+    expect(urls.filter((url) => url.startsWith('data:text/html;'))).toHaveLength(9);
+    expect(lazyMock.putMany).toHaveBeenCalledOnce();
+    expect(lazyMock.putMany.mock.calls[0]![0]).toHaveLength(9);
+    expect(lazyMock.bindTab).toHaveBeenCalledTimes(9);
+    expect(lazyMock.put).not.toHaveBeenCalled();
     expect(browserMock.tabs.update).toHaveBeenCalledWith(expect.any(Number), { active: true });
   });
 
@@ -300,22 +374,65 @@ describe('workspaceService', () => {
 
     await restoreWorkspace(record.content.id);
 
-    expect(lazyMock.put).toHaveBeenNthCalledWith(1, expect.objectContaining({
+    expect(lazyMock.putMany).toHaveBeenCalledWith([expect.objectContaining({
       workspaceId: record.content.id,
       originalUrl: 'https://example.com/0',
       title: 'Tab 0',
       favIconUrl: 'https://example.com/favicon-0.ico',
       position: 0,
       pinned: true,
-    }));
+    })], 'lazyRestoreEntries');
     expect(browserMock.tabs.create).toHaveBeenNthCalledWith(1, expect.objectContaining({ pinned: true }));
+  });
+
+  it('waits for durable registration of all URLs before creating the first placeholder', async () => {
+    const record = recordWithTabs(4, 3);
+    record.content.tabs[1]!.url = record.content.tabs[0]!.url;
+    workspaceMock.get.mockResolvedValue(record);
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    let release!: () => void;
+    lazyMock.putMany.mockImplementationOnce(() => new Promise<void>(resolve => { release = resolve; }));
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+    const restoring = restoreWorkspace(record.content.id);
+    await vi.waitFor(() => expect(lazyMock.putMany).toHaveBeenCalledOnce());
+    expect(browserMock.tabs.create).not.toHaveBeenCalled();
+    const batch = lazyMock.putMany.mock.calls[0]![0];
+    expect(batch).toHaveLength(3);
+    expect(new Set(batch.map((e: { id: string }) => e.id)).size).toBe(3);
+    expect(batch.map((e: { originalUrl: string }) => e.originalUrl)).toEqual(record.content.tabs.slice(0, 3).map(tab => tab.url));
+    release();
+    await restoring;
+    expect(browserMock.tabs.create).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not duplicate a created placeholder or delete its original URL after an ID write failure', async () => {
+    workspaceMock.get.mockResolvedValue(recordWithTabs(2, 1));
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockResolvedValue({ id: 901 });
+    lazyMock.bindTab.mockRejectedValueOnce(new Error('metadata write failed'));
+    await restoreWorkspace('workspace-1');
+    expect(browserMock.tabs.create).toHaveBeenCalledTimes(2);
+    expect(lazyMock.remove).not.toHaveBeenCalled();
+    expect(lazyMock.putMany.mock.calls[0]![0][0].originalUrl).toBe('https://example.com/0');
+  });
+
+  it('cleans only a failed placeholder registration, then continues restoring later tabs', async () => {
+    workspaceMock.get.mockResolvedValue(recordWithTabs(3, 2));
+    browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
+    browserMock.tabs.create.mockRejectedValueOnce(new Error('create failed')).mockResolvedValue({ id: 901 });
+    await restoreWorkspace('workspace-1');
+    const batch = lazyMock.putMany.mock.calls[0]![0];
+    expect(lazyMock.remove).toHaveBeenCalledExactlyOnceWith(batch[0].id, 'lazyRestoreEntries');
+    expect(browserMock.tabs.create).toHaveBeenCalledTimes(4);
+    expect(browserMock.tabs.create.mock.calls[1]![0].url).toBe('https://example.com/0');
+    expect(browserMock.tabs.create.mock.calls[2]![0].url).toMatch(/^data:text\/html/);
   });
 
   it.each([
     { title: '', favIconUrl: 'https://example.com/favicon.ico' },
     { title: 'Readable', favIconUrl: undefined },
     { title: 'Readable', favIconUrl: 'not-a-favicon' },
-  ])('loads the real URL when lazy metadata is unreliable', async ({ title, favIconUrl }) => {
+  ])('keeps inactive tabs lazy even when title or favicon metadata is missing', async ({ title, favIconUrl }) => {
     const record = recordWithTabs(2, 1);
     Object.assign(record.content.tabs[0]!, { title, favIconUrl });
     workspaceMock.get.mockResolvedValue(record);
@@ -324,13 +441,13 @@ describe('workspaceService', () => {
 
     await restoreWorkspace(record.content.id);
 
-    expect(browserMock.tabs.create).toHaveBeenNthCalledWith(1, expect.objectContaining({ url: 'https://example.com/0' }));
+    expect(browserMock.tabs.create).toHaveBeenNthCalledWith(1, expect.objectContaining({ url: expect.stringMatching(/^data:text\/html/) }));
   });
 
   it('falls back to the real URL when lazy placeholder initialization fails', async () => {
     const record = recordWithTabs(2, 1);
     workspaceMock.get.mockResolvedValue(record);
-    lazyMock.put.mockRejectedValueOnce(new Error('storage unavailable'));
+    lazyMock.putMany.mockRejectedValueOnce(new Error('storage unavailable'));
     browserMock.windows.create.mockResolvedValue({ id: 99, tabs: [{ id: 900 }] });
     browserMock.tabs.create.mockResolvedValue({ id: 901 });
 
@@ -349,8 +466,8 @@ describe('workspaceService', () => {
     await restoreWorkspace(record.content.id);
 
     const urls = browserMock.tabs.create.mock.calls.map(([input]) => input.url as string);
-    expect(urls.filter((url) => url.startsWith('https://'))).toEqual(['https://example.com/3', 'https://example.com/17']);
-    expect(urls.filter((url) => url.includes('/lazy-tab.html?id='))).toHaveLength(48);
+    expect(urls.filter((url) => url.startsWith('https://'))).toEqual(['https://example.com/17']);
+    expect(urls.filter((url) => url.startsWith('data:text/html;'))).toHaveLength(49);
   });
 
   it('saves a lazy tab as its original page rather than the placeholder URL', async () => {
@@ -591,6 +708,7 @@ describe('workspaceService', () => {
 
     expect(bindingMock.set).toHaveBeenCalledWith(99, record.content.id);
     expect(bindingMock.remove).toHaveBeenCalledWith(99);
+    await expect(refreshBoundWindowAssociation(99)).resolves.toBe(false);
   });
 
   it('reopens from saved data and transfers the authoritative binding only after restore', async () => {

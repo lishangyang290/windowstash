@@ -4,8 +4,11 @@ import { LAZY_RECONCILIATION_ALARM, STORAGE_KEYS } from '@/lib/constants';
 import { lazyRestoreRepository, type LazyRestoreEntry } from '@/lib/storage/lazyRestoreRepository';
 import type { StoredTab } from '@/types/workspace';
 import type { MatchableTab } from './workspaceMatcher';
+import { windowAssociationRepository } from '@/lib/storage/windowAssociationRepository';
+import { createLazyTabPage, dataLazyId, LAZY_DATA_PREFIX } from './lazyTabPage';
 
 const resolvingTabs = new Map<string, Promise<boolean>>();
+const claimingTabs = new Map<string, Promise<LazyRestoreEntry | null>>();
 const hydratedStartupTabs = new Set<number>();
 const ORPHAN_GRACE_MS = 5 * 60 * 1000;
 let startupReconciliationStarting = false;
@@ -45,13 +48,14 @@ async function liveLazyIds(): Promise<Set<string>> {
     .filter((id): id is string => Boolean(id)));
 }
 
-export function lazyTabUrl(id: string): string {
-  return `${browser.runtime.getURL('/lazy-tab.html')}?id=${encodeURIComponent(id)}`;
+export function lazyTabUrl(id: string, entry?: LazyRestoreEntry): string {
+  return createLazyTabPage(id, browser.runtime.getURL('/'), entry);
 }
 
 export function lazyIdFromUrl(url?: string): string | null {
   if (!url) return null;
   try {
+    if (url.startsWith(LAZY_DATA_PREFIX)) return dataLazyId(url, browser.runtime.getURL('/'));
     const parsed = new URL(url);
     const lazyPage = new URL(browser.runtime.getURL('/lazy-tab.html'));
     return parsed.origin === lazyPage.origin && parsed.pathname === lazyPage.pathname
@@ -78,7 +82,7 @@ export function isReliableFavicon(url?: string): url is string {
 }
 
 export function canLazyRestore(tab: StoredTab, activePosition: number): boolean {
-  if (tab.position === activePosition || !tab.title.trim() || !isReliableFavicon(tab.favIconUrl)) return false;
+  if (tab.position === activePosition) return false;
   try {
     const protocol = new URL(tab.url).protocol;
     return protocol === 'http:' || protocol === 'https:';
@@ -93,7 +97,7 @@ export function createLazyEntry(workspaceId: string, tab: StoredTab): LazyRestor
     workspaceId,
     originalUrl: tab.url,
     title: tab.title,
-    favIconUrl: tab.favIconUrl!,
+    favIconUrl: tab.favIconUrl ?? '',
     position: tab.position,
     pinned: tab.pinned,
     createdAt: new Date().toISOString(),
@@ -175,7 +179,7 @@ export async function resolveLazyTab(tabId: number, lazyId?: string, windowId?: 
 }
 
 export async function confirmLazyNavigation(tabId: number, url?: string): Promise<boolean> {
-  if (!url || lazyIdFromUrl(url)) return false;
+  if (!url || !/^https?:\/\//.test(url)) return false;
   const lazyId = await claimedLazyId(tabId);
   if (!lazyId) return false;
   await lazyRestoreRepository.remove(lazyId);
@@ -183,17 +187,43 @@ export async function confirmLazyNavigation(tabId: number, url?: string): Promis
   return true;
 }
 
+// A data page has no extension API. A same-document fragment change wakes the
+// worker and lets manual retries use the existing registry/restore path.
+export async function handleDataLazyAction(tabId: number, url?: string): Promise<void> {
+  if (!url?.startsWith(LAZY_DATA_PREFIX) || !lazyIdFromUrl(url)) return;
+  const parsed = new URL(url);
+  const marker = new URLSearchParams(parsed.hash.slice(1));
+  const action = marker.get('windowstash-action');
+  if (!['restore', 'close'].includes(action ?? '') || !marker.get('windowstash-request')) return;
+  const current = await browser.tabs.get(tabId);
+  if (current.url !== url || (current.pendingUrl && current.pendingUrl !== url)) return;
+  if (action === 'close') { await browser.tabs.remove(tabId); return; }
+  let result = 'missing';
+  try { if (await resolveLazyTab(tabId)) return; }
+  catch { result = 'failed'; }
+  const latest = await browser.tabs.get(tabId);
+  if (latest.url !== url || (latest.pendingUrl && latest.pendingUrl !== url)) return;
+  marker.set('windowstash-action', 'result');
+  marker.set('windowstash-result', result);
+  parsed.hash = marker.toString();
+  await browser.tabs.update(tabId, { url: parsed.href });
+}
+
 export async function claimLazyTab(lazyId: string, tabId: number, windowId?: number): Promise<LazyRestoreEntry | null> {
-  const entry = await lazyRestoreRepository.get(lazyId);
-  if (!entry) return null;
-  if (entry.tabId !== tabId || entry.windowId !== windowId) {
-    const claimed = { ...entry, tabId, windowId };
-    await lazyRestoreRepository.put(claimed);
-    await rememberClaim(tabId, lazyId, entry.accountStorageKey);
+  const scope = await accountStorageKey(STORAGE_KEYS.lazyRestoreEntries);
+  const key = JSON.stringify([scope, lazyId, tabId, windowId]);
+  const existing = claimingTabs.get(key);
+  if (existing) return existing;
+  const task = (async () => {
+    const entry = await lazyRestoreRepository.get(lazyId, scope);
+    if (!entry) return null;
+    const claimed = entry.tabId === tabId && entry.windowId === windowId ? entry
+      : await lazyRestoreRepository.bindTab(lazyId, tabId, windowId, scope);
+    if (claimed) await rememberClaim(tabId, lazyId, scope);
     return claimed;
-  }
-  await rememberClaim(tabId, lazyId, entry.accountStorageKey);
-  return entry;
+  })().finally(() => { if (claimingTabs.get(key) === task) claimingTabs.delete(key); });
+  claimingTabs.set(key, task);
+  return task;
 }
 
 export async function claimLazyTabFromBrowserTab(tab: MatchableTab & { id?: number; windowId?: number }): Promise<boolean> {
@@ -202,13 +232,19 @@ export async function claimLazyTabFromBrowserTab(tab: MatchableTab & { id?: numb
   return Boolean(await claimLazyTab(lazyId, tab.id, tab.windowId));
 }
 
-export async function hydrateStartupLazyTab(tab: MatchableTab & { id?: number; windowId?: number }): Promise<boolean> {
+export async function hydrateStartupLazyTab(tab: MatchableTab & { id?: number; windowId?: number; active?: boolean }): Promise<boolean> {
   const lazyId = lazyIdFromTab(tab);
   if (!lazyId || tab.id == null) return false;
   const claimed = await claimLazyTab(lazyId, tab.id, tab.windowId);
-  if (!claimed || !await isStartupLazyReconciliationActive() || hydratedStartupTabs.has(tab.id)) return false;
+  if (tab.pendingUrl?.startsWith(LAZY_DATA_PREFIX) || tab.url?.startsWith(LAZY_DATA_PREFIX)) {
+    if (claimed && tab.active && (!tab.pendingUrl || lazyIdFromUrl(tab.pendingUrl))) {
+      return resolveLazyTab(tab.id);
+    }
+    return false;
+  }
+  if (!claimed || hydratedStartupTabs.has(tab.id)) return false;
   hydratedStartupTabs.add(tab.id);
-  await browser.tabs.reload(tab.id);
+  await browser.tabs.update(tab.id, { url: lazyTabUrl(lazyId, claimed) });
   return true;
 }
 
@@ -232,6 +268,7 @@ export async function handleLazyTabReady(tabId: number, windowId: number | undef
 
 export function removeLazyTab(tabId: number): Promise<void> {
   return claimedLazyId(tabId).then(async (lazyId) => {
+    lazyId ??= (await lazyRestoreRepository.list()).find(entry => entry.tabId === tabId && !entry.recoveryPending)?.id ?? null;
     if (!lazyId) return;
     await lazyRestoreRepository.remove(lazyId);
     await forgetClaim(tabId);
@@ -278,7 +315,32 @@ export async function noteStartupLazyActivity(now = Date.now()): Promise<void> {
 }
 
 export async function isStartupLazyReconciliationActive(): Promise<boolean> {
-  return startupReconciliationStarting || Boolean(await getStartupReconciliation());
+  return startupReconciliationStarting || Boolean(await getStartupReconciliation()) || !await isStartupLazyReconciliationComplete();
+}
+
+export async function hasMissingLazyTabs(workspaceId?: string, windowId?: number, inspectSnapshot = false): Promise<boolean> {
+  const entries = await lazyRestoreRepository.list();
+  if (!entries.length && !inspectSnapshot) return false;
+  const windows = await browser.windows.getAll({ populate: true });
+  const live = new Set(windows.flatMap(window => window.tabs ?? []).map(lazyIdFromTab));
+  if (entries.some(entry => (!workspaceId || entry.workspaceId === workspaceId)
+    && (windowId == null || entry.windowId === windowId)
+    && (entry.recoveryPending || entry.tabId != null) && !live.has(entry.id))) return true;
+  if (!inspectSnapshot || windowId == null) return false;
+  const tabs = windows.find(window => window.id === windowId)?.tabs ?? [];
+  if (!tabs.length) return false;
+  const associations = await windowAssociationRepository.list();
+  return associations.some(association => (!workspaceId || association.workspaceId === workspaceId)
+    && (workspaceId || tabs.some(tab => association.windowSnapshot.tabs.some(saved => /^https?:/.test(saved.url) && saved.url === (tab.pendingUrl || tab.url))))
+    && association.windowSnapshot.tabs.some(saved => saved.lazyId && !live.has(saved.lazyId)
+      && (tabs.length < association.windowSnapshot.tabs.length || !tabs.some(tab => (tab.pendingUrl || tab.url) === saved.url))));
+}
+
+export async function initializeStartupLazyReconciliation(): Promise<void> {
+  await hydrateStartupLazyTabs();
+  await browser.storage.session.set({ [STORAGE_KEYS.lazyStartupReconciled]: true });
+  await browser.storage.session.remove(STORAGE_KEYS.lazyStartupReconciliation);
+  startupReconciliationStarting = false;
 }
 
 export async function isStartupLazyReconciliationComplete(): Promise<boolean> {

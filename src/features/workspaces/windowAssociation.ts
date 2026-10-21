@@ -9,7 +9,8 @@ import {
 } from '@/lib/storage/windowAssociationRepository';
 import { workspaceRepository } from '@/lib/storage/workspaceRepository';
 import { normalizeUrl } from './tabDiff';
-import { resolveLogicalTabs } from './lazyRestore';
+import { claimLazyTab, hasMissingLazyTabs, isStartupLazyReconciliationActive, lazyIdFromTab, lazyTabUrl, resolveLogicalTabs } from './lazyRestore';
+import { lazyRestoreRepository } from '@/lib/storage/lazyRestoreRepository';
 import type { MatchableTab } from './workspaceMatcher';
 
 const MIN_SCORE = 0.82;
@@ -18,10 +19,20 @@ const maintenanceTasks = new Map<string, Promise<number>>();
 const ambiguousLogged = new Set<string>();
 const updatedLogged = new Set<string>();
 const refreshes = new Map<string, { requested: boolean; task: Promise<boolean> }>();
+const restoringWindows = new Set<number>();
+
+export function deferWindowAssociation(windowId: number): () => Promise<boolean> {
+  restoringWindows.add(windowId);
+  return async () => {
+    restoringWindows.delete(windowId);
+    return refreshBoundWindowAssociation(windowId);
+  };
+}
 
 interface LiveWindow {
   windowId: number;
   tabs: MatchableTab[];
+  lazyIds: string[];
 }
 
 interface Candidate {
@@ -100,12 +111,14 @@ function score(association: PersistentWindowAssociation, window: LiveWindow): Ca
   const pinned = largest ? pairs.filter(({ saved: left, current: right }) => left.pinned === Boolean(right.pinned)).length / largest : 0;
   const count = largest ? Math.min(saved.length, current.length) / largest : 0;
   const candidateScore = overlap * 0.6 + order * 0.2 + pinned * 0.1 + count * 0.1;
+  const savedIds = new Set(saved.flatMap(tab => tab.lazyId ? [tab.lazyId] : []));
+  const identityMatches = !savedIds.size || window.lazyIds.every(id => savedIds.has(id));
   return {
     association,
     window,
     score: candidateScore,
     strongMatches,
-    eligible: strongMatches > 0 && pairs.length >= Math.ceil(saved.length * 0.8) && candidateScore >= MIN_SCORE,
+    eligible: identityMatches && strongMatches > 0 && pairs.length >= Math.ceil(saved.length * 0.8) && candidateScore >= MIN_SCORE,
   };
 }
 
@@ -125,12 +138,22 @@ export async function captureWindowAssociation(
   workspaceId: string,
   knownTabs?: MatchableTab[],
   requestedKey?: string,
+  restored = false,
 ): Promise<void> {
+  if (!restored && restoringWindows.has(windowId)) return;
   const scope = requestedKey ?? await accountStorageKey('workspaces');
   const rawTabs = knownTabs ?? (await browser.windows.get(windowId, { populate: true })).tabs ?? [];
+  if ((!restored && await isStartupLazyReconciliationActive()) || await hasMissingLazyTabs(workspaceId, windowId)) return;
   const tabs = await resolveLogicalTabs([...rawTabs].sort((a, b) => a.index - b.index));
   if (!tabs.length || scope !== await accountStorageKey('workspaces')) return;
-  const result = await windowAssociationRepository.upsert(workspaceId, snapshot(tabs), undefined, scope);
+  const saved = snapshot(tabs);
+  const entries = await lazyRestoreRepository.list();
+  [...rawTabs].sort((a, b) => a.index - b.index).forEach((tab, index) => {
+    const id = lazyIdFromTab(tab) ?? entries.find(entry => 'id' in tab && entry.tabId === tab.id
+      && entry.workspaceId === workspaceId && entry.originalUrl === saved.tabs[index]!.url)?.id;
+    if (id) saved.tabs[index]!.lazyId = id;
+  });
+  const result = await windowAssociationRepository.upsert(workspaceId, saved, undefined, scope);
   if (result.created) await logAssociation('persistent-association-created', result.record, { tabCount: tabs.length }, scope).catch(() => undefined);
   else if (result.changed && !updatedLogged.has(result.record.associationId)) {
     updatedLogged.add(result.record.associationId);
@@ -139,6 +162,8 @@ export async function captureWindowAssociation(
 }
 
 export async function refreshBoundWindowAssociation(windowId: number): Promise<boolean> {
+  // Handled by the final live snapshot; do not trigger association recovery.
+  if (restoringWindows.has(windowId)) return true;
   const scope = await accountStorageKey('workspaces');
   const taskKey = `${scope}:${windowId}`;
   const existing = refreshes.get(taskKey);
@@ -179,10 +204,13 @@ async function liveWindows(): Promise<LiveWindow[]> {
   const windows = await browser.windows.getAll({ populate: true });
   const live: LiveWindow[] = [];
   for (const window of windows) {
-    if (window.id == null) continue;
+    if (window.id == null || restoringWindows.has(window.id)) continue;
     try {
       const tabs = await resolveLogicalTabs([...(window.tabs ?? [])].sort((a, b) => a.index - b.index));
-      if (tabs.length) live.push({ windowId: window.id, tabs });
+      if (tabs.length) live.push({ windowId: window.id, tabs, lazyIds: (window.tabs ?? []).flatMap(tab => {
+        const id = lazyIdFromTab(tab);
+        return id ? [id] : [];
+      }) });
     } catch {
       // A lazy tab may still be hydrating. A later maintenance pass will retry.
     }
@@ -261,6 +289,90 @@ export async function restorePersistentWindowAssociations(): Promise<number> {
   }).finally(() => { maintenanceTasks.delete(scope); });
   maintenanceTasks.set(scope, task);
   return task;
+}
+
+// Only reconstruct an exact residual snapshot. Never infer identity from an old
+// numeric window ID, and never fill gaps with URLs from a cloud workspace.
+export async function recoverMissingLazyTabs(): Promise<number> {
+  const scope = await accountStorageKey('workspaces');
+  const [associations, entries, windows, records] = await Promise.all([
+    windowAssociationRepository.list(), lazyRestoreRepository.list(),
+    browser.windows.getAll({ populate: true }), workspaceRepository.list(),
+  ]);
+  const liveIds = new Set(windows.flatMap(window => window.tabs ?? []).map(lazyIdFromTab).filter(Boolean));
+  const tabIds = new Set(windows.flatMap(window => window.tabs ?? []).map(tab => tab.id));
+  const bindings = new Map(await Promise.all(windows.map(async window => [window.id, window.id == null ? null : await bindingRepository.get(window.id)] as const)));
+  const candidates: Array<{ association: PersistentWindowAssociation; windowId: number; missing: typeof entries; fingerprint: string }> = [];
+  const fingerprint = (tabs: MatchableTab[]) => JSON.stringify(tabs.map(tab => [tabUrl(tab), Boolean(tab.pinned)]));
+  for (const association of associations) {
+    if (!records.some(record => record.content.id === association.workspaceId)) continue;
+    const saved = [...association.windowSnapshot.tabs].sort((a, b) => a.position - b.position);
+    const hasIds = saved.some(tab => tab.lazyId);
+    const pending = entries.filter(entry => entry.workspaceId === association.workspaceId && !liveIds.has(entry.id)
+      && (!hasIds || saved.some(tab => tab.lazyId === entry.id)));
+    // Legacy snapshots have no lazy IDs. Keep separate restore windows separate;
+    // old retained batches must not collide with the current batch's positions.
+    const batches = hasIds || !pending.length ? [pending] : [...new Set(pending.map(entry => entry.windowId))]
+      .map(windowId => pending.filter(entry => entry.windowId === windowId));
+    for (const missing of batches) {
+    // A real tab with the old ID may be navigating; do not create a duplicate.
+    if (missing.some(entry => entry.tabId != null && tabIds.has(entry.tabId))) continue;
+    const removed = new Map<number, typeof entries[number]>();
+    for (const entry of missing) {
+      const index = saved.findIndex(tab => tab.lazyId ? tab.lazyId === entry.id
+        : tab.position === entry.position && tab.url === entry.originalUrl && tab.pinned === entry.pinned);
+      if (index >= 0 && saved[index]!.url === entry.originalUrl && !removed.has(index)) removed.set(index, entry);
+    }
+    if (removed.size !== missing.length) continue;
+    const remaining = saved.filter((_, index) => !removed.has(index));
+    for (const window of windows) {
+      if (window.id == null || await bindingRepository.isSuppressed(window.id)) continue;
+      if (!hasIds && pending.some(entry => entry.windowId === window.id)
+        && missing[0]?.windowId !== window.id) continue;
+      if ([...bindings].some(([id, workspaceId]) => id !== window.id && workspaceId === association.workspaceId)) continue;
+      const binding = await bindingRepository.get(window.id);
+      if (binding && binding !== association.workspaceId) continue;
+      let logical;
+      try { logical = await resolveLogicalTabs([...(window.tabs ?? [])].sort((a, b) => a.index - b.index)); }
+      catch { continue; }
+      const expected = remaining.map(tab => ({ ...tab, index: tab.position }));
+      if (fingerprint(logical) !== fingerprint(expected)) continue;
+      const distinct = new Set(remaining.map(tab => normalizeUrl(tab.url)).filter(isStrongUrl));
+      const anchored = (window.tabs ?? []).some(tab => {
+        const id = lazyIdFromTab(tab);
+        return id && entries.some(entry => entry.id === id && entry.workspaceId === association.workspaceId);
+      });
+      if (missing.length && !anchored && distinct.size < 2) continue;
+      candidates.push({ association, windowId: window.id, missing: [...removed].map(([index, entry]) => ({ ...entry, position: saved[index]!.position, pinned: saved[index]!.pinned })), fingerprint: fingerprint(window.tabs ?? []) });
+    }
+    }
+  }
+  let recovered = 0;
+  for (const candidate of candidates) {
+    if (!candidate.missing.length
+      || candidates.filter(other => other.windowId === candidate.windowId).length !== 1
+      || candidates.filter(other => other.association.workspaceId === candidate.association.workspaceId).length !== 1) continue;
+    let expected = candidate.fingerprint;
+    for (const entry of candidate.missing.sort((a, b) => a.position - b.position)) {
+      if (scope !== await accountStorageKey('workspaces')) return recovered;
+      const current = await browser.windows.get(candidate.windowId, { populate: true });
+      if (fingerprint(current.tabs ?? []) !== expected || await bindingRepository.isSuppressed(candidate.windowId)) break;
+      const binding = await bindingRepository.get(candidate.windowId);
+      if (binding && binding !== candidate.association.workspaceId) break;
+      const latest = await lazyRestoreRepository.get(entry.id);
+      if (!latest || scope !== await accountStorageKey('workspaces')) break;
+      const live = await browser.windows.getAll({ populate: true });
+      if (live.some(window => window.tabs?.some(tab => lazyIdFromTab(tab) === entry.id))) break;
+      const tab = await browser.tabs.create({ windowId: candidate.windowId, url: lazyTabUrl(entry.id, entry), index: entry.position, pinned: entry.pinned, active: false });
+      if (tab.id == null) break;
+      await claimLazyTab(entry.id, tab.id, candidate.windowId);
+      recovered += 1;
+      const next = [...(current.tabs ?? [])];
+      next.splice(entry.position, 0, { ...tab, url: lazyTabUrl(entry.id, entry), pinned: entry.pinned });
+      expected = fingerprint(next);
+    }
+  }
+  return recovered;
 }
 
 export async function maintainWindowAssociations(): Promise<number> {

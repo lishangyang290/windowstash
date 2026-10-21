@@ -17,13 +17,17 @@ import {
   canLazyRestore,
   createLazyEntry,
   lazyTabUrl,
+  hasMissingLazyTabs,
   resolveLogicalTabs,
   resolveLazyStoredTab,
 } from './lazyRestore';
 import { lazyRestoreRepository } from '@/lib/storage/lazyRestoreRepository';
 import { windowAssociationRepository } from '@/lib/storage/windowAssociationRepository';
+import { QuickSavePreviewChangedError, windowSaveFingerprint, workspaceSaveFingerprint } from './quickSaveProtocol';
 import {
   bindWindow,
+  captureWindowAssociation,
+  deferWindowAssociation,
   restorePersistentWindowAssociations,
 } from './windowAssociation';
 
@@ -113,6 +117,8 @@ async function resolveScopedWorkspaceState(windowId: number, tabs: MatchableTab[
     return { status: 'unbound', workspaceId: null, record: null, source: null };
   }
 
+  if (await hasMissingLazyTabs(undefined, windowId, true)) return { status: 'unresolved', workspaceId: null, record: null, source: null };
+
   let logicalTabs;
   try {
     logicalTabs = logicalTabsReady ? tabs : await resolveLogicalTabs(tabs);
@@ -146,6 +152,7 @@ export async function saveCurrentWindow(input: {
   status: WorkspaceStatus;
   closeAfterSave: boolean;
   accountStorageKey?: string;
+  expected?: { fingerprint: string; workspaceId: string | null; content: string };
 }): Promise<WorkspaceContent> {
   const account = await requireDataAccount(input.accountStorageKey);
   const storageKey = account.storageKey;
@@ -153,14 +160,16 @@ export async function saveCurrentWindow(input: {
   const current = await browser.windows.get(input.windowId, { populate: true });
   if (current.id !== input.windowId) throw new Error('当前窗口已不存在');
   const tabs = [...(current.tabs ?? [])].sort((a, b) => a.index - b.index);
+  if (input.expected && windowSaveFingerprint(tabs) !== input.expected.fingerprint) throw new QuickSavePreviewChangedError('窗口标签页已变化，请重新确认预览');
   if (!tabs.length) throw new Error('当前窗口没有可保存的标签页');
 
   const boundId = await bindingRepository.get(input.windowId, storageKey);
+  if (await hasMissingLazyTabs(boundId ?? undefined, input.windowId, true)) throw new Error('延迟标签页恢复尚未完成，请稍后重试；原工作区已保留');
   if (boundId && await tombstoneRepository.has(boundId, storageKey.replace(/^workspaces/, STORAGE_KEYS.tombstones))) {
     await bindingRepository.suppress(input.windowId, storageKey);
     throw new Error('工作区已删除，请重新打开弹窗后保存为新工作区');
   }
-  let previous = boundId ? await getLocalWorkspace(boundId, storageKey, false) : null;
+  let previous = boundId ? await getLocalWorkspace(boundId, storageKey, Boolean(input.expected)) : null;
   if (boundId && await tombstoneRepository.has(boundId, storageKey.replace(/^workspaces/, STORAGE_KEYS.tombstones))) throw new Error('工作区已在其他设备删除，请先确认删除通知；当前窗口及标签页已保留。');
   if (boundId && !previous) {
     await syncEngine.syncAll(storageKey).catch(() => undefined);
@@ -168,6 +177,7 @@ export async function saveCurrentWindow(input: {
     if (!previous) throw new Error('暂时无法读取此工作区，请稍后重试');
   }
   const now = new Date().toISOString();
+  if (input.expected && (boundId !== input.expected.workspaceId || await workspaceSaveFingerprint(previous?.content ?? null) !== input.expected.content)) throw new QuickSavePreviewChangedError('工作区已变化，请重新确认预览');
   const storedTabs: StoredTab[] = await Promise.all(tabs.map((tab, position) => resolveLazyStoredTab(tab, position)));
   const activeTabIndex = Math.max(0, tabs.findIndex((tab) => tab.active));
   const content: WorkspaceContent = {
@@ -181,6 +191,13 @@ export async function saveCurrentWindow(input: {
   };
 
   await withDataAccount(account, async () => {
+    if (input.expected) {
+      const latest = await browser.windows.get(input.windowId, { populate: true });
+      const latestId = await bindingRepository.get(input.windowId, storageKey);
+      const latestRecord = latestId ? await getLocalWorkspace(latestId, storageKey, true) : null;
+      if (latest.id !== input.windowId || windowSaveFingerprint(latest.tabs ?? []) !== input.expected.fingerprint
+        || latestId !== input.expected.workspaceId || await workspaceSaveFingerprint(latestRecord?.content ?? null) !== input.expected.content) throw new QuickSavePreviewChangedError('窗口或工作区已变化，请重新确认预览');
+    }
     await workspaceRepository.saveContent(content, storageKey, { ...operation, workspace: content.id });
     await bindWindow(input.windowId, content.id, tabs, storageKey);
     await recordLog(content.id, content.name, 'local-save', 'success', 'Local save success', storageKey);
@@ -218,6 +235,7 @@ export async function restoreWorkspace(
   const lazyEntryIds: string[] = [];
   const tabs = [...record.content.tabs].sort((a, b) => a.position - b.position);
   const lazyKey = scope.replace(/^workspaces/, STORAGE_KEYS.lazyRestoreEntries);
+  const finishAssociation = deferWindowAssociation(createdWindow.id);
 
   try {
     await requireScope();
@@ -225,22 +243,30 @@ export async function restoreWorkspace(
     else await bindingRepository.set(createdWindow.id, workspaceId, ...(scope === 'workspaces' ? [] : [scope]));
 
     await withDataAccount(account, async () => {
+      const lazyEntries = new Map(tabs.filter(tab => canLazyRestore(tab, record.content.activeTabIndex))
+        .map(tab => [tab.position, { ...createLazyEntry(workspaceId, tab), accountStorageKey: lazyKey, windowId: createdWindow.id }]));
+      try {
+        await lazyRestoreRepository.putMany([...lazyEntries.values()], lazyKey);
+        lazyEntryIds.push(...[...lazyEntries.values()].map(entry => entry.id));
+      } catch {
+        lazyEntries.clear();
+      }
       for (const tab of tabs) {
         try {
           let created;
-          if (canLazyRestore(tab, record.content.activeTabIndex)) {
-            const entry = { ...createLazyEntry(workspaceId, tab), accountStorageKey: lazyKey };
+          const entry = lazyEntries.get(tab.position);
+          if (entry) {
             try {
-              await lazyRestoreRepository.put(entry);
-              lazyEntryIds.push(entry.id);
-              created = await browser.tabs.create({ windowId: createdWindow.id, url: lazyTabUrl(entry.id), active: false, pinned: tab.pinned });
-              await lazyRestoreRepository.put({ ...entry, tabId: created.id, windowId: createdWindow.id });
+              created = await browser.tabs.create({ windowId: createdWindow.id, url: lazyTabUrl(entry.id, entry), active: false, pinned: tab.pinned });
             } catch {
               await lazyRestoreRepository.remove(entry.id, lazyKey).catch(() => undefined);
               const index = lazyEntryIds.indexOf(entry.id);
               if (index >= 0) lazyEntryIds.splice(index, 1);
               created = await browser.tabs.create({ windowId: createdWindow.id, url: tab.url, active: false, pinned: tab.pinned });
             }
+            // The original URL is already durable. A failed metadata update
+            // must not remove that record or create a second, fallback tab.
+            if (created.id != null) await lazyRestoreRepository.bindTab(entry.id, created.id, created.windowId ?? createdWindow.id, lazyKey, true).catch(() => undefined);
           } else {
             created = await browser.tabs.create({ windowId: createdWindow.id, url: tab.url, active: false, pinned: tab.pinned });
           }
@@ -267,6 +293,9 @@ export async function restoreWorkspace(
       ...record,
       sync: { ...record.sync, localExpiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString() },
     });
+    if (!options.deferBinding && createdByPosition.size === tabs.length) {
+      await captureWindowAssociation(createdWindow.id, workspaceId, undefined, scope, true).catch(() => undefined);
+    }
     await recordLog(workspaceId, record.content.name, 'restore', 'success', 'Workspace restored', scope);
     return createdWindow.id;
   } catch (error) {
@@ -276,6 +305,8 @@ export async function restoreWorkspace(
       await browser.windows.remove(createdWindow.id).catch(() => undefined);
     }
     throw error;
+  } finally {
+    await finishAssociation().catch(() => undefined);
   }
 }
 

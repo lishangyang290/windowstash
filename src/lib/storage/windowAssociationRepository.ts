@@ -3,6 +3,7 @@ import { browser } from 'wxt/browser';
 import { STORAGE_KEYS } from '@/lib/constants';
 
 export interface WindowAssociationTab {
+  lazyId?: string;
   url: string;
   pinned: boolean;
   position: number;

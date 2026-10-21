@@ -1,6 +1,8 @@
 import { initializeDiagnostics } from '@/lib/storage/diagnostics';
+import { registerQuickSavePage } from '@/features/workspaces/quickSavePage';
 import { accountStorageKey, legacyDataSummary, selectDataAccount } from '@/lib/storage/accountScope';
 import { SupabaseConfigForm } from '@/components/SupabaseConfigForm';
+import { ShortcutSettings } from '@/components/ShortcutSettings';
 import { SetupFlow, useSetupNavigation } from '@/components/SetupFlow';
 import { FlowFooter } from '@/components/FlowFooter';
 import { PageShell } from '@/components/PageShell';
@@ -508,6 +510,7 @@ function Dashboard({ session, config, recoveryMode, onAuthChanged, onSignedOut }
             <div className="account-wrap" onBlur={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setAccountMenuOpen(false); }}>
               <button className="account-button" aria-haspopup={session ? 'menu' : undefined} aria-expanded={session ? accountMenuOpen : undefined} onClick={() => session ? setAccountMenuOpen((open) => !open) : setAccountOpen(true)}><span className="avatar">{session?.user.email?.[0]?.toUpperCase() ?? '?'}</span><span title={session?.user.email}>{session?.user.email ?? '登录'}</span><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m6 9 6 6 6-6" /></svg></button>
               {session && accountMenuOpen && <div className="account-menu" role="menu">
+                <ShortcutSettings onOpened={() => setAccountMenuOpen(false)} />
                 <button role="menuitem" onClick={() => { setAccountMenuOpen(false); setAccountOpen(true); }}>修改密码</button>
                 <button role="menuitem" onClick={() => { setAccountMenuOpen(false); void browser.tabs.create({ url: browser.runtime.getURL('/diagnostics.html') }); }}>诊断与反馈</button>
                 <button role="menuitem" onClick={() => void logout()}>退出登录</button>
@@ -571,3 +574,4 @@ ReactDOM.createRoot(document.getElementById('root')!).render(authorizationPage
   : <React.StrictMode><OptionsRoot /></React.StrictMode>);
 
 initializeDiagnostics();
+if (!authorizationPage) void registerQuickSavePage().catch(error => console.error('WindowStash 管理页快捷保存初始化失败', error));

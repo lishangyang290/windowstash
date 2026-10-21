@@ -1,6 +1,6 @@
 import type { LazyRestoreEntry } from '@/lib/storage/lazyRestoreRepository';
 
-function usableFavicon(url: string): boolean {
+export function usableFavicon(url: string): boolean {
   if (url.startsWith('data:image/')) return true;
   try {
     return ['http:', 'https:'].includes(new URL(url).protocol);

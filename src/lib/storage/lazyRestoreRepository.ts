@@ -17,6 +17,7 @@ export interface LazyRestoreEntry {
   windowId?: number;
   missingSince?: string;
   missingCount?: number;
+  recoveryPending?: boolean;
 }
 
 type EntryMap = Record<string, LazyRestoreEntry>;
@@ -33,6 +34,7 @@ async function writeMap(entries: EntryMap, storageKey: string): Promise<void> {
 }
 
 let mutationQueue: Promise<void> = Promise.resolve();
+const pendingReads = new Map<string, { queue: Promise<void>; task: Promise<EntryMap> }>();
 
 async function mutate<T>(task: (storageKey: string) => Promise<T>, requestedKey?: string): Promise<T> {
   const storageKey = requestedKey ?? await accountStorageKey(STORAGE_KEYS.lazyRestoreEntries);
@@ -46,8 +48,14 @@ async function mutate<T>(task: (storageKey: string) => Promise<T>, requestedKey?
 
 async function readSettledMap(requestedKey?: string): Promise<EntryMap> {
   const storageKey = requestedKey ?? await accountStorageKey(STORAGE_KEYS.lazyRestoreEntries);
-  await mutationQueue;
-  return readMap(storageKey);
+  const queue = mutationQueue;
+  const pending = pendingReads.get(storageKey);
+  if (pending?.queue === queue) return pending.task;
+  const task = queue.then(() => readMap(storageKey)).finally(() => {
+    if (pendingReads.get(storageKey)?.task === task) pendingReads.delete(storageKey);
+  });
+  pendingReads.set(storageKey, { queue, task });
+  return task;
 }
 
 export const lazyRestoreRepository = {
@@ -55,20 +63,46 @@ export const lazyRestoreRepository = {
     return Object.values(await readSettledMap(requestedKey));
   },
 
-  async get(id: string): Promise<LazyRestoreEntry | null> {
-    return (await readSettledMap())[id] ?? null;
+  async get(id: string, requestedKey?: string): Promise<LazyRestoreEntry | null> {
+    return (await readSettledMap(requestedKey))[id] ?? null;
   },
 
   async put(entry: LazyRestoreEntry): Promise<void> {
+    return this.putMany([entry], entry.accountStorageKey);
+  },
+
+  async putMany(batch: LazyRestoreEntry[], requestedKey?: string): Promise<void> {
+    if (!batch.length) return;
     await mutate(async (storageKey) => {
-      if (entry.accountStorageKey && entry.accountStorageKey !== storageKey) throw new Error('恢复记录账号不一致');
+      if (batch.some(entry => entry.accountStorageKey && entry.accountStorageKey !== storageKey)) throw new Error('恢复记录账号不一致');
       const entries = await readMap(storageKey);
-      const activeEntry = { ...entry };
-      delete activeEntry.missingSince;
-      delete activeEntry.missingCount;
-      entries[entry.id] = activeEntry;
+      for (const entry of batch) {
+        const activeEntry = { ...entry };
+        delete activeEntry.missingSince;
+        delete activeEntry.missingCount;
+        delete activeEntry.recoveryPending;
+        entries[entry.id] = activeEntry;
+      }
       await writeMap(entries, storageKey);
-    }, entry.accountStorageKey);
+    }, requestedKey);
+  },
+
+  async bindTab(id: string, tabId: number, windowId?: number, requestedKey?: string, onlyIfUnclaimed = false): Promise<LazyRestoreEntry | null> {
+    return mutate(async storageKey => {
+      const entries = await readMap(storageKey);
+      const entry = entries[id];
+      // A close/navigation may have removed it, or a move may already have
+      // established a newer binding. Creation must never undo either action.
+      if (!entry || (onlyIfUnclaimed && entry.tabId != null)
+        || (entry.tabId === tabId && entry.windowId === windowId)) return entry ?? null;
+      const bound = { ...entry, tabId, windowId };
+      delete bound.missingSince;
+      delete bound.missingCount;
+      delete bound.recoveryPending;
+      entries[id] = bound;
+      await writeMap(entries, storageKey);
+      return bound;
+    }, requestedKey);
   },
 
   async remove(id: string, requestedKey?: string): Promise<void> {
@@ -116,9 +150,12 @@ export const lazyRestoreRepository = {
         if (liveIds.has(entry.id)) {
           delete entry.missingSince;
           delete entry.missingCount;
+          delete entry.recoveryPending;
           continue;
         }
         entry.missingSince ??= new Date(now).toISOString();
+        // Absence is not evidence of a user close during extension/browser reload.
+        if (entry.tabId != null) entry.recoveryPending = true;
         entry.missingCount = (entry.missingCount ?? 0) + 1;
         if (entry.missingCount >= 2) candidates.push(entry.id);
       }
@@ -138,9 +175,11 @@ export const lazyRestoreRepository = {
         if (liveIds.has(id)) {
           delete entry.missingSince;
           delete entry.missingCount;
+          delete entry.recoveryPending;
           changed = true;
           continue;
         }
+        if (entry.recoveryPending || entry.tabId != null) continue;
         if (!entry.missingSince || (entry.missingCount ?? 0) < 2) continue;
         if (now - new Date(entry.missingSince).getTime() < graceMs) continue;
         delete entries[id];

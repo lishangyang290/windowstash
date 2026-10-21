@@ -22,7 +22,8 @@ export default defineConfig({
   manifest: ({ mode }) => ({
     name: 'WindowStash',
     description: '以工作任务为单位保存、关闭并恢复 Chrome 窗口。',
-    permissions: ['tabs', 'storage', 'alarms', 'favicon', 'nativeMessaging', 'scripting'],
+    permissions: ['tabs', 'storage', 'alarms', 'favicon', 'nativeMessaging', 'scripting', 'activeTab', 'notifications'],
+    commands: { 'quick-save-workspace': { description: '保存当前窗口为 WindowStash 工作区' } },
     host_permissions: mode === 'development' ? supabaseHostPermissions() : [],
     optional_host_permissions: ['http://*/*', 'https://*/*'],
   }),

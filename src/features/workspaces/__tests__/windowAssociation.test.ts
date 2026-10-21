@@ -31,9 +31,13 @@ vi.mock('@/lib/storage/bindingRepository', () => ({ bindingRepository: bindingMo
 vi.mock('@/lib/storage/windowAssociationRepository', () => ({ windowAssociationRepository: associationMock }));
 vi.mock('@/lib/storage/workspaceRepository', () => ({ workspaceRepository: workspaceMock }));
 vi.mock('@/lib/storage/syncLogRepository', () => ({ syncLogRepository: logMock }));
-vi.mock('@/features/workspaces/lazyRestore', () => ({ resolveLogicalTabs: vi.fn(async (tabs) => tabs) }));
+vi.mock('@/features/workspaces/lazyRestore', () => ({ resolveLogicalTabs: vi.fn(async (tabs) => tabs),
+  isStartupLazyReconciliationActive: vi.fn(async () => false), hasMissingLazyTabs: vi.fn(async () => false), lazyIdFromTab: vi.fn(() => null),
+}));
+vi.mock('@/lib/storage/lazyRestoreRepository', () => ({ lazyRestoreRepository: { list: vi.fn(async () => []) } }));
 
 import {
+  deferWindowAssociation,
   maintainWindowAssociations,
   refreshBoundWindowAssociation,
   restorePersistentWindowAssociations,
@@ -63,6 +67,58 @@ function workspace(id: string): WorkspaceLocalRecord {
 }
 
 describe('persistent window association recovery', () => {
+  it('merges restore events and captures user changes from live tabs at the end', async () => {
+    bindings.set(22, 'restoring');
+    associations.push(association('restoring', ['https://removed.test', 'https://saved.test']));
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs: tabs(['https://saved.test', 'https://user-added.test']) });
+    const finish = deferWindowAssociation(22);
+    try {
+      await Promise.all(Array.from({ length: 50 }, () => refreshBoundWindowAssociation(22)));
+      expect(browserMock.windows.get).not.toHaveBeenCalled();
+      expect(associationMock.upsert).not.toHaveBeenCalled();
+    } finally { await finish(); }
+    expect(browserMock.windows.get).toHaveBeenCalledOnce();
+    expect(associations[0]!.windowSnapshot.tabs.map(tab => tab.url)).toEqual(['https://saved.test', 'https://user-added.test']);
+    await refreshBoundWindowAssociation(22);
+    expect(browserMock.windows.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases deferral even when the final live-window check fails', async () => {
+    bindings.set(22, 'restoring');
+    browserMock.windows.get.mockRejectedValueOnce(new Error('window closed'));
+    await expect(deferWindowAssociation(22)()).rejects.toThrow('window closed');
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs: tabs(['https://saved.test']) });
+    await expect(refreshBoundWindowAssociation(22)).resolves.toBe(true);
+  });
+
+  it('keeps other windows live and excludes only restoring windows from maintenance', async () => {
+    bindings.set(11, 'first'); bindings.set(22, 'second');
+    browserMock.windows.getAll.mockResolvedValue([
+      { id: 11, tabs: tabs(['https://first.test']) }, { id: 22, tabs: tabs(['https://second.test']) },
+    ]);
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs: tabs(['https://second.test']) });
+    const finishFirst = deferWindowAssociation(11), finishSecond = deferWindowAssociation(22);
+    try {
+      await finishSecond();
+      await maintainWindowAssociations();
+      expect(associationMock.upsert.mock.calls.every(([id]) => id === 'second')).toBe(true);
+      expect(bindings.get(11)).toBe('first');
+    } finally {
+      browserMock.windows.get.mockResolvedValue({ id: 11, tabs: tabs(['https://first.test']) });
+      await finishFirst();
+    }
+    expect(associations.some(item => item.workspaceId === 'first')).toBe(true);
+  });
+
+  it('releases deferral after failed restoration without resurrecting a removed binding', async () => {
+    const finish = deferWindowAssociation(22);
+    await expect(finish()).resolves.toBe(false);
+    bindings.set(22, 'later');
+    browserMock.windows.get.mockResolvedValue({ id: 22, tabs: tabs(['https://later.test']) });
+    await expect(refreshBoundWindowAssociation(22)).resolves.toBe(true);
+    expect(associations[0]!.workspaceId).toBe('later');
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     bindings.clear();

@@ -8,7 +8,7 @@ const listeners = vi.hoisted(() => ({
   onCreated: undefined as ((tab: { windowId: number }) => void) | undefined,
   onRemoved: undefined as ((tabId: number, info: { windowId: number; isWindowClosing: boolean }) => void) | undefined,
   onMoved: undefined as ((tabId: number, info: { windowId: number }) => void) | undefined,
-  onUpdated: undefined as ((tabId: number, info: { url?: string; title?: string }, tab: { windowId: number; url?: string }) => void) | undefined,
+  onUpdated: undefined as ((tabId: number, info: { url?: string; title?: string; status?: string }, tab: { windowId: number; url?: string; pendingUrl?: string; active?: boolean }) => void) | undefined,
 }));
 const accessMock = vi.hoisted(() => vi.fn());
 vi.mock('@/lib/supabase/authService', () => ({ authService: { requireSession: accessMock } }));
@@ -23,6 +23,7 @@ vi.mock('@/lib/sync/pendingSync', () => ({ PENDING_SYNC_ALARM: 'windowstash-pend
 const browserMock = vi.hoisted(() => {
   const event = () => ({ addListener: vi.fn() });
   return {
+    commands: { onCommand: event() },
     alarms: { create: vi.fn(), onAlarm: { addListener: vi.fn((listener) => { listeners.onAlarm = listener; }) } },
     runtime: {
       onInstalled: { addListener: vi.fn((listener) => { listeners.onInstalled = listener; }) },
@@ -52,21 +53,24 @@ vi.mock('@/lib/sync/syncEngine', () => ({ syncEngine: { syncAll: vi.fn(async () 
 vi.mock('@/lib/storage/bindingRepository', () => ({ bindingRepository: { remove: vi.fn() } }));
 vi.mock('@/features/workspaces/lazyRestore', () => ({
   beginStartupLazyReconciliation: vi.fn().mockResolvedValue(undefined),
-  claimLazyTabFromBrowserTab: vi.fn(),
+  claimLazyTabFromBrowserTab: vi.fn().mockResolvedValue(false),
   cleanupOrphanedLazyEntries: vi.fn(),
   confirmLazyNavigation: vi.fn(),
-  finishStartupLazyReconciliation: vi.fn(),
+  finishStartupLazyReconciliation: vi.fn().mockResolvedValue(false),
   handleLazyTabReady: vi.fn(),
+  handleDataLazyAction: vi.fn().mockResolvedValue(undefined),
   hydrateStartupLazyTab: vi.fn().mockResolvedValue(false),
   hydrateStartupLazyTabs: vi.fn(),
+  initializeStartupLazyReconciliation: vi.fn().mockResolvedValue(undefined),
   isStartupLazyReconciliationActive: vi.fn().mockResolvedValue(false),
   isStartupLazyReconciliationComplete: vi.fn(),
   noteStartupLazyActivity: vi.fn().mockResolvedValue(undefined),
   removeLazyTab: vi.fn().mockResolvedValue(undefined),
-  resolveLazyTab: vi.fn(),
+  resolveLazyTab: vi.fn().mockResolvedValue(true),
 }));
 vi.mock('@/features/workspaces/windowAssociation', () => ({
   maintainWindowAssociations: vi.fn(),
+  recoverMissingLazyTabs: vi.fn().mockResolvedValue(0),
   refreshBoundWindowAssociation: refreshAssociationMock,
   restorePersistentWindowAssociations: vi.fn(),
 }));
@@ -77,6 +81,36 @@ beforeAll(async () => {
 });
 
 describe('background messages', () => {
+  it.each([1, 3])('recovers an already active data page after %i reloads without URL changes or activation', async count => {
+    const lazy = await import('@/features/workspaces/lazyRestore');
+    vi.mocked(lazy.claimLazyTabFromBrowserTab).mockResolvedValueOnce(true).mockResolvedValueOnce(true);
+    for (let refresh = 0; refresh < count; refresh++) {
+      if (refresh) vi.mocked(lazy.claimLazyTabFromBrowserTab).mockResolvedValueOnce(true).mockResolvedValueOnce(true);
+      listeners.onUpdated?.(42, { status: 'loading' }, { windowId: 7, active: true, url: 'data:text/html;charset=utf-8,test' });
+      listeners.onUpdated?.(42, { status: 'complete' }, { windowId: 7, active: true, url: 'data:text/html;charset=utf-8,test' });
+      await vi.waitFor(() => expect(lazy.resolveLazyTab).toHaveBeenCalledTimes(refresh + 1));
+    }
+    expect(lazy.confirmLazyNavigation).not.toHaveBeenCalled();
+    expect(lazy.handleDataLazyAction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { active: false },
+    { active: true, pendingUrl: 'https://original.example/' },
+  ])('does not navigate an inactive or already navigating data page: %j', async state => {
+    const lazy = await import('@/features/workspaces/lazyRestore');
+    vi.mocked(lazy.claimLazyTabFromBrowserTab).mockResolvedValueOnce(true);
+    listeners.onUpdated?.(42, { status: 'complete' }, { windowId: 7, url: 'data:text/html;charset=utf-8,test', ...state });
+    await vi.waitFor(() => expect(lazy.claimLazyTabFromBrowserTab).toHaveResolved());
+    expect(lazy.resolveLazyTab).not.toHaveBeenCalled();
+    expect(lazy.confirmLazyNavigation).not.toHaveBeenCalled();
+  });
+
+  it('forwards data-page fragment requests from URL updates to restoration', async () => {
+    const { handleDataLazyAction } = await import('@/features/workspaces/lazyRestore');
+    listeners.onUpdated?.(42, { url: 'data:text/html,test#request' }, { windowId: 7 });
+    expect(handleDataLazyAction).toHaveBeenCalledWith(42, 'data:text/html,test#request');
+  });
   it('keeps an automatic retry scheduled when cloud startup synchronization fails', async () => {
     const { syncEngine } = await import('@/lib/sync/syncEngine');
     vi.mocked(syncEngine.syncAll).mockRejectedValueOnce(new Error('offline'));
@@ -93,13 +127,32 @@ describe('background messages', () => {
     accessMock.mockResolvedValue({ user: { id: 'A' } });
   });
 
-  it('rehydrates lazy placeholders at browser startup before maintenance', async () => {
+  it('claims surviving placeholders at browser startup without starting a recovery delay', async () => {
     const lazy = await import('@/features/workspaces/lazyRestore');
     listeners.onStartup?.();
-    await vi.waitFor(() => expect(lazy.hydrateStartupLazyTabs).toHaveBeenCalledOnce());
-    expect(lazy.beginStartupLazyReconciliation).toHaveBeenCalledOnce();
-    expect(vi.mocked(lazy.beginStartupLazyReconciliation).mock.invocationCallOrder[0]!).toBeLessThan(vi.mocked(lazy.hydrateStartupLazyTabs).mock.invocationCallOrder[0]!);
+    await vi.waitFor(() => expect(lazy.initializeStartupLazyReconciliation).toHaveBeenCalledOnce());
+    expect(lazy.beginStartupLazyReconciliation).not.toHaveBeenCalled();
     expect(browserMock.alarms.create).toHaveBeenCalledWith('windowstash-window-association', expect.anything());
+  });
+
+  it('also starts recovery for extension update and developer reload', async () => {
+    const lazy = await import('@/features/workspaces/lazyRestore');
+    listeners.onInstalled?.();
+    await vi.waitFor(() => expect(lazy.initializeStartupLazyReconciliation).toHaveBeenCalledOnce());
+    expect(lazy.beginStartupLazyReconciliation).not.toHaveBeenCalled();
+  });
+
+  it('records user closes even during startup so a closed tab cannot be recreated', async () => {
+    const lazy = await import('@/features/workspaces/lazyRestore');
+    vi.mocked(lazy.isStartupLazyReconciliationActive).mockResolvedValueOnce(true);
+    listeners.onRemoved?.(99, { windowId: 20, isWindowClosing: false });
+    expect(lazy.removeLazyTab).toHaveBeenCalledWith(99);
+  });
+
+  it('never automatically recreates missing tabs from the legacy recovery alarm', async () => {
+    const { recoverMissingLazyTabs } = await import('@/features/workspaces/windowAssociation');
+    listeners.onAlarm?.({ name: 'windowstash-lazy-reconciliation' });
+    await vi.waitFor(() => expect(vi.mocked(recoverMissingLazyTabs)).not.toHaveBeenCalled());
   });
 
   it('starts persistence directly for tab creation, removal and movement', () => {

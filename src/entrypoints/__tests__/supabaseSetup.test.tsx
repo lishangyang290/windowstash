@@ -1,4 +1,5 @@
 import React, { act } from 'react';
+vi.mock('@/features/workspaces/quickSavePage', () => ({ registerQuickSavePage: vi.fn(async () => {}) }));
 import { createRoot } from 'react-dom/client';
 import { parseHTML } from 'linkedom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -23,6 +24,7 @@ vi.mock('react-dom/client', async (importOriginal) => {
 vi.mock('wxt/browser', () => {
   const event = () => ({ addListener: vi.fn(), removeListener: vi.fn() });
   return { browser: {
+    commands: { getAll: vi.fn(async () => []) },
     runtime: { getURL: vi.fn((path: string) => `chrome-extension://fixture${path}`), openOptionsPage: vi.fn(async () => undefined), sendMessage: vi.fn(async () => undefined) },
     permissions: { request: requestPermission },
     storage: {
